@@ -1,0 +1,101 @@
+{
+  "$schema": "https://fundingjson.org/schema/v1.1.0.json",
+  "version": "v1.1.0",
+  "entity": {
+    "type": "organisation",
+    "role": "owner",
+    "name": "DiffCI",
+    "email": "aditya@diffci.com",
+    "description": "DiffCI develops open-source infrastructure for understanding software changes and reducing unnecessary CI work. DiffCI Core is an AGPL-3.0-only engine that analyzes repository changes, dependency impact and CI structure to produce conservative CI execution plans with full-run fallbacks when evidence is insufficient.",
+    "webpageUrl": {
+      "url": "https://github.com/DiffCI"
+    }
+  },
+  "projects": [
+    {
+      "guid": "diffci-core",
+      "name": "DiffCI Core",
+      "description": "DiffCI Core is an open-source engine for understanding software changes and planning less CI work conservatively. It analyzes Git changes, repository dependencies and GitHub Actions structure to determine affected code and tests while falling back to full CI when evidence is insufficient. The project aims to make CI more efficient, transparent and measurable while reducing unnecessary compute. Environmental impact estimates are kept separate from measured compute results.",
+      "webpageUrl": {
+        "url": "https://github.com/DiffCI/core"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/DiffCI/core"
+      },
+      "licenses": [
+        "spdx:AGPL-3.0-only"
+      ],
+      "tags": [
+        "developer-tools",
+        "continuous-integration",
+        "devops",
+        "testing",
+        "static-analysis",
+        "developer-infrastructure",
+        "sustainability"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "grant",
+        "type": "other",
+        "address": "",
+        "description": "Grant funding. Payment and disbursement details can be coordinated with the grant provider."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "ci-evaluation",
+        "status": "active",
+        "name": "Milestone 1 — Reproducible real-world CI evaluation",
+        "description": "Build and publish a reproducible evaluation framework for running DiffCI Core against real open-source repositories and historical changes. Publish methodology and results, including successful selections, conservative fallbacks, unsupported cases and cases where selective planning does not produce runtime savings. The goal is to establish transparent evidence rather than rely on synthetic benchmarks alone.",
+        "amount": 125000,
+        "currency": "INR",
+        "frequency": "one-time",
+        "channels": ["grant"]
+      },
+      {
+        "guid": "ci-analysis",
+        "status": "active",
+        "name": "Milestone 2 — Improve CI and dependency analysis",
+        "description": "Improve GitHub Actions and repository analysis, including dependency impact, job and task relationships, matrix and conditional workflow understanding, reusable workflow handling and conservative behavior for unsupported or incomplete configurations. Add regression tests for discovered edge cases and preserve full-run fallback when sufficient evidence is unavailable.",
+        "amount": 150000,
+        "currency": "INR",
+        "frequency": "one-time",
+        "channels": ["grant"]
+      },
+      {
+        "guid": "ecosystem-support",
+        "status": "active",
+        "name": "Milestone 3 — Broaden ecosystem support",
+        "description": "Extend DiffCI Core beyond its initial JavaScript and TypeScript focus by designing and implementing reusable language and build-system integration boundaries and adding support for additional widely used open-source development ecosystems. Prioritize ecosystems based on reproducible repository evaluations and community demand rather than claiming universal language support.",
+        "amount": 125000,
+        "currency": "INR",
+        "frequency": "one-time",
+        "channels": ["grant"]
+      },
+      {
+        "guid": "compute-measurement",
+        "status": "active",
+        "name": "Milestone 4 — Compute and environmental impact measurement",
+        "description": "Develop an open and reproducible methodology for measuring CI work, runtime and compute effects and for estimating associated energy and carbon impact. Clearly distinguish directly measured values from modeled estimates and publish assumptions used for environmental calculations. Validate the methodology against real CI workloads where practical.",
+        "amount": 100000,
+        "currency": "INR",
+        "frequency": "one-time",
+        "channels": ["grant"]
+      },
+      {
+        "guid": "community-release",
+        "status": "active",
+        "name": "Milestone 5 — Documentation, packaging and community adoption",
+        "description": "Improve installation, documentation, examples, security guidance, contribution workflows and release packaging so independent developers and open-source projects can evaluate DiffCI Core without using a proprietary service. Publish evaluation reports and project updates and engage with the FOSS community through public technical writing, demonstrations or talks.",
+        "amount": 100000,
+        "currency": "INR",
+        "frequency": "one-time",
+        "channels": ["grant"]
+      }
+    ]
+  }
+}
