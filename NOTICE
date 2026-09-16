@@ -1,0 +1,17 @@
+DiffCI Core
+Copyright (c) 2026 DiffCI contributors.
+
+DiffCI's original source and contributions in this repository are licensed under
+the GNU Affero General Public License, version 3 only (AGPL-3.0-only).
+See LICENSE for the complete terms. No trademark rights are granted.
+
+This initial public repository was extracted from DiffCI's private development
+repository as a new history containing only the selected engine and portable
+tests. It does not license the private Cloud product, customer data, hosted
+infrastructure, deployment tools or separate enterprise modules.
+
+Dependencies retain their own licenses. TypeScript is Apache-2.0; yaml is ISC.
+Development dependencies and their transitive dependencies retain their licenses
+as distributed by their authors. No third-party repository source trees or
+private research datasets are bundled. Test examples are small regression inputs;
+mentions of other projects do not imply endorsement.
