@@ -67,3 +67,27 @@ test("Maven multi-module source change reaches downstream module tests", async (
     assert.deepEqual(plan.commands[0]?.args, ["-pl", "application", "-am", "test"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("Spring gs-multi-module shape selects application when library changes", async () => {
+  const root = fixture({
+    "pom.xml": `<project><groupId>org.springframework</groupId><artifactId>gs-multi-module</artifactId><version>0.0.1-SNAPSHOT</version><packaging>pom</packaging><modules><module>library</module><module>application</module></modules></project>`,
+    "library/pom.xml": `<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.5.11</version></parent><groupId>com.example</groupId><artifactId>library</artifactId><version>0.0.1-SNAPSHOT</version></project>`,
+    "library/src/main/java/com/example/service/MyService.java": "package com.example.service; public class MyService {}",
+    "library/src/test/java/com/example/service/MyServiceTest.java": "package com.example.service; public class MyServiceTest {}",
+    "application/pom.xml": `<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId><version>3.5.11</version></parent><groupId>com.example</groupId><artifactId>application</artifactId><version>0.0.1-SNAPSHOT</version><dependencies><dependency><groupId>com.example</groupId><artifactId>library</artifactId><version>\${project.version}</version></dependency></dependencies></project>`,
+    "application/src/main/java/com/example/application/DemoApplication.java": "package com.example.application; public class DemoApplication {}",
+    "application/src/test/java/com/example/application/DemoApplicationTest.java": "package com.example.application; public class DemoApplicationTest {}",
+  });
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const impact = new ImpactAnalyzer().analyze(delta("library/src/main/java/com/example/service/MyService.java"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, false);
+    assert.deepEqual(impact.affectedTests.map((item) => item.path), [
+      "application/src/test/java/com/example/application/DemoApplicationTest.java",
+      "library/src/test/java/com/example/service/MyServiceTest.java",
+    ]);
+    const plan = planSelectiveTestCommands(graph.profile, impact.affectedTests.map((item) => item.path));
+    assert.deepEqual(plan.commands[0]?.args, ["-pl", "application,library", "-am", "test"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
