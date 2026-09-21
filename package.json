@@ -1,15 +1,38 @@
 {
   "name": "@diffci.com/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local dependency analysis, conservative CI planning and compute measurement",
   "license": "AGPL-3.0-only",
   "private": false,
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
-  "engines": { "node": ">=22.5.0" },
-  "repository": { "type": "git", "url": "git+https://github.com/DiffCI/core.git" },
-  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./*": { "types": "./dist/*.d.ts", "import": "./dist/*.js" } },
-  "files": ["dist", "src", "tsconfig.json", "LICENSE", "NOTICE", "README.md"],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DiffCI/core.git"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "tsconfig.json",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
@@ -19,6 +42,13 @@
     "prepack": "npm run build",
     "prepare": "npm run build"
   },
-  "dependencies": { "@vue/compiler-sfc": "3.5.42", "typescript": "^5.8.3", "yaml": "^2.9.0" },
-  "devDependencies": { "@types/node": "^22.15.12", "tsx": "^4.23.0" }
+  "dependencies": {
+    "@vue/compiler-sfc": "3.5.42",
+    "typescript": "^5.8.3",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.12",
+    "tsx": "^4.23.0"
+  }
 }

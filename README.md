@@ -31,7 +31,7 @@ The target must be a clean Git repository root checked out at `--head`. Fetch th
 | Reproducible evaluation | Synthetic benchmark and portable regression tests |
 | Measurement | Current-process wall time, CPU time and ending RSS; explicit-input cost/energy/carbon estimates |
 
-The library entry point exports `analyzeCheckout`, `buildDependencyGraph`, `ImpactAnalyzer`, `DefaultCIPlanner`, `collectEvidence`, `inferPipeline`, `measure` and `estimateImpact`. Lower-level modules are available as package subpaths. The package is named `@diffci.com/core` and is prepared for a public npm release; it is not published yet. DiffCI also publishes [the separate `@diffci.com/diffci` CLI](https://www.npmjs.com/package/@diffci.com/diffci) from [DiffCI/DiffCI.com](https://github.com/DiffCI/DiffCI.com). The current CLI does not yet depend on Core. See [the package relationship](https://github.com/DiffCI/DiffCI.com/blob/main/docs/package-relationship.md) for the migration path.
+The library entry point exports `analyzeCheckout`, `buildDependencyGraph`, `ImpactAnalyzer`, `DefaultCIPlanner`, `collectEvidence`, `inferPipeline`, `measure` and `estimateImpact`. Lower-level modules are available as package subpaths. The package is published as [`@diffci.com/core`](https://www.npmjs.com/package/@diffci.com/core). DiffCI also publishes [the separate `@diffci.com/diffci` CLI](https://www.npmjs.com/package/@diffci.com/diffci) from [DiffCI/DiffCI.com](https://github.com/DiffCI/DiffCI.com). See [the package relationship](https://github.com/DiffCI/DiffCI.com/blob/main/docs/package-relationship.md) for the CLI migration path.
 
 ```sh
 npm run typecheck
