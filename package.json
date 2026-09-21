@@ -3,10 +3,7 @@
   "version": "0.1.1",
   "description": "Local dependency analysis, conservative CI planning and compute measurement",
   "license": "AGPL-3.0-only",
-  "private": false,
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
