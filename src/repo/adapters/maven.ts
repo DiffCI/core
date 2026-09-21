@@ -34,4 +34,4 @@ export function analyzeMaven(context:AdapterContext):AdapterContribution {
   if(!r.sourcePaths.length) r.blockers.push("Maven reactor contains no Java sources");
   return r;
 }
-export const mavenAdapter:RepositoryAdapter={id:"maven",version:"1",kind:"language",detect:({files})=>files.includes("pom.xml")&&files.some(f=>f.endsWith(".java")),analyze:analyzeMaven};
+export const mavenAdapter:RepositoryAdapter={id:"maven",version:"1",kind:"language",detect:({files})=>files.includes("pom.xml")&&files.some(f=>f.endsWith(".java")||f.endsWith(".kt")),analyze:analyzeMaven};
