@@ -7,7 +7,7 @@ import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } fr
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
 
-const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java"]);
+const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
 const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error","template","not-found","middleware","generatemetadata","generatestaticparams"]);
 
