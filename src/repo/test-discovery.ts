@@ -80,6 +80,7 @@ export interface TestDiscovery {
 export const DEFAULT_TEST_PATTERNS: readonly string[] = [
   "**/*.test.{ts,tsx,js,jsx,mjs,cjs,mts,cts}",
   "**/*.spec.{ts,tsx,js,jsx,mjs,cjs,mts,cts}",
+  "**/src/test/java/**/*{Test,Tests,TestCase,IT}.java",
 ];
 
 const FAMILY_TOKENS: Record<string, TestFamily> = {
