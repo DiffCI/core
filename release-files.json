@@ -2,6 +2,7 @@
   "description": "Explicitly reviewed public release file boundary; changes require review.",
   "files": [
     ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
     ".gitignore",
     "CONTRIBUTING.md",
     "LICENSE",
