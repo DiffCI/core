@@ -139,3 +139,31 @@ test("Jicofo-style Maven property dependency connects Kotlin modules", async () 
     ]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("Jicofo-style three-module reactor propagates common changes through selector to jicofo", async () => {
+  const root = fixture({
+    "pom.xml": `<project><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version><packaging>pom</packaging><modules><module>jicofo-common</module><module>jicofo-selector</module><module>jicofo</module></modules></project>`,
+    "jicofo-common/pom.xml": `<project><parent><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version></parent><artifactId>jicofo-common</artifactId></project>`,
+    "jicofo-common/src/main/kotlin/org/jitsi/jicofo/JicofoConfig.kt": "package org.jitsi.jicofo; class JicofoConfig",
+    "jicofo-common/src/test/kotlin/org/jitsi/jicofo/JicofoConfigTest.kt": "package org.jitsi.jicofo; class JicofoConfigTest",
+    "jicofo-selector/pom.xml": `<project><parent><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version></parent><artifactId>jicofo-selector</artifactId><dependencies><dependency><groupId>\${project.groupId}</groupId><artifactId>jicofo-common</artifactId></dependency></dependencies></project>`,
+    "jicofo-selector/src/main/kotlin/org/jitsi/jicofo/bridge/BridgeSelector.kt": "package org.jitsi.jicofo.bridge; class BridgeSelector",
+    "jicofo-selector/src/test/kotlin/org/jitsi/jicofo/bridge/BridgeSelectorTest.kt": "package org.jitsi.jicofo.bridge; class BridgeSelectorTest",
+    "jicofo/pom.xml": `<project><parent><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version></parent><artifactId>jicofo</artifactId><dependencies><dependency><groupId>\${project.groupId}</groupId><artifactId>jicofo-common</artifactId></dependency><dependency><groupId>\${project.groupId}</groupId><artifactId>jicofo-selector</artifactId></dependency></dependencies></project>`,
+    "jicofo/src/main/kotlin/org/jitsi/jicofo/JicofoServices.kt": "package org.jitsi.jicofo; class JicofoServices",
+    "jicofo/src/test/kotlin/org/jitsi/jicofo/JicofoServicesTest.kt": "package org.jitsi.jicofo; class JicofoServicesTest",
+  });
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const impact = new ImpactAnalyzer().analyze(delta("jicofo-common/src/main/kotlin/org/jitsi/jicofo/JicofoConfig.kt"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, false);
+    assert.deepEqual(impact.affectedTests.map((item) => item.path), [
+      "jicofo-common/src/test/kotlin/org/jitsi/jicofo/JicofoConfigTest.kt",
+      "jicofo-selector/src/test/kotlin/org/jitsi/jicofo/bridge/BridgeSelectorTest.kt",
+      "jicofo/src/test/kotlin/org/jitsi/jicofo/JicofoServicesTest.kt",
+    ]);
+    const plan = planSelectiveTestCommands(graph.profile, impact.affectedTests.map((item) => item.path));
+    assert.deepEqual(plan.commands[0]?.args, ["-pl", "jicofo,jicofo-common,jicofo-selector", "-am", "test"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
