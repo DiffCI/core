@@ -26,10 +26,11 @@ export function analyzeMaven(context:AdapterContext):AdapterContribution {
   const poms=context.files.filter(f=>f==="pom.xml"||f.endsWith("/pom.xml")).map(path=>parsePom(path,readFileSync(context.repoPath+"/"+path,"utf8")));
   if(!poms.length){r.blockers.push("Maven analysis found no pom.xml");return r;}
   const byGA=new Map(poms.filter(p=>p.artifactId).map(p=>[`${p.groupId??""}:${p.artifactId}`,p]));
+  const byArtifact=new Map(poms.filter(p=>p.artifactId).map(p=>[p.artifactId!,p]));
   const members=new Map<Pom,string[]>(), anchors=new Map<Pom,string>();
   for(const p of poms){const files=javaFiles(context,poms,p); if(!files.length) continue; members.set(p,files); anchors.set(p,files[0]!); r.sourcePaths.push(...files); for(const f of files) if(isTest(f)){r.testFiles.push(f);r.testPackages[f]=p.dir||".";}}
   for(const [p,files] of members){const a=anchors.get(p)!; for(const f of files) if(f!==a) r.edges.push({from:a,to:f,kind:"import"},{from:f,to:a,kind:"import"});
-    for(const d of p.dependencies){const target=byGA.get(`${d.groupId}:${d.artifactId}`)??[...poms].find(x=>x.artifactId===d.artifactId); const ta=target&&anchors.get(target); if(ta&&ta!==a) r.edges.push({from:a,to:ta,kind:"import"});}
+    for(const d of p.dependencies){const normalizedGroup=d.groupId.replace(/\$\{project\.groupId\}/g,p.groupId??"").replace(/\$\{pom\.groupId\}/g,p.groupId??""); const target=byGA.get(`${normalizedGroup}:${d.artifactId}`)??byArtifact.get(d.artifactId); const ta=target&&anchors.get(target); if(ta&&ta!==a) r.edges.push({from:a,to:ta,kind:"import"});}
   }
   if(!r.sourcePaths.length) r.blockers.push("Maven reactor contains no Java sources");
   return r;
