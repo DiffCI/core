@@ -17,7 +17,8 @@
     "test": "node scripts/run-tests.mjs",
     "benchmark": "node --import tsx scripts/benchmark.ts",
     "audit:boundary": "node scripts/audit-boundary.mjs",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "prepare": "npm run build"
   },
   "dependencies": { "@vue/compiler-sfc": "3.5.42", "typescript": "^5.8.3", "yaml": "^2.9.0" },
   "devDependencies": { "@types/node": "^22.15.12", "tsx": "^4.23.0" }
