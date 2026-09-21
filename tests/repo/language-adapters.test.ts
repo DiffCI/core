@@ -91,3 +91,29 @@ test("Spring gs-multi-module shape selects application when library changes", as
     assert.deepEqual(plan.commands[0]?.args, ["-pl", "application,library", "-am", "test"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("Maven Kotlin multi-module source change reaches downstream tests", async () => {
+  const root = fixture({
+    "pom.xml": `<project><groupId>org.example</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>common</module><module>selector</module></modules></project>`,
+    "common/pom.xml": `<project><parent><groupId>org.example</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>common</artifactId></project>`,
+    "common/src/main/kotlin/org/example/Config.kt": "package org.example; class Config",
+    "common/src/test/kotlin/org/example/ConfigTest.kt": "package org.example; class ConfigTest",
+    "selector/pom.xml": `<project><parent><groupId>org.example</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>selector</artifactId><dependencies><dependency><groupId>org.example</groupId><artifactId>common</artifactId><version>1</version></dependency></dependencies></project>`,
+    "selector/src/main/kotlin/org/example/Selector.kt": "package org.example; class Selector",
+    "selector/src/test/kotlin/org/example/SelectorTest.kt": "package org.example; class SelectorTest",
+  });
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.equal(classifyRepositoryProject(root).capable, true);
+    assert.deepEqual(graph.adapterBlockers, []);
+    const impact = new ImpactAnalyzer().analyze(delta("common/src/main/kotlin/org/example/Config.kt"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, false);
+    assert.deepEqual(impact.affectedTests.map((item) => item.path), [
+      "common/src/test/kotlin/org/example/ConfigTest.kt",
+      "selector/src/test/kotlin/org/example/SelectorTest.kt",
+    ]);
+    const plan = planSelectiveTestCommands(graph.profile, impact.affectedTests.map((item) => item.path));
+    assert.deepEqual(plan.commands[0]?.args, ["-pl", "common,selector", "-am", "test"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
