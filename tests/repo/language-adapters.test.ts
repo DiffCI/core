@@ -44,3 +44,26 @@ test("Vue source change reaches the importing test through a component", async (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("Maven multi-module source change reaches downstream module tests", async () => {
+  const root = fixture({
+    "pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>library</module><module>application</module></modules></project>`,
+    "library/pom.xml": `<project><parent><groupId>example</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>library</artifactId></project>`,
+    "library/src/main/java/example/Library.java": "package example; public class Library {}",
+    "application/pom.xml": `<project><parent><groupId>example</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>application</artifactId><dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies></project>`,
+    "application/src/main/java/example/App.java": "package example; public class App {}",
+    "application/src/test/java/example/AppTest.java": "package example; public class AppTest {}",
+  });
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.equal(classifyRepositoryProject(root).capable, true);
+    assert.deepEqual(graph.adapterBlockers, []);
+    const impact = new ImpactAnalyzer().analyze(delta("library/src/main/java/example/Library.java"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, false);
+    assert.deepEqual(impact.affectedTests.map((item) => item.path), ["application/src/test/java/example/AppTest.java"]);
+    const plan = planSelectiveTestCommands(graph.profile, impact.affectedTests.map((item) => item.path));
+    assert.equal(plan.groups[0]?.runnerId, "maven:surefire");
+    assert.deepEqual(plan.commands[0]?.args, ["-pl", "application", "-am", "test"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
