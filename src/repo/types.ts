@@ -44,6 +44,8 @@ export interface RepositoryProfile {
   adapterBlockers?: string[];
   goTestPackages?: Record<string, string>;
   goTestEnvironment?: Record<string, string>;
+  /** Maven/JUnit test file to owning reactor module (repo-relative, "." for root). */
+  mavenTestModules?: Record<string, string>;
   packageManager: PackageManager;
   packageJson: {
     name?: string;
