@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * The PATH baseline: what a simple, honest path-rule CI would select for a change.
  *

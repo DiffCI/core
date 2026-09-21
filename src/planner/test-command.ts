@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Turning a selection of test files into a command the TARGET repository could actually run
  * (Phase 01, 2026-08-26).
@@ -132,6 +131,26 @@ export function planSelectiveTestCommands(
   profile: RepositoryProfile,
   selectedPaths: readonly string[],
 ): SelectiveTestCommandPlan {
+  const blockers = profile.adapterBlockers ?? profile.adapters?.flatMap((adapter) => adapter.blockers) ?? [];
+  if (blockers.length) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: blockers.join("; ") };
+  const goPaths = selectedPaths.filter((path) => path.endsWith(".go"));
+  if (goPaths.length) {
+    const packages = profile.goTestPackages ?? {};
+    const unclaimed = goPaths.filter((path) => !Object.hasOwn(packages, path));
+    if (unclaimed.length) return { commands: [], groups: [], unroutedPaths: unclaimed, refusalReason: "Go test files require verified package metadata" };
+    const jsPlan = planSelectiveTestCommands(profile, selectedPaths.filter((path) => !path.endsWith(".go")));
+    if (jsPlan.refusalReason) return jsPlan;
+    const targets = [...new Set(goPaths.map((path) => packages[path]))].sort();
+    if (targets.some((target) => target !== "." && (!target.startsWith("./") || target.split("/").includes("..") || /[\\\r\n]/.test(target)))) {
+      return { commands: [], groups: [], unroutedPaths: goPaths, refusalReason: "Invalid Go package target" };
+    }
+    const commandSpec: CommandSpec = {
+      executable: "go", args: ["test", "-mod=readonly", "-json", "-count=1", ...targets],
+      env: { ...profile.goTestEnvironment, GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off", GOWORK: "off" },
+    };
+    const group: SelectiveTestCommandGroup = { runnerId: "go:test", label: "Go package tests", paths: [...goPaths].sort(), commandSpec };
+    return { commands: [...jsPlan.commands, commandSpec], groups: [...jsPlan.groups, group], unroutedPaths: [] };
+  }
   const paths = [...selectedPaths].sort();
   if (paths.length === 0) return { commands: [], groups: [], unroutedPaths: [] };
 
@@ -200,5 +219,6 @@ function shellEscape(arg: string): string {
 }
 
 export function commandSpecToString(spec: CommandSpec): string {
-  return [spec.executable, ...spec.args.map(shellEscape)].join(" ");
+  const environment = Object.entries(spec.env ?? {}).map(([key, value]) => `${shellEscape(key)}=${shellEscape(value)}`);
+  return [...environment, spec.executable, ...spec.args.map(shellEscape)].join(" ");
 }

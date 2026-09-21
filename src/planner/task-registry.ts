@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 import type { TaskCategory } from "./types.js";
 
 export type CITaskCategory = TaskCategory;

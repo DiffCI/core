@@ -37,7 +37,7 @@ for (const file of actual) {
       const full = resolve(dirname(join(root, file)), specifier.replace(/\.js$/, '.ts'));
       const rel = relative(root, full).split(sep).join('/');
       if (!rel.startsWith('src/') || !allowed.has(rel) || !existsSync(full)) errors.push(`Non-Core import in ${file}: ${specifier}`);
-    } else if (!specifier.startsWith('node:') && !['typescript', 'yaml'].includes(specifier)) errors.push(`Unapproved dependency in ${file}: ${specifier}`);
+    } else if (!specifier.startsWith('node:') && !['typescript', 'yaml', '@vue/compiler-sfc'].includes(specifier)) errors.push(`Unapproved dependency in ${file}: ${specifier}`);
   }
   function walk(node) {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) check(node.moduleSpecifier.text);

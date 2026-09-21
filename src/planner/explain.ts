@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 import type { ImpactEvidence, ImpactResult } from "../repo/impact-types.js";
 import type { ExecutionPlan } from "./types.js";
 

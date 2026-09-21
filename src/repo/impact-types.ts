@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 import type { ChangedFile, GitDelta } from "../git/types.js";
 import type { DependencyGraph, DependencyGraphResult, GraphConfidence, RepositoryProfile } from "./types.js";
 

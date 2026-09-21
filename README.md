@@ -2,7 +2,7 @@
 
 **An open-source engine for understanding changes and planning less CI work conservatively.** Licensed under AGPL-3.0-only.
 
-This is the first standalone Core release. It analyzes local JavaScript/TypeScript repositories, traces dependency impact, infers GitHub Actions structure and proposes test selections with evidence and full-run fallbacks. It works without a DiffCI account, hosted service or API key.
+This is the standalone Core engine. It analyzes local JavaScript/TypeScript repositories, supported Vue components and root Go modules, traces dependency impact, infers GitHub Actions structure and proposes test selections with evidence and full-run fallbacks. It works without a DiffCI account, hosted service or API key. See [the release boundary](docs/release-boundary.md) for support limits.
 
 ## Run locally
 
@@ -31,7 +31,7 @@ The target must be a clean Git repository root checked out at `--head`. Fetch th
 | Reproducible evaluation | Synthetic benchmark and portable regression tests |
 | Measurement | Current-process wall time, CPU time and ending RSS; explicit-input cost/energy/carbon estimates |
 
-The library entry point exports `analyzeCheckout`, `buildDependencyGraph`, `ImpactAnalyzer`, `DefaultCIPlanner`, `collectEvidence`, `inferPipeline`, `measure` and `estimateImpact`. Lower-level modules are available as package subpaths. The source package is named `@diffci/core`; it is **not yet published to npm** (`private: true` prevents accidental registry publication; the GitHub repository is public).
+The library entry point exports `analyzeCheckout`, `buildDependencyGraph`, `ImpactAnalyzer`, `DefaultCIPlanner`, `collectEvidence`, `inferPipeline`, `measure` and `estimateImpact`. Lower-level modules are available as package subpaths. The package is named `@diffci.com/core` and is prepared for a public npm release; it is not published yet. DiffCI also publishes [the separate `@diffci.com/diffci` CLI](https://www.npmjs.com/package/@diffci.com/diffci) from [DiffCI/DiffCI.com](https://github.com/DiffCI/DiffCI.com). The current CLI does not yet depend on Core. See [the package relationship](https://github.com/DiffCI/DiffCI.com/blob/main/docs/package-relationship.md) for the migration path.
 
 ```sh
 npm run typecheck

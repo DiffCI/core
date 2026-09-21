@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 import type { DiffCiRepositoryConfig } from "./repo-config.js";
 import type { KnownTestFramework } from "./test-framework.js";
 import type { TestRunnerConfig } from "./test-discovery.js";
@@ -40,6 +39,11 @@ export interface EntryPoint {
 }
 
 export interface RepositoryProfile {
+  /** Adapter coverage and concrete Go test-file to package routing. */
+  adapters?: { id: string; version: string; blockers: string[] }[];
+  adapterBlockers?: string[];
+  goTestPackages?: Record<string, string>;
+  goTestEnvironment?: Record<string, string>;
   packageManager: PackageManager;
   packageJson: {
     name?: string;
@@ -208,6 +212,8 @@ export interface GraphPerformanceMetrics {
 }
 
 export interface DependencyGraphResult {
+  /** Missing framework/language relationships are global, not reachability-narrowable. */
+  adapterBlockers?: string[];
   graph: DependencyGraph;
   profile: RepositoryProfile;
   unresolved: UnresolvedDependency[];

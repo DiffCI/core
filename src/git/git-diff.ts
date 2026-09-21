@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import {

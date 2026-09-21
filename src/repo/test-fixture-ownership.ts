@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Conservative test-fixture ownership (2026-08-23, deepseek-harness benchmark Phase 3).
  *
