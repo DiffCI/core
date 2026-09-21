@@ -151,12 +151,12 @@ export function planSelectiveTestCommands(
     const group: SelectiveTestCommandGroup = { runnerId: "go:test", label: "Go package tests", paths: [...goPaths].sort(), commandSpec };
     return { commands: [...jsPlan.commands, commandSpec], groups: [...jsPlan.groups, group], unroutedPaths: [] };
   }
-  const javaPaths = selectedPaths.filter((path) => path.endsWith(".java"));
+  const javaPaths = selectedPaths.filter((path) => path.endsWith(".java") || path.endsWith(".kt"));
   if (javaPaths.length) {
     const modules = profile.mavenTestModules ?? {};
     const unclaimed = javaPaths.filter((path) => !Object.hasOwn(modules, path));
     if (unclaimed.length) return { commands: [], groups: [], unroutedPaths: unclaimed, refusalReason: "Maven test files require verified reactor module metadata" };
-    if (selectedPaths.some((path) => !path.endsWith(".java"))) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: "Mixed Maven/JavaScript selective execution requires separate CI jobs" };
+    if (selectedPaths.some((path) => !path.endsWith(".java") && !path.endsWith(".kt"))) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: "Mixed Maven/JavaScript selective execution requires separate CI jobs" };
     const targets = [...new Set(javaPaths.map((path) => modules[path]!))].sort();
     if (targets.some((target) => target !== "." && (target.startsWith("/") || target.split("/").includes("..") || /[\\\r\n]/.test(target)))) {
       return { commands: [], groups: [], unroutedPaths: javaPaths, refusalReason: "Invalid Maven reactor module target" };
