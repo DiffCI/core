@@ -616,7 +616,7 @@ export async function buildDependencyGraph(
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
-  if (contributions.length && files.some((file) => /\.(?:py|rs|kt|cs|svelte|astro)$/.test(file))) {
+  if (contributions.length && files.some((file) => /\.(?:py|rs|cs|svelte|astro)$/.test(file))) {
     adapterBlockers.push("Unmodeled languages alongside an adapter require full validation");
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
@@ -902,7 +902,7 @@ export function classifyRepositoryProject(repoPath: string): { capable: boolean;
   if (typescript.capable) return typescript;
   const files = adapterFiles(repoPath);
   if (files.includes("go.mod")) return { capable: true, reason: "Go module (package-level analysis)" };
-  if (files.includes("pom.xml") && files.some((file) => file.endsWith(".java"))) return { capable: true, reason: "Maven reactor (module-level Java analysis)" };
+  if (files.includes("pom.xml") && files.some((file) => file.endsWith(".java") || file.endsWith(".kt"))) return { capable: true, reason: "Maven reactor (module-level Java analysis)" };
   if (files.some((file) => file.endsWith(".vue"))) return { capable: true, reason: "Vue single-file components" };
   return { capable: false, reason: "No TypeScript project, Vue components, root Go module, or Maven reactor found" };
 }
