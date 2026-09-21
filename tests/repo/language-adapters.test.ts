@@ -117,3 +117,25 @@ test("Maven Kotlin multi-module source change reaches downstream tests", async (
     assert.deepEqual(plan.commands[0]?.args, ["-pl", "common,selector", "-am", "test"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+
+test("Jicofo-style Maven property dependency connects Kotlin modules", async () => {
+  const root = fixture({
+    "pom.xml": `<project><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version><packaging>pom</packaging><modules><module>jicofo-common</module><module>jicofo-selector</module></modules></project>`,
+    "jicofo-common/pom.xml": `<project><parent><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version></parent><artifactId>jicofo-common</artifactId></project>`,
+    "jicofo-common/src/main/kotlin/org/jitsi/jicofo/JicofoConfig.kt": "package org.jitsi.jicofo; class JicofoConfig",
+    "jicofo-common/src/test/kotlin/org/jitsi/jicofo/JicofoConfigTest.kt": "package org.jitsi.jicofo; class JicofoConfigTest",
+    "jicofo-selector/pom.xml": `<project><parent><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version></parent><artifactId>jicofo-selector</artifactId><dependencies><dependency><groupId>\${project.groupId}</groupId><artifactId>jicofo-common</artifactId><version>\${project.version}</version></dependency></dependencies></project>`,
+    "jicofo-selector/src/main/kotlin/org/jitsi/jicofo/bridge/BridgeSelector.kt": "package org.jitsi.jicofo.bridge; class BridgeSelector",
+    "jicofo-selector/src/test/kotlin/org/jitsi/jicofo/bridge/BridgeSelectorTest.kt": "package org.jitsi.jicofo.bridge; class BridgeSelectorTest",
+  });
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const impact = new ImpactAnalyzer().analyze(delta("jicofo-common/src/main/kotlin/org/jitsi/jicofo/JicofoConfig.kt"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, false);
+    assert.deepEqual(impact.affectedTests.map((item) => item.path), [
+      "jicofo-common/src/test/kotlin/org/jitsi/jicofo/JicofoConfigTest.kt",
+      "jicofo-selector/src/test/kotlin/org/jitsi/jicofo/bridge/BridgeSelectorTest.kt",
+    ]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
