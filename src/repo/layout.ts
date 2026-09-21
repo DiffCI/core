@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * What do this repository's directories MEAN? (Phase 01 follow-up, 2026-08-26.)
  *

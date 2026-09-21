@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Test discovery from test-runner configuration (2026-08-23, deepseek-harness benchmark Phase 2).
  *
@@ -399,12 +398,19 @@ export function createTestFileMatcher(
 /** The one place that turns a profile into a matcher, so analyzer discovery, graph node flags and
  * impact classification cannot disagree about what a test is. */
 export function testFileMatcherForProfile(profile: {
+  goTestPackages?: Record<string, string>;
   testPatterns?: readonly string[];
   testExcludePatterns?: readonly string[];
   testAuthoritativePatterns?: readonly string[];
   testIgnoreRegexSources?: readonly string[];
   testRoots?: readonly string[];
 }): TestFileMatcher {
+  if (profile.goTestPackages && Object.keys(profile.goTestPackages).length) {
+    const jsMatcher = testFileMatcherForProfile({ ...profile, goTestPackages: undefined });
+    const matcher = ((path: string) => Object.hasOwn(profile.goTestPackages!, path) || jsMatcher(path)) as TestFileMatcher;
+    Object.defineProperty(matcher, "patterns", { value: jsMatcher.patterns });
+    return matcher;
+  }
   if (!profile.testPatterns) return DEFAULT_TEST_FILE_MATCHER;
   return createTestFileMatcher(profile.testPatterns, {
     excludePatterns: profile.testExcludePatterns,

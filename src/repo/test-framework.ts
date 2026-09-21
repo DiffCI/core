@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Which test framework does this repository actually use, and what does that framework consider a
  * test file? (Phase 01, 2026-08-26.)

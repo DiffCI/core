@@ -591,18 +591,17 @@ describe("nested-package test visibility (2026-08-24, biomejs/biome finding)", (
     assert.strictEqual(result.graph.nodes.find((n) => n.path === "packages/js-api/tests/index.test.ts")?.isTest, true);
   });
 
-  it("a test-only leaf node has no dependency edges (no fabricated resolution info) - genuinely program-excluded", async () => {
+  it("a test excluded by tsconfig retains a resolvable import edge", async () => {
     const result = await buildNoRootTsconfigFixture({
       "packages/js-api/package.json": JSON.stringify({ name: "js-api", version: "1.0.0" }),
       "packages/js-api/tsconfig.json": JSON.stringify({ compilerOptions: { target: "es2020" }, exclude: ["./tests"], include: ["./src"] }),
       "packages/js-api/src/index.ts": "export const x = 1;\n",
       "packages/js-api/tests/index.test.ts": "import { x } from '../src/index.js';\nexport const t = x;\n",
     });
-    // Sanity: prove this file really did take the exclusion path, not a coincidental normal-resolution
-    // path - it must be absent from the pre-union program-derived node it would otherwise share a name
-    // with, i.e. it is the ONLY node at this path and it was added by the union step, not by parsing.
+    // Tests excluded by a source-only tsconfig still need their imports traced; otherwise a
+    // source change could incorrectly appear to affect no tests.
     const deps = result.graph.dependenciesOf("packages/js-api/tests/index.test.ts");
-    assert.deepStrictEqual(deps, [], "no import edges are fabricated for a program-excluded test file");
+    assert.deepStrictEqual(deps, ["packages/js-api/src/index.ts"]);
     assert.strictEqual(result.graph.nodes.find((n) => n.path === "packages/js-api/tests/index.test.ts")?.isTest, true);
   });
 });

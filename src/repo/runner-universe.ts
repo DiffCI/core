@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * The runner's OWN test universe — what the configured test runner can actually execute.
  *

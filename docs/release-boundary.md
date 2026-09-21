@@ -4,6 +4,7 @@ The initial extraction includes these engine directories:
 
 - `src/git`: change analysis and repository inventory.
 - `src/repo`: discovery, dependency graph and impact/safety analysis.
+- `src/repo/adapters`: supported Vue component and root Go module analysis. Incomplete adapter evidence forces conservative fallback.
 - `src/planner`: task registry, test command synthesis and advisory planning.
 - `src/ci-inference`: local evidence and GitHub Actions graph inference.
 - `src/cache`: local graph cache.
@@ -15,7 +16,7 @@ The following are outside this release: authentication, billing, organizations, 
 
 ## Limitations
 
-The engine is initially oriented toward JavaScript/TypeScript and static GitHub Actions analysis. Dynamic imports/configuration, external actions, conditional behavior and other languages can exceed its coverage. Full-run fallback is conservative but is not a correctness guarantee. Selection and command availability are distinct; a selective plan with `commandSynthesis.status = UNAVAILABLE` cannot be executed as a subset. A task's command text may be a descriptive workflow label rather than a shell command.
+The engine is oriented toward JavaScript/TypeScript, supported Vue components, root Go modules, and static GitHub Actions analysis. Dynamic imports/configuration, external actions, conditional behavior and other languages can exceed its coverage. Full-run fallback is conservative but is not a correctness guarantee. Selection and command availability are distinct; a selective plan with `commandSynthesis.status = UNAVAILABLE` cannot be executed as a subset. A task's command text may be a descriptive workflow label rather than a shell command.
 
 The high-level API requires a clean checkout at the requested head. Lower-level APIs expose analysis primitives and leave checkout validation to the caller. Ignored build artifacts and installed dependencies may affect resolution. Analyze only repositories you are authorized to read, preferably in a disposable workspace. Output can contain target file paths and command text; review it before sharing.
 
