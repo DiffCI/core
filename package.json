@@ -8,7 +8,6 @@
   "type": "module",
   "engines": { "node": ">=22.5.0" },
   "repository": { "type": "git", "url": "https://github.com/DiffCI/core.git" },
-  "bin": { "diffci": "dist/cli.js" },
   "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./*": { "types": "./dist/*.d.ts", "import": "./dist/*.js" } },
   "files": ["dist", "src", "tsconfig.json", "LICENSE", "NOTICE", "README.md"],
   "scripts": {
