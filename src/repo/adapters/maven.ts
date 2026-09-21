@@ -18,8 +18,8 @@ function parsePom(path:string, xml:string):Pom {
 }
 function under(dir:string,path:string){return !dir||path===dir||path.startsWith(dir+"/");}
 function owningPom(poms:Pom[], file:string):Pom|undefined { return poms.filter(p=>under(p.dir,file)).sort((a,b)=>b.dir.length-a.dir.length)[0]; }
-function javaFiles(context:AdapterContext, poms:Pom[], pom:Pom){return context.files.filter(f=>owningPom(poms,f)===pom&&/\/src\/(?:main|test)\/java\/.*\.java$/.test("/"+f));}
-function isTest(path:string){return /\/src\/test\/java\//.test("/"+path)&&/(?:Test|Tests|TestCase|IT)\.java$/.test(path);}
+function javaFiles(context:AdapterContext, poms:Pom[], pom:Pom){return context.files.filter(f=>owningPom(poms,f)===pom&&/\/src\/(?:main|test)\/(?:java|kotlin)\/.*\.(?:java|kt)$/.test("/"+f));}
+function isTest(path:string){return /\/src\/test\/(?:java|kotlin)\//.test("/"+path)&&/(?:Test|Tests|TestCase|IT)\.(?:java|kt)$/.test(path);}
 
 export function analyzeMaven(context:AdapterContext):AdapterContribution {
   const r=contribution(mavenAdapter);
