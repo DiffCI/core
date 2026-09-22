@@ -1,4 +1,6 @@
 import { extname, posix } from "node:path";
+import { isGoDiscoveryIgnoredPath } from "./adapters/go.js";
+import { inVuePackage } from "./vue-scope.js";
 import type { ChangedFile, GitDelta } from "../git/types.js";
 import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, EntryPoint, RepositoryProfile } from "./types.js";
 import type { ChangedImpact, EntryPointImpact, ImpactEvidence, ImpactEvidencePath, ImpactReason, ImpactResult, ImpactRiskSignal, TestImpact } from "./impact-types.js";
@@ -26,7 +28,7 @@ function isDocumentationFile(filePath: string, layout: RepositoryLayout): boolea
 function isConfigFile(filePath: string): boolean {
   const CONFIG_FILE_NAMES = new Set(["package.json","package-lock.json","yarn.lock","pnpm-lock.yaml","bun.lockb","bun.lock","tsconfig.json","tsconfig.base.json","tsconfig.build.json","jsconfig.json"]);
   const base = posix.basename(filePath);
-  if (["go.mod", "go.sum", "go.work", "go.work.sum", "pom.xml"].includes(base)) return true;
+  if (["go.mod", "go.sum", "go.work", "go.work.sum"].includes(base)) return true;
   if (/^(?:vite|vue|nuxt)\.config\./.test(base)) return true;
   if (CONFIG_FILE_NAMES.has(base)) return true;
   if (base.startsWith("next.config")) return true;
@@ -242,8 +244,21 @@ export class ImpactAnalyzer {
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
     const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? [])];
+    if (profile.vueScope) {
+      const scope = profile.vueScope;
+      if (delta.files.some(file => allChangePaths(file).some(path => !inVuePackage(path, scope.packageRoot)))) fallbackReasons.push("Changes outside the declared Vue package require full validation");
+      const setupDependencies = new Set((profile.vueSetupPaths ?? []).flatMap(path => [path, ...graph.transitiveDependenciesOf(path)]));
+      if (delta.files.some(file => allChangePaths(file).some(path => setupDependencies.has(path)))) fallbackReasons.push("Vue suite configuration or shared setup dependency changed; full validation required");
+    }
+    if (profile.adapters?.some(adapter => adapter.id === "go") && delta.files.some(file => allChangePaths(file).some(isGoDiscoveryIgnoredPath))) {
+      fallbackReasons.push("Changes in Go discovery-excluded paths require full validation, including runtime test data");
+    }
+    const excludedGoRoots = profile.goExcludedModuleRoots ?? [];
+    if (delta.files.some(file => allChangePaths(file).some(path => excludedGoRoots.some(root => path.startsWith(root))))) {
+      fallbackReasons.push("Changes in a Go module outside the declared root-module scope require full validation");
+    }
     for (const file of delta.files) {
-      if (allChangePaths(file).some((path) => /(?:^|\/)(?:go\.(?:mod|sum|work)|go\.work\.sum|pom\.xml|(?:vite|vue|nuxt)\.config\.[^/]+)$/.test(path))) {
+      if (allChangePaths(file).some((path) => /(?:^|\/)(?:diffci\.json|go\.(?:mod|sum|work)|go\.work\.sum|(?:vite|vue|nuxt)\.config\.[^/]+)$/.test(path))) {
         fallbackReasons.push(`Language/framework configuration changed: ${file.path}`);
       }
     }
@@ -293,7 +308,7 @@ export class ImpactAnalyzer {
 
     this.handleStructuralNextLayout(changedImpacts, profile, affectedEntryPoints, affectedSources, evidence);
     this.handleAddedEntryPoints(delta, affectedEntryPoints, affectedSources, affectedTests, evidence, fallbackReasons);
-    this.collectAlwaysRunTests(profile, graph, affectedTests, evidence);
+    this.collectAlwaysRunTests(profile, graph, affectedTests, evidence, graphResult.profile.vueRuntimeAlwaysRunPaths ?? []);
 
     // Changed-test self-selection invariant (2026-08-24): every executable directly-changed test
     // (added / modified / renamed-destination / copied-destination) MUST be present in the final
@@ -632,8 +647,9 @@ export class ImpactAnalyzer {
     graph: DependencyGraph,
     affectedTests: Map<string, TestImpact>,
     evidence: ImpactEvidence[],
+    graphRuntimeTests: readonly string[],
   ): void {
-    const alwaysRunPaths = new Set<string>();
+    const alwaysRunPaths = new Set<string>([...(profile.vueTypeTestPaths ?? []), ...(profile.vueRuntimeAlwaysRunPaths ?? []), ...graphRuntimeTests]);
     const knownTestPaths = new Set<string>();
     for (const testLocation of profile.tests) {
       for (const node of graph.nodes) {

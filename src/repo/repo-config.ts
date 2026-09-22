@@ -27,6 +27,13 @@ import { join } from "node:path";
 export interface DiffCiRepositoryConfig {
   /** Globs for tests that must be selected on every analysed change, regardless of reachability. */
   alwaysRunTests?: string[];
+  /** Explicitly limit Go selection to the root module's `go test ./...` universe. */
+  go?: { scope: "root-module" };
+  /** One package's default Vitest suite; paths are relative to the repository/package respectively. */
+  vue?: { packageRoot: string; testConfig: string };
+  /** Match the Maven lifecycle and profiles used by this repository's CI job. */
+  maven?: { goal: "test" | "verify"; profiles?: string[] };
+  configurationError?: string;
 }
 
 function readJsonFile(path: string): Record<string, unknown> | undefined {
@@ -49,7 +56,18 @@ function parseConfig(raw: unknown): DiffCiRepositoryConfig {
   const alwaysRunTests = Array.isArray(record.alwaysRunTests)
     ? record.alwaysRunTests.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "")
     : undefined;
-  return alwaysRunTests && alwaysRunTests.length > 0 ? { alwaysRunTests } : {};
+  const go = record.go as Record<string, unknown> | undefined;
+  const vue = record.vue as Record<string, unknown> | undefined;
+  const maven = record.maven as Record<string, unknown> | undefined;
+  const safePath = (value: unknown): value is string => typeof value === "string" && /^(?:[A-Za-z0-9_][A-Za-z0-9_.-]*)(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$/.test(value) && !value.split("/").some(part => part === "." || part === "..");
+  const validVue = vue && (vue.packageRoot === "." || safePath(vue.packageRoot)) && safePath(vue.testConfig) && /^vitest\.config\.[cm]?[jt]s$/.test(vue.testConfig);
+  const validMaven = maven && (maven.goal === "test" || maven.goal === "verify") && (maven.profiles === undefined || Array.isArray(maven.profiles) && maven.profiles.every((profile: unknown) => typeof profile === "string" && /^[A-Za-z0-9_.-]+$/.test(profile)));
+  return {
+    ...(alwaysRunTests && alwaysRunTests.length > 0 ? { alwaysRunTests } : {}),
+    ...(go?.scope === "root-module" ? { go: { scope: "root-module" as const } } : {}),
+    ...(validVue ? { vue: { packageRoot: vue.packageRoot as string, testConfig: vue.testConfig as string } } : record.vue !== undefined ? { configurationError: "Invalid Vue package/suite scope" } : {}),
+    ...(validMaven ? { maven: { goal: maven.goal as "test" | "verify", ...(maven.profiles ? { profiles: maven.profiles as string[] } : {}) } } : record.maven !== undefined ? { configurationError: "Invalid Maven lifecycle goal or profiles" } : {}),
+  };
 }
 
 /**
@@ -60,7 +78,7 @@ export function readRepositoryConfig(repoPath: string, packageJson?: Record<stri
   const dedicated = readJsonFile(join(repoPath, "diffci.json"));
   if (dedicated) {
     const parsed = parseConfig(dedicated);
-    if (parsed.alwaysRunTests) return parsed;
+    if (parsed.alwaysRunTests || parsed.go || parsed.vue || parsed.maven || parsed.configurationError) return parsed;
   }
   const pkg = packageJson ?? readJsonFile(join(repoPath, "package.json"));
   return parseConfig(pkg?.diffci);
