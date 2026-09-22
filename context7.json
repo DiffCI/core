@@ -1,0 +1,13 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/diffci/core",
+  "public_key": "pk_qV072rkTpd9ypttxpdmP2",
+  "projectTitle": "DiffCI Core",
+  "description": "Open-source engine for dependency analysis and conservative CI planning. The published DiffCI CLI bundles this engine.",
+  "folders": ["docs"],
+  "rules": [
+    "For an existing repository, start with npx @diffci.com/diffci@latest check or use observe --no-send for analysis without test execution.",
+    "Keep required CI tests authoritative; a selected command or SKIP_CANDIDATE is advisory.",
+    "Treat REFUSED, ERROR, incomplete evidence, and unsupported configuration as reasons to run the repository's normal full tests."
+  ]
+}

@@ -4,6 +4,8 @@
 
 This is the standalone Core engine. It analyzes local JavaScript/TypeScript repositories, supported Vue components, root Go modules and conventional Maven reactors, traces dependency impact, infers GitHub Actions structure and proposes test selections with evidence and full-run fallbacks. It works without a DiffCI account, hosted service or API key. See [the release boundary](docs/release-boundary.md) for support limits.
 
+**Want to try DiffCI in an existing repository?** Use the published CLI: `npx @diffci.com/diffci@latest check`. See [the CLI quickstart](docs/using-diffci.md) for a no-execution analysis option, prerequisites, and result interpretation. The commands below build the standalone engine from source.
+
 ## Run locally
 
 Requires Git and Node.js 22.5 or later.
