@@ -41,6 +41,7 @@
     "src/repo/analyzer.ts",
     "src/repo/adapters/go-test.ts",
     "src/repo/adapters/go.ts",
+    "src/repo/adapters/maven.ts",
     "src/repo/adapters/index.ts",
     "src/repo/adapters/types.ts",
     "src/repo/adapters/vue.ts",
@@ -92,4 +93,3 @@
     "tsconfig.json"
   ]
 }
-

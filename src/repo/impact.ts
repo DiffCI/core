@@ -7,7 +7,7 @@ import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } fr
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
 
-const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go"]);
+const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
 const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error","template","not-found","middleware","generatemetadata","generatestaticparams"]);
 
@@ -26,7 +26,7 @@ function isDocumentationFile(filePath: string, layout: RepositoryLayout): boolea
 function isConfigFile(filePath: string): boolean {
   const CONFIG_FILE_NAMES = new Set(["package.json","package-lock.json","yarn.lock","pnpm-lock.yaml","bun.lockb","bun.lock","tsconfig.json","tsconfig.base.json","tsconfig.build.json","jsconfig.json"]);
   const base = posix.basename(filePath);
-  if (["go.mod", "go.sum", "go.work", "go.work.sum"].includes(base)) return true;
+  if (["go.mod", "go.sum", "go.work", "go.work.sum", "pom.xml"].includes(base)) return true;
   if (/^(?:vite|vue|nuxt)\.config\./.test(base)) return true;
   if (CONFIG_FILE_NAMES.has(base)) return true;
   if (base.startsWith("next.config")) return true;
@@ -243,7 +243,7 @@ export class ImpactAnalyzer {
     const riskSignals: ImpactRiskSignal[] = [];
     const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? [])];
     for (const file of delta.files) {
-      if (allChangePaths(file).some((path) => /(?:^|\/)(?:go\.(?:mod|sum|work)|go\.work\.sum|(?:vite|vue|nuxt)\.config\.[^/]+)$/.test(path))) {
+      if (allChangePaths(file).some((path) => /(?:^|\/)(?:go\.(?:mod|sum|work)|go\.work\.sum|pom\.xml|(?:vite|vue|nuxt)\.config\.[^/]+)$/.test(path))) {
         fallbackReasons.push(`Language/framework configuration changed: ${file.path}`);
       }
     }
