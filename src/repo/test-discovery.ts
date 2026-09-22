@@ -80,8 +80,6 @@ export interface TestDiscovery {
 export const DEFAULT_TEST_PATTERNS: readonly string[] = [
   "**/*.test.{ts,tsx,js,jsx,mjs,cjs,mts,cts}",
   "**/*.spec.{ts,tsx,js,jsx,mjs,cjs,mts,cts}",
-  "**/src/test/java/**/*{Test,Tests,TestCase,IT}.java",
-  "**/src/test/kotlin/**/*{Test,Tests,TestCase,IT}.kt",
 ];
 
 const FAMILY_TOKENS: Record<string, TestFamily> = {
@@ -316,6 +314,8 @@ function translateExtglobBody(body: string): string {
 }
 
 function globToRegex(pattern: string): RegExp {
+  // Runner globs are relative to their configured root; a leading ./ is not a directory.
+  pattern = pattern.replace(/^(?:\.\/)+/, "");
   // Extglob bodies contain `*`, `?` and `|` that must not be rewritten by the wildcard rules below,
   // so they are lifted out behind placeholders first and restored last.
   const groups: string[] = [];

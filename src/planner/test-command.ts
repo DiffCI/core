@@ -133,6 +133,17 @@ export function planSelectiveTestCommands(
 ): SelectiveTestCommandPlan {
   const blockers = profile.adapterBlockers ?? profile.adapters?.flatMap((adapter) => adapter.blockers) ?? [];
   if (blockers.length) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: blockers.join("; ") };
+  if (profile.vueScope) {
+    const scope = profile.vueScope;
+    const known = new Set(profile.testFilePaths);
+    const unclaimed = selectedPaths.filter(path => !known.has(path));
+    if (unclaimed.length || profile.packageManager !== "pnpm") return { commands: [], groups: [], unroutedPaths: [...unclaimed], refusalReason: "Scoped Vitest execution requires pnpm and verified package test paths" };
+    if (!selectedPaths.length) return { commands: [], groups: [], unroutedPaths: [] };
+    const paths = [...selectedPaths].sort();
+    const local = paths.map(path => scope.packageRoot === "." ? path : path.slice(scope.packageRoot.length + 1));
+    const commandSpec: CommandSpec = { executable: "pnpm", args: ["--dir", scope.packageRoot, "exec", "vitest", "run", "--config", scope.testConfig, ...local] };
+    return { commands: [commandSpec], groups: [{ runnerId: `vitest:${scope.packageRoot}/${scope.testConfig}`, label: "Declared Vue package suite", paths, commandSpec }], unroutedPaths: [] };
+  }
   const goPaths = selectedPaths.filter((path) => path.endsWith(".go"));
   if (goPaths.length) {
     const packages = profile.goTestPackages ?? {};
@@ -161,7 +172,9 @@ export function planSelectiveTestCommands(
     if (targets.some((target) => target !== "." && (target.startsWith("/") || target.split("/").includes("..") || /[\\\r\n]/.test(target)))) {
       return { commands: [], groups: [], unroutedPaths: javaPaths, refusalReason: "Invalid Maven reactor module target" };
     }
-    const args = targets.length === 1 && targets[0] === "." ? ["test"] : ["-pl", targets.join(","), "-am", "test"];
+    const maven = profile.diffciConfig?.maven;
+    const goal = maven?.goal ?? "test";
+    const args = [...(targets.length === 1 && targets[0] === "." ? [] : ["-pl", targets.join(","), "-am"]), goal, ...(maven?.profiles?.length ? ["-P", maven.profiles.join(",")] : [])];
     const commandSpec: CommandSpec = { executable: "mvn", args };
     const group: SelectiveTestCommandGroup = { runnerId: "maven:surefire", label: "Maven reactor tests", paths: [...javaPaths].sort(), commandSpec };
     return { commands: [commandSpec], groups: [group], unroutedPaths: [] };

@@ -1,10 +1,11 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createTestFileMatcher, DEFAULT_TEST_FILE_MATCHER, testFileMatcherForProfile, type TestFileMatcher } from "./test-discovery.js";
 import { isBuiltin } from "node:module";
 import { dirname, extname, join, normalize, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
+import { applyVueScope, inVuePackage } from "./vue-scope.js";
 import type {
   DependencyEdge,
   DependencyEdgeKind,
@@ -382,6 +383,7 @@ function createProgram(
   repoPath: string,
   fallbackSourceRoots: SourceRoot[] = [],
   additionalSources: string[] = [],
+  syntaxOnly = false,
 ): {
   program: ts.Program;
   options: ts.CompilerOptions;
@@ -521,7 +523,10 @@ function createProgram(
   }
   const program = ts.createProgram({
     rootNames: fileNames,
-    options,
+    // Scoped analysis already inventories every implementation file. It extracts
+    // syntax/import edges, never asks TypeScript for semantic diagnostics. Keep
+    // the original options below for explicit module resolution.
+    options: syntaxOnly ? { ...options, noResolve: true, noLib: true, types: [] } : options,
     configFileParsingDiagnostics,
   });
 
@@ -600,23 +605,60 @@ function findAssetCandidate(
   return undefined;
 }
 
-export interface BuildDependencyGraphOptions extends AnalyzeRepositoryOptions {}
+export interface BuildDependencyGraphOptions extends AnalyzeRepositoryOptions {
+  vueAnalysisCache?: { directory: string; version: string };
+}
 
 export async function buildDependencyGraph(
   options: BuildDependencyGraphOptions = {},
 ): Promise<DependencyGraphResult> {
   const start = process.hrtime.bigint();
+  const phasesMs: Record<string, number> = {};
+  let phaseStart = start;
+  const markPhase = (name: string) => {
+    const now = process.hrtime.bigint();
+    phasesMs[name] = Number(now - phaseStart) / 1_000_000;
+    phaseStart = now;
+  };
   const repoPath = options.repoPath ? resolve(options.repoPath) : process.cwd();
 
   const profile = analyzeRepository(options);
-  const files = adapterFiles(repoPath, options.excludeDirs);
-  const context = { repoPath, files, profile };
-  const contributions = REPOSITORY_ADAPTERS.filter((adapter) => adapter.detect(context)).map((adapter) => adapter.analyze(context));
-  const adapterBlockers = contributions.flatMap((item) => item.blockers);
+  markPhase("repositoryDiscovery");
+  const scopeBlockers = applyVueScope(repoPath, profile);
+  markPhase("scopeDiscovery");
+  const scope = profile.vueScope;
+  const physicalRepoRoot = scope ? realpathSync.native(repoPath) : "";
+  const physicalPackageRoot = scope ? realpathSync.native(join(repoPath, scope.packageRoot)) : "";
+  const scopePathChecks = new Map<string, boolean>();
+  const outsideScope = (path: string): boolean => {
+    if (!scope) return false;
+    const cached = scopePathChecks.get(path);
+    if (cached !== undefined) return cached;
+    const lexicalOutside = !inVuePackage(path, scope.packageRoot) && !path.split("/").includes("node_modules");
+    let outside = lexicalOutside;
+    if (!outside && existsSync(join(repoPath, path))) {
+      const physical = realpathSync.native(join(repoPath, path));
+      const packageRelative = relative(physicalPackageRoot, physical).replace(/\\/g, "/");
+      const repositoryRelative = relative(physicalRepoRoot, physical).replace(/\\/g, "/");
+      outside = (packageRelative === ".." || packageRelative.startsWith("../") || /^[A-Za-z]:|^\//.test(packageRelative)) &&
+        !(!repositoryRelative.startsWith("../") && !/^[A-Za-z]:|^\//.test(repositoryRelative) && (repositoryRelative.startsWith("node_modules/") || repositoryRelative.includes("/node_modules/")));
+    }
+    scopePathChecks.set(path, outside);
+    return outside;
+  };
+  const files = adapterFiles(repoPath, options.excludeDirs).filter(path => !scope || inVuePackage(path, scope.packageRoot));
+  markPhase("adapterInventory");
+  const context = { repoPath, files, profile, vueAnalysisSession: {} };
+  const cachedVue = options.vueAnalysisCache ? (await import("../cache/vue-analysis-cache.js")).analyzeVueCached : undefined;
+  const contributions = REPOSITORY_ADAPTERS.filter((adapter) => adapter.detect(context)).map((adapter) => adapter.id === "vue" && cachedVue && options.vueAnalysisCache
+    ? cachedVue(context, options.vueAnalysisCache.directory, options.vueAnalysisCache.version) : adapter.analyze(context));
+  markPhase("adapters");
+  const adapterBlockers = [...scopeBlockers, ...contributions.flatMap((item) => item.blockers)];
+  if (profile.diffciConfig?.configurationError && !adapterBlockers.includes(profile.diffciConfig.configurationError)) adapterBlockers.push(profile.diffciConfig.configurationError);
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
-  if (contributions.length && files.some((file) => /\.(?:py|rs|cs|svelte|astro)$/.test(file))) {
+  if (contributions.length && files.some((file) => /\.(?:py|rs|cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file))) {
     adapterBlockers.push("Unmodeled languages alongside an adapter require full validation");
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
@@ -631,15 +673,14 @@ export async function buildDependencyGraph(
   }
   const entryPointPaths = new Set(profile.entryPoints.map((e) => e.path));
 
-  const vueSources = contributions.some((item) => item.id === "vue")
+  const vueSources = scope || contributions.some((item) => item.id === "vue")
     ? files.filter((file) => /\.[cm]?[jt]sx?$/.test(file)).map((file) => join(repoPath, file)) : [];
-  // Compiler include/exclude controls typechecking, not the runner's test universe. Parse every
-  // discovered JS/TS test so source changes can reach tests outside the compiler's root files.
-  // Adding those tests only as leaf nodes silently loses their dependency edges (ky, 2026-09-19).
+  // Runner tests excluded by tsconfig still need their import edges in the graph.
   const testSources = profile.testFilePaths
     .filter((file) => /\.[cm]?[jt]sx?$/.test(file))
     .map((file) => join(repoPath, file));
-  let { program, options: compilerOptions, resolvedViaProjectReferences } = createProgram(repoPath, profile.sourceRoots, [...vueSources, ...testSources]);
+  let { program, options: compilerOptions, resolvedViaProjectReferences } = createProgram(scope ? join(repoPath, scope.packageRoot) : repoPath, scope ? [] : profile.sourceRoots, [...vueSources, ...testSources], Boolean(scope));
+  markPhase("typescriptProgram");
   let moduleResolutionCache = ts.createModuleResolutionCache(
     repoPath,
     (x) => x,
@@ -648,7 +689,7 @@ export async function buildDependencyGraph(
 
   const sourceFiles = program
     .getSourceFiles()
-    .filter((sf) => sf.fileName && !sf.fileName.endsWith(".d.ts"));
+    .filter((sf) => sf.fileName && !sf.fileName.endsWith(".d.ts") && (!scope || inVuePackage(toRelativeInternal(repoPath, sf.fileName) ?? "", scope.packageRoot)));
   for (const item of contributions) {
     for (const virtual of item.virtualSources) {
       sourceFiles.push(ts.createSourceFile(join(repoPath, virtual.path), virtual.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX));
@@ -711,7 +752,8 @@ export async function buildDependencyGraph(
     addEdge(importerRel, assetRel, "asset");
   }
 
-  const filesParsed = sourceFiles.length;
+  let filesParsed = sourceFiles.length;
+  let followedImplementationFiles = 0;
 
   for (const sf of sourceFiles) {
     const importerRel = toRelativeInternal(repoPath, sf.fileName);
@@ -719,6 +761,7 @@ export async function buildDependencyGraph(
     if (isExcludedPath(importerRel, options.excludeDirs ?? [])) continue;
 
     const refs = extractImportRefs(sf);
+    if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
       if (!ref.specifier) {
         recordUnresolved(importerRel, ref, "empty specifier");
@@ -782,8 +825,34 @@ export async function buildDependencyGraph(
 
       const resolved = resolution.resolvedModule.resolvedFileName;
       const targetRel = toRelativeInternal(repoPath, resolved);
+      // The generic internal-path helper intentionally hides root node_modules.
+      // Scope validation must still follow those paths to catch workspace symlinks.
+      const scopeTarget = scope ? relative(physicalRepoRoot, realpathSync.native(resolved)).replace(/\\/g, "/") : targetRel;
+      if (scopeTarget && outsideScope(scopeTarget)) {
+        adapterBlockers.push(`Vue dependency crosses the declared package boundary: ${importerRel} -> ${scopeTarget}`);
+        continue;
+      }
+      if (scope && resolution.resolvedModule.isExternalLibraryImport && (!targetRel || targetRel.split("/").includes("node_modules"))) {
+        recordReference("external-package", importerRel, ref);
+        continue;
+      }
 
       if (targetRel && isSourceFileName(resolved)) {
+        if (scope && !resolved.endsWith(".d.ts") && !internalSourcePaths.has(targetRel)) {
+          // A real import can reach generated implementation excluded from the
+          // initial walk. Parse it (and its imports) rather than silently dropping
+          // the edge or loading every TypeScript declaration library again.
+          try {
+            if (isExcludedPath(targetRel, options.excludeDirs ?? []) || followedImplementationFiles >= 500 || statSync(resolved).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
+            const followed = ts.createSourceFile(resolved, readFileSync(resolved, "utf8"), ts.ScriptTarget.Latest, true);
+            if ((followed as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length) throw new Error("invalid implementation syntax");
+            sourceFiles.push(followed);
+            followedImplementationFiles++;
+          } catch {
+            adapterBlockers.push(`Resolved implementation cannot be included in the scoped source inventory: ${targetRel}`);
+            continue;
+          }
+        }
         internalSourcePaths.add(targetRel);
         addEdge(importerRel, targetRel, ref.kind);
         recordReference("internal-source", importerRel, ref);
@@ -809,13 +878,65 @@ export async function buildDependencyGraph(
     }
   }
 
+  // Only a verified scoped suite can establish that a component is not executed.
+  // Every test and setup/config root must actually have been parsed, not merely
+  // added as a leaf test node. Unknown reachable components still block the suite.
+  if (scope && scopeBlockers.length === 0 && profile.testFilePaths.length) {
+    const roots = [...profile.testFilePaths, ...(profile.vueSetupPaths ?? [])];
+    const parsedPaths = new Set(sourceFiles.map(file => toRelativeInternal(repoPath, file.fileName)).filter(Boolean));
+    if (roots.every(path => parsedPaths.has(path))) {
+      const outgoing = new Map<string, string[]>();
+      for (const edge of edges) outgoing.set(edge.from, [...(outgoing.get(edge.from) ?? []), edge.to]);
+      const reachable = new Set(roots); const pending = [...roots];
+      while (pending.length) for (const target of outgoing.get(pending.pop()!) ?? []) if (!reachable.has(target)) { reachable.add(target); pending.push(target); }
+      const vue = contributions.find(item => item.id === "vue");
+      const irrelevant = new Set((vue?.fileBlockers ?? []).filter(item => !reachable.has(item.path)).map(item => item.reason));
+      const outOfSuiteBlockers = irrelevant.size;
+      if (profile.vueRuntimeIsolationVerified) {
+        const closure = (starts: string[]) => {
+          const visited = new Set(starts); const queue = [...starts];
+          while (queue.length) for (const target of outgoing.get(queue.pop()!) ?? []) if (!visited.has(target)) { visited.add(target); queue.push(target); }
+          return visited;
+        };
+        const shared = closure(profile.vueSetupPaths ?? []);
+        const runtime = (vue?.fileBlockers ?? []).filter(item => item.reason === `Vue ${item.path}: runtime component/directive resolution requires full validation` && reachable.has(item.path));
+        // Unknown outgoing runtime edges affect every test reaching this component.
+        // Run all such isolated test files for EVERY delta, regardless of static impact.
+        // Shared setup/configuration uncertainty cannot be confined to those files.
+        if (runtime.length && runtime.every(item => !shared.has(item.path))) {
+          const targets = new Set(runtime.map(item => item.path));
+          profile.vueRuntimeAlwaysRunPaths = profile.testFilePaths.filter(path => [...closure([path])].some(dependency => targets.has(dependency)));
+          for (const item of runtime) irrelevant.add(item.reason);
+        }
+      }
+      for (let i = adapterBlockers.length - 1; i >= 0; i--) if (irrelevant.has(adapterBlockers[i])) adapterBlockers.splice(i, 1);
+      if (vue?.performance) Object.assign(vue.performance.counts, { verifiedSuiteRoots: roots.length, reachablePaths: reachable.size, outOfSuiteBlockers, runtimeAlwaysRunTests: profile.vueRuntimeAlwaysRunPaths?.length ?? 0 });
+    }
+  }
   if (unresolved.some((ref) => ref.importer.endsWith(".vue") || stripImportQuery(ref.specifier).endsWith(".vue"))) {
     adapterBlockers.push("Unresolved Vue dependencies require full validation");
   }
+  filesParsed = sourceFiles.length;
+  if (scope && unresolved.length) adapterBlockers.push("Unresolved dependencies in the declared Vue suite require full validation");
+  if (scope && edges.some(edge => outsideScope(edge.from) || outsideScope(edge.to))) adapterBlockers.push("Vue asset or macro dependency crosses the declared package boundary");
   profile.adapterBlockers = [...adapterBlockers];
+  markPhase("importExtractionAndResolution");
 
-  // Keep adapter-provided test identities visible as well. JS/TS tests are parsed above; their
-  // imports must not be replaced by disconnected leaf nodes merely because tsconfig excludes them.
+  // Nested-package test visibility (2026-08-24, biomejs/biome finding): `internalSourcePaths` above is
+  // strictly the TS PROGRAM's own file list (createProgram()'s `include`/nested-tsconfig-merged
+  // fileNames) - so a package whose own tsconfig deliberately excludes its test directory (a real,
+  // common pattern; confirmed verbatim on biome: `packages/@biomejs/js-api/tsconfig.json` has
+  // `"exclude": ["./tests", "./dist"], "include": ["./src"]`) NEVER contributes those files to the
+  // program, so they never became graph nodes and `totalTestsInGraph` stayed 0 even though
+  // `profile.testFilePaths` (the separate, tsconfig-agnostic glob walk in analyzer.ts's discoverTests())
+  // already found them correctly. Source-ROOT discovery itself was already correct (the 2026-08-21
+  // zod/trpc fallback already lists `packages`/`crates` as roots for exactly this monorepo shape) - the
+  // gap was narrower: the graph never incorporated what that walk found. Fix: union in any test file
+  // discoverTests() found that the TS program's own file list missed, as an ADDITIONAL leaf node
+  // (isTest true; no import edges - we have no real resolution info for a file the type-checker was
+  // never asked to see, so dependency-graph traversal through it is honestly absent, not guessed at).
+  // This does NOT add Rust visibility of any kind - testFilePaths only ever contains files already
+  // matched by the JS/TS test-file patterns; a `.rs` test is never in it and stays "unknown" as before.
   for (const testPath of profile.testFilePaths) {
     if (!internalSourcePaths.has(testPath) && !assetPaths.has(testPath)) internalSourcePaths.add(testPath);
   }
@@ -868,9 +989,12 @@ export async function buildDependencyGraph(
   };
 
   const durationMs = Number(process.hrtime.bigint() - start) / 1_000_000;
+  markPhase("graphFinalization");
 
   const performance: GraphPerformanceMetrics = {
     durationMs,
+    phasesMs,
+    adapterMetrics: Object.fromEntries(contributions.filter(item => item.performance).map(item => [item.id, item.performance!])),
     heapUsedMb: heapDuringBuildMb,
     heapAfterExtractionMb,
     filesDiscovered: filesParsed,
@@ -902,8 +1026,8 @@ export function classifyRepositoryProject(repoPath: string): { capable: boolean;
   if (typescript.capable) return typescript;
   const files = adapterFiles(repoPath);
   if (files.includes("go.mod")) return { capable: true, reason: "Go module (package-level analysis)" };
-  if (files.includes("pom.xml") && files.some((file) => file.endsWith(".java") || file.endsWith(".kt"))) return { capable: true, reason: "Maven reactor (module-level Java analysis)" };
   if (files.some((file) => file.endsWith(".vue"))) return { capable: true, reason: "Vue single-file components" };
+  if (files.includes("pom.xml") && files.some((file) => file.endsWith(".java") || file.endsWith(".kt"))) return { capable: true, reason: "Maven reactor (module-level Java analysis)" };
   return { capable: false, reason: "No TypeScript project, Vue components, root Go module, or Maven reactor found" };
 }
 

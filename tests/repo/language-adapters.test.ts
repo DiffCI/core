@@ -68,6 +68,22 @@ test("Maven multi-module source change reaches downstream module tests", async (
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("Maven plan uses the repository's declared CI lifecycle and profiles", async () => {
+  const root = fixture({
+    "diffci.json": JSON.stringify({ maven: { goal: "verify", profiles: ["run-its"] } }),
+    "pom.xml": "<project><groupId>example</groupId><artifactId>parent</artifactId><version>1</version><modules><module>tools</module></modules></project>",
+    "tools/pom.xml": "<project><artifactId>tools</artifactId></project>",
+    "tools/src/main/java/example/Tool.java": "package example; public class Tool {}",
+    "tools/src/test/java/example/ToolTest.java": "package example; public class ToolTest {}",
+  });
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, []);
+    const plan = planSelectiveTestCommands(graph.profile, ["tools/src/test/java/example/ToolTest.java"]);
+    assert.deepEqual(plan.commands[0]?.args, ["-pl", "tools", "-am", "verify", "-P", "run-its"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 
 test("Spring gs-multi-module shape selects application when library changes", async () => {
   const root = fixture({
