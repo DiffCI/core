@@ -23,10 +23,14 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { compileIgnoreRegexes, extractTestPatterns, isIgnoredPath, isUnderRoots } from "./runner-universe.js";
 import { join } from "node:path";
+import ts from "typescript";
 
 export type TestFamily = "unit" | "snapshot" | "e2e" | "integration" | "benchmark";
 
 export interface TestRunnerConfig {
+  /** Inline Vitest projects; undefined means no projects, null means ambiguous. */
+  projects?: { name: string; includes: string[]; runtimeSelectionSafe: boolean }[] | null;
+  runtimeSelectionUnsafe?: boolean;
   /** Repo-relative config file, e.g. "vitest.e2e.config.ts". */
   file: string;
   runner: "vitest" | "jest";
@@ -55,6 +59,54 @@ export interface TestRunnerConfig {
    * the runner really executes, and a test DiffCI cannot see is a test it cannot select.
    */
   authoritative: boolean;
+}
+
+function runtimeIsolationUnsafe(source: string): boolean {
+  const ast = ts.createSourceFile("config.ts", source, ts.ScriptTarget.Latest, true);
+  let unsafe = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === "isolate" && node.initializer.kind !== ts.SyntaxKind.TrueKeyword) unsafe = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return unsafe;
+}
+
+function inlineProjects(source: string): TestRunnerConfig["projects"] {
+  const ast = ts.createSourceFile("config.ts", source, ts.ScriptTarget.Latest, true);
+  let found: ts.Node[] = [];
+  let sharedState = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "projects") found.push(node.initializer);
+    if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "isolate" && node.initializer.kind !== ts.SyntaxKind.TrueKeyword) sharedState = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  if (!found.length) return undefined;
+  if (found.length !== 1 || !ts.isArrayLiteralExpression(found[0]!)) return null;
+  const properties = (node: ts.Node): Map<string, ts.Expression> | undefined => {
+    if (!ts.isObjectLiteralExpression(node)) return;
+    const values = new Map<string, ts.Expression>();
+    for (const property of node.properties) {
+      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || values.has(property.name.text)) return;
+      values.set(property.name.text, property.initializer);
+    }
+    return values;
+  };
+  const projects: NonNullable<TestRunnerConfig["projects"]> = [];
+  const inherited = properties(found[0].parent.parent);
+  const inheritedSafe = inherited && [...inherited.keys()].every(key => ["projects", "coverage", "setupFiles", "globalSetup", "isolate"].includes(key));
+  for (const element of found[0].elements) {
+    const project = properties(element);
+    const test = project?.get("test");
+    const fields = test && properties(test);
+    const name = fields?.get("name");
+    const include = fields?.get("include");
+    if (!project || project.size !== 2 || project.get("extends")?.kind !== ts.SyntaxKind.TrueKeyword || !fields || !name || !ts.isStringLiteral(name) || !/^[\w-]+$/.test(name.text) || !include || !ts.isArrayLiteralExpression(include) || !include.elements.length || include.elements.some(value => !ts.isStringLiteral(value))) return null;
+    if (projects.some(value => value.name === name.text)) return null;
+    projects.push({ name: name.text, includes: include.elements.map(value => (value as ts.StringLiteral).text), runtimeSelectionSafe: Boolean(inheritedSafe) && !sharedState && [...fields.keys()].every(key => ["name", "include", "isolate"].includes(key)) });
+  }
+  return projects.length ? projects : null;
 }
 
 export interface TestDiscovery {
@@ -218,6 +270,8 @@ export function discoverTestRunnerConfigs(repoPath: string, scripts: Record<stri
     const isDefault = m[2] === undefined;
     const extracted = extractTestPatterns(source);
     configs.push({
+      ...(runner === "vitest" ? { projects: inlineProjects(source) } : {}),
+      ...(runner === "vitest" && runtimeIsolationUnsafe(source) ? { runtimeSelectionUnsafe: true } : {}),
       file: name,
       runner,
       includes: extracted.includes,

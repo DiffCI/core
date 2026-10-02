@@ -7,6 +7,7 @@ import { it } from "node:test";
 import { analyzeRepository } from "../../src/repo/analyzer.js";
 import { planSelectiveTestCommands } from "../../src/planner/test-command.js";
 import { declaredWorkspaceRoots } from "../../src/repo/workspaces.js";
+import { buildDependencyGraph } from "../../src/repo/graph.js";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "diffci-workspaces-"));
@@ -21,6 +22,52 @@ function fixture() {
   }
   return { dir, write };
 }
+
+it("uses each package's aliases and follows newly resolved implementations", async () => {
+  const { dir, write } = fixture();
+  try {
+    for (const name of ["a", "b"]) {
+      write(`packages/${name}/tsconfig.json`, JSON.stringify({ compilerOptions: { moduleResolution: "Bundler", module: "ESNext", paths: { alias: ["./src/value.ts"] } }, include: ["src/**/*.ts"] }));
+      write(`packages/${name}/src/value.test.ts`, "import {value} from 'alias'; console.log(value);");
+      write(`packages/${name}/src/value.ts`, "import {nested} from './nested'; export const value=nested;");
+      write(`packages/${name}/src/nested.ts`, "export const nested=1;");
+    }
+    const result = await buildDependencyGraph({ repoPath: dir });
+    assert.equal(result.unresolved.length, 0);
+    for (const name of ["a", "b"]) assert.deepEqual(result.graph.dependenciesOf(`packages/${name}/src/value.test.ts`), [`packages/${name}/src/value.ts`]);
+    write("packages/a/tsconfig.json", "{ broken");
+    const invalid = await buildDependencyGraph({ repoPath: dir });
+    assert.equal(invalid.confidence, "UNSAFE");
+    assert.ok(invalid.adapterBlockers?.some(reason => reason.includes("Invalid importer")));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("routes npm projects while retaining entire type and property suites", () => {
+  const { dir, write } = fixture();
+  try {
+    write("package.json", JSON.stringify({ workspaces: ["packages/a"] }));
+    // Package-manager selection follows lockfiles; remove the pnpm declaration.
+    rmSync(join(dir, "pnpm-lock.yaml")); rmSync(join(dir, "pnpm-workspace.yaml"));
+    write("package-lock.json", "{}");
+    write("packages/a/package.json", JSON.stringify({ scripts: { test: "vitest" }, devDependencies: { vitest: "4.1.8" } }));
+    write("packages/a/vitest.config.ts", "export default {test:{projects:[{extends:true,test:{name:'runtime',include:['src/**/*.test.ts']}},{extends:true,test:{name:'types',include:['src/**/*.test-d.ts']}},{extends:true,test:{name:'prop',include:['src/**/*.test-prop.ts']}}]}};");
+    const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["packages/a/src/value.test.ts"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.equal(plan.commands.length, 3);
+    assert.ok(plan.commands.every(command => command.executable === "npm" && command.args.includes("--offline") && command.args.includes("--workspace=packages/a")));
+    assert.ok(plan.commands[0]!.args.includes("src/value.test.ts"));
+    assert.ok(!plan.commands[1]!.args.includes("src/value.test.ts"));
+    assert.deepEqual(plan.commands.map(command => command.args[command.args.indexOf("--project") + 1]), ["runtime", "types", "prop"]);
+    write("packages/a/vitest.config.ts", "export default {test:{projects:[{extends:true,test:{name:'runtime',include:['src/**/*.test.ts'],isolate:false}}]}};");
+    const shared = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["packages/a/src/value.test.ts"]);
+    assert.equal(shared.commands.length, 0);
+    assert.match(shared.refusalReason!, /safely narrowed/, "non-isolated project must run in full");
+    for (const source of ["export default {test:{projects:other}}", "export default {test:{projects:[{extends:true,test:{name:'runtime',include:patterns}}]}}", "export default {test:{projects:[...other]}}"] ) {
+      write("packages/a/vitest.config.ts", source);
+      assert.ok(planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["packages/a/src/value.test.ts"]).refusalReason);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 it("routes identical test filenames through their declared package configs and retains all type checks", () => {
   const { dir } = fixture();
@@ -48,6 +95,19 @@ it("refuses workspace scripts whose extra validation or lifecycle work cannot be
       assert.ok(plan.refusalReason);
       assert.equal(plan.commands.length, 0);
     }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("keeps non-isolated workspace files in one full invocation", () => {
+  const { dir, write } = fixture();
+  try {
+    write("packages/a/vitest.config.ts", "export default {test:{include:['src/**/*.test.ts'],isolate:false}};");
+    write("packages/a/src/other.test.ts", "export const other=1;");
+    const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["packages/a/src/value.test.ts"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands[0]!.args, ["--dir", "packages/a", "exec", "vitest", "run", "--typecheck"]);
+    assert.deepEqual(plan.groups[0]!.paths, ["packages/a/src/other.test.ts", "packages/a/src/value.test.ts"]);
+    assert.ok(!plan.commands[0]!.args.includes("src/value.test.ts"));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
