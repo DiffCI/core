@@ -1,0 +1,6 @@
+{
+  "name": "DiffCI Core",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm",
+  "postCreateCommand": "npm ci",
+  "remoteUser": "node"
+}
