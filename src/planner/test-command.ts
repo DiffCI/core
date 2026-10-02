@@ -133,6 +133,35 @@ export function planSelectiveTestCommands(
 ): SelectiveTestCommandPlan {
   const blockers = profile.adapterBlockers ?? profile.adapters?.flatMap((adapter) => adapter.blockers) ?? [];
   if (blockers.length) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: blockers.join("; ") };
+  if (profile.workspaceTestPackages?.length) {
+    const suites = profile.workspaceTestPackages;
+    const refuse = (reason: string): SelectiveTestCommandPlan => ({ commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: reason });
+    if (profile.packageManager !== "pnpm" || suites.some(s => suites.some(other => other !== s && s.packageRoot.startsWith(`${other.packageRoot}/`)))) return refuse("Workspace routing requires non-overlapping declared pnpm packages");
+    if (selectedPaths.some(path => !suites.some(s => path.startsWith(`${s.packageRoot}/`) && s.profile.testFilePaths.includes(path.slice(s.packageRoot.length + 1))))) return refuse("A selected test has no verified workspace owner");
+    const groups: SelectiveTestCommandGroup[] = [];
+    for (const suite of suites) {
+      const child = suite.profile;
+      const script = child.packageJson.scripts.test?.trim();
+      if (!/^vitest(?: run)?(?: --typecheck)?$/.test(script ?? "") || child.packageJson.scripts.pretest || child.packageJson.scripts.posttest || child.testUniverse?.blindSpot || child.testUniverse?.declaredFrameworks.length !== 1 || child.testUniverse.declaredFrameworks[0] !== "vitest" || child.workspaceTestPackages?.length) return refuse("Workspace test scripts require a single declared Vitest phase without lifecycle hooks or discovery blind spots");
+      const paths = selectedPaths.filter(path => path.startsWith(`${suite.packageRoot}/`)).map(path => path.slice(suite.packageRoot.length + 1));
+      const local = planSelectiveTestCommands({ ...child, packageManager: "pnpm" }, paths);
+      if (local.refusalReason) return refuse(local.refusalReason);
+      for (const group of local.groups) {
+        const prefix = group.commandSpec.args.slice(0, group.commandSpec.args.length - group.paths.length);
+        const batches: string[][] = [[]];
+        for (const path of group.paths) {
+          if (path.length > 3000) return refuse("Workspace test path exceeds the safe command length");
+          const batch = batches[batches.length - 1]!;
+          if (batch.length && batch.join(" ").length + path.length > 3500) batches.push([path]);
+          else batch.push(path);
+        }
+        for (const [index, batch] of batches.entries()) groups.push({ ...group, runnerId: `${suite.packageRoot}:${group.runnerId}:${index}`, paths: batch.map(path => `${suite.packageRoot}/${path}`), commandSpec: { executable: "pnpm", args: ["--dir", suite.packageRoot, ...prefix, ...batch] } });
+      }
+      // Type-test files are not runtime selection candidates. Retain the entire type suite.
+      if (script?.endsWith(" --typecheck")) groups.push({ runnerId: `${suite.packageRoot}:types`, label: "Full workspace type tests", paths: [], commandSpec: { executable: "pnpm", args: ["--dir", suite.packageRoot, "exec", "vitest", "run", "--typecheck.only", "--passWithNoTests"] } });
+    }
+    return { commands: groups.map(g => g.commandSpec), groups, unroutedPaths: [] };
+  }
   if (profile.vueScope) {
     const scope = profile.vueScope;
     const known = new Set(profile.testFilePaths);

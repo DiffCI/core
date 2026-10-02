@@ -33,6 +33,8 @@ This changes the proposed command, such as `mvn -pl tools -am verify -P run-its`
 
 ## What is included
 
+Declared pnpm workspaces with a single Vitest test phase can receive package-local command plans. Each selected path must belong to a discovered test in a declared package. Runtime selections are batched to keep commands below Windows limits; packages declaring `--typecheck` retain a separate full type-test phase. Packages with compound scripts, lifecycle hooks, overlapping ownership or discovery blind spots refuse selective execution. Commands remain advisory and must be executed separately; CLI automatic timing of multiple commands requires additional integration.
+
 | Area | Implementation |
 | --- | --- |
 | Changes and dependencies | Git deltas, repository inventory, JS/TS dependency graph, impact traversal |

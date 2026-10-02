@@ -14,6 +14,7 @@ import { createTestFileMatcher, discoverTestRunnerConfigs, matchesGlob, type Tes
 import { compileIgnoreRegexes, isIgnoredPath, isUnderRoots } from "./runner-universe.js";
 import { defaultExcludesFor, defaultIncludesFor, detectDeclaredFrameworks } from "./test-framework.js";
 import { readRepositoryConfig } from "./repo-config.js";
+import { declaredWorkspaceRoots } from "./workspaces.js";
 
 const IGNORED_DIRS = new Set([
   "node_modules",
@@ -464,7 +465,7 @@ export function analyzeRepository(
     excludeDirs,
   );
 
-  const testFileCount = testFilePaths.length;
+  let testFileCount = testFilePaths.length;
   const lockfile =
     packageManager === "npm"
       ? "package-lock.json"
@@ -478,7 +479,23 @@ export function analyzeRepository(
 
   const nextConfigFile = findConfig(repoPath, "next.config");
 
+  const workspaceTestPackages = existsSync(join(repoPath, "package.json"))
+    ? declaredWorkspaceRoots(repoPath).flatMap(packageRoot => {
+        const child = analyzeRepository({ repoPath: join(repoPath, packageRoot), excludeDirs });
+        return child.packageJson.scripts.test ? [{ packageRoot, profile: child }] : [];
+      }) : [];
+  for (const suite of workspaceTestPackages) {
+    for (const path of suite.profile.testFilePaths) {
+      const scoped = `${suite.packageRoot}/${path}`;
+      if (!testFilePaths.includes(scoped)) testFilePaths.push(scoped);
+    }
+    for (const glob of suite.profile.testPatterns ?? []) testPatterns.push(`${suite.packageRoot}/${glob}`);
+  }
+  testFilePaths.sort();
+  testFileCount = testFilePaths.length;
+
   return {
+    ...(workspaceTestPackages.length ? { workspaceTestPackages } : {}),
     packageManager,
     packageJson: {
       name: packageJsonRaw?.name,
