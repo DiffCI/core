@@ -39,6 +39,8 @@ export interface EntryPoint {
 }
 
 export interface RepositoryProfile {
+  /** Declared package ownership; child profiles retain package-local runner configuration. */
+  workspaceTestPackages?: { packageRoot: string; profile: RepositoryProfile }[];
   /** Adapter coverage and concrete Go test-file to package routing. */
   adapters?: { id: string; version: string; blockers: string[] }[];
   adapterBlockers?: string[];
