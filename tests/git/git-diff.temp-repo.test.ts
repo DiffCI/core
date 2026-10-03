@@ -182,6 +182,7 @@ describe("analyzeGitDelta temp repo", () => {
       assert.strictEqual(result.success, true);
       if (!result.success) return;
       assert.strictEqual(result.delta.analysis.dependencyManifestChanged, false, "description/author are not behaviorally-relevant fields");
+      assert.strictEqual(result.delta.analysis.configChanged, false, "generic config risk must not undo metadata narrowing");
     });
 
     it("still sets dependencyManifestChanged when dependencies actually change", async () => {
@@ -197,6 +198,21 @@ describe("analyzeGitDelta temp repo", () => {
       assert.strictEqual(result.success, true);
       if (!result.success) return;
       assert.strictEqual(result.delta.analysis.dependencyManifestChanged, true, "a real dependencies change must still trigger fallback");
+    });
+
+    it("retains other configuration risk alongside package metadata edits", async () => {
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ description: "old" }));
+      writeFileSync(join(repoPath, "tsconfig.json"), '{}');
+      commitAll(repoPath, "seed config");
+      const base = getSha(repoPath);
+      writeFileSync(join(repoPath, "package.json"), JSON.stringify({ description: "new" }));
+      writeFileSync(join(repoPath, "tsconfig.json"), '{"compilerOptions":{"strict":true}}');
+      commitAll(repoPath, "metadata and compiler config");
+      const result = await analyzeGitDelta({ repoPath, baseSha: base, headSha: getSha(repoPath) });
+      assert.strictEqual(result.success, true);
+      if (!result.success) return;
+      assert.strictEqual(result.delta.analysis.dependencyManifestChanged, false);
+      assert.strictEqual(result.delta.analysis.configChanged, true);
     });
 
     it("still sets dependencyManifestChanged when package.json is newly added (nothing to narrow against)", async () => {

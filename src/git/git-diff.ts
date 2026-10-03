@@ -222,12 +222,13 @@ const CONFIG_PATTERNS = [
 // Stage 1B fix (2026-08-21, docs/research/2026-08-21-stage1b-*.md): root-caused in Stage 1A's fallback-
 // composition analysis - dependencyManifestChanged previously fired on ANY change to the root
 // package.json, including fields with zero behavioral effect (description, keywords, author, homepage,
-// license, contributors, bugs, repository). Only these fields can actually change what gets built/
-// tested/resolved; everything else is metadata a change to which should never force FULL fallback.
-const PACKAGE_JSON_RELEVANT_FIELDS = [
-  "dependencies", "devDependencies", "peerDependencies", "optionalDependencies",
-  "scripts", "exports", "main", "module", "type", "bin", "engines", "workspaces", "browser",
-] as const;
+// license, contributors, bugs, repository). Content comparison must also clear the generic config
+// flag for that file, otherwise the path-based rule still forces FULL fallback.
+// Only explicitly understood descriptive fields may be ignored. Unknown fields can configure
+// tools (including DiffCI itself), so a behavioral-field allowlist is unsafe.
+const PACKAGE_JSON_METADATA_FIELDS = new Set([
+  "description", "keywords", "author", "contributors", "homepage", "license", "bugs", "repository",
+]);
 
 /** Narrows a path-based "package.json changed" signal to whether any behaviorally-relevant field
  * actually changed, given both versions' raw content. Returns true (never narrows) whenever either
@@ -245,7 +246,10 @@ export function hasRelevantPackageJsonChange(oldContent: string | undefined, new
   } catch {
     return true;
   }
-  return PACKAGE_JSON_RELEVANT_FIELDS.some((field) => JSON.stringify(oldJson[field]) !== JSON.stringify(newJson[field]));
+  if (!oldJson || !newJson || Array.isArray(oldJson) || Array.isArray(newJson) ||
+      typeof oldJson !== "object" || typeof newJson !== "object") return true;
+  return [...new Set([...Object.keys(oldJson), ...Object.keys(newJson)])].some((field) =>
+    !PACKAGE_JSON_METADATA_FIELDS.has(field) && JSON.stringify(oldJson[field]) !== JSON.stringify(newJson[field]));
 }
 
 /** Reads a file's content at a specific commit via `git show <sha>:<path>`, without touching the
@@ -428,6 +432,11 @@ export async function analyzeGitDelta(
         const oldContent = readFileAtSha(baseSha, "package.json", repoPath);
         const newContent = readFileAtSha(headSha, "package.json", repoPath);
         analysis.dependencyManifestChanged = hasRelevantPackageJsonChange(oldContent, newContent);
+        if (!analysis.dependencyManifestChanged) {
+          // Do not let the generic path rule undo the content-level narrowing. Other config
+          // changes in the same delta must still force full validation.
+          analysis.configChanged = computeAnalysis(filesWithBinary.filter((f) => f !== changedPackageJson)).configChanged;
+        }
       }
     }
 
@@ -493,4 +502,3 @@ export function findRecentNonEmptyCommitPair(
 
   return undefined;
 }
-

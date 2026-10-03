@@ -106,6 +106,14 @@ describe("gitDeltaToJson", () => {
 // logic in isolation - see git-diff.temp-repo.test.ts for the real-git-repo end-to-end version wired
 // through analyzeGitDelta.
 describe("hasRelevantPackageJsonChange", () => {
+  it("retains fallback for tool configuration, package identity and invalid objects", () => {
+    for (const field of ["diffci", "overrides", "resolutions", "packageManager", "name", "version", "customTool"]) {
+      assert.strictEqual(hasRelevantPackageJsonChange('{}', JSON.stringify({ [field]: "changed" })), true, field);
+    }
+    for (const invalid of ['null', '[]', '42', '"text"']) {
+      assert.strictEqual(hasRelevantPackageJsonChange(invalid, invalid), true);
+    }
+  });
   it("returns false when only metadata fields differ", () => {
     const oldJson = JSON.stringify({ name: "x", description: "old", author: "a", keywords: ["a"] });
     const newJson = JSON.stringify({ name: "x", description: "new", author: "b", keywords: ["b", "c"] });
