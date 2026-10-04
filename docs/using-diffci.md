@@ -24,6 +24,90 @@ npx @diffci.com/diffci@latest observe --no-send
 
 `observe --no-send` reports selected tests, fallback reasons, and command availability without executing the repository's tests or sending a report. It does not establish runtime savings.
 
+## Reproduce a full fallback
+
+This synthetic project has one unsupported dependency shape: `loader.js` chooses an import at runtime, so static analysis cannot enumerate every module the changed loader may reach. The tree is:
+
+```text
+package.json
+tsconfig.json
+src/loader.js
+src/value.js
+test/loader.test.js
+```
+
+Create its base revision in a disposable directory:
+
+```sh
+git init -b main diffci-fallback-example
+cd diffci-fallback-example
+git config user.name "DiffCI Docs"
+git config user.email "docs@diffci.com"
+mkdir -p src test
+cat > package.json <<'JSON'
+{
+  "name": "diffci-fallback-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
+JSON
+cat > tsconfig.json <<'JSON'
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.js", "test/**/*.js"]
+}
+JSON
+cat > src/loader.js <<'JS'
+export async function load(name) {
+  return import(`./${name}.js`);
+}
+JS
+printf 'export const value = 1;\n' > src/value.js
+cat > test/loader.test.js <<'JS'
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { load } from "../src/loader.js";
+
+test("loads a named module", async () => {
+  assert.equal((await load("value")).value, 1);
+});
+JS
+git add .
+GIT_AUTHOR_DATE=2026-10-04T00:00:00Z GIT_COMMITTER_DATE=2026-10-04T00:00:00Z git commit -m "base fixture"
+```
+
+Then make and commit the analyzed change:
+
+```sh
+cat > src/loader.js <<'JS'
+export async function load(name) {
+  const normalized = name.trim();
+  return import(`./${normalized}.js`);
+}
+JS
+git add src/loader.js
+GIT_AUTHOR_DATE=2026-10-04T00:01:00Z GIT_COMMITTER_DATE=2026-10-04T00:01:00Z git commit -m "normalize module names"
+npx --yes @diffci.com/diffci@0.3.2 observe --no-send \
+  --base c82c935ca9761a76cc9849d1e3ce3c08cfa99509 \
+  --head e1de15d114174f99098beba785e389268ff7e8dc \
+  --json
+```
+
+The pinned reproduction reports `mode: "FULL"`, `analysisStatus: "FALLBACK"`, no proposed commands, and:
+
+```text
+Dependency graph confidence is UNSAFE; full validation required
+```
+
+Run `npm test` for this revision. Even though the report lists one selected test out of one discovered test, that count is not a runtime measurement or a savings claim. The computed import could reach modules static analysis did not discover, so only the repository's normal full validation remains authoritative. CLI behavior may evolve after version 0.3.2; keep the pinned version when reproducing this exact output.
+
 ## Interpret the result
 
 - A full-validation fallback means DiffCI could not justify a smaller selection for that change. Run the repository's normal tests.
