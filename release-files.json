@@ -9,6 +9,8 @@
     "docs/growth-issues.json",
     "docs/roadmap.md",
     "docs/using-diffci.md",
+    "examples/github-actions-core-plan.yml",
+    "examples/README.md",
     ".github/workflows/ci.yml",
     ".gitignore",
     "CONTRIBUTING.md",
