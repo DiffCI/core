@@ -1,0 +1,108 @@
+{
+  "schema": "diffci.observation.v1",
+  "producedAt": "2026-10-04T12:31:24.828Z",
+  "observer": {
+    "version": "0.3.2",
+    "node": "v24.16.0",
+    "platform": "win32"
+  },
+  "repository": {
+    "provider": "unknown"
+  },
+  "ci": {
+    "provider": "local"
+  },
+  "commitRange": {
+    "baseSha": "db1d637dfcca8d8f7fa047500dfe0027d0d018a7",
+    "headSha": "cdf3bf288715261666cdc074c4a335e8653d4f9a",
+    "source": "explicit-flags"
+  },
+  "status": "OBSERVED",
+  "stage": "complete",
+  "result": {
+    "mode": "SELECTIVE",
+    "changedFileCount": 3,
+    "changedFiles": [
+      "src/git/git-diff.ts",
+      "tests/git/git-diff.analysis.test.ts",
+      "tests/git/git-diff.temp-repo.test.ts"
+    ],
+    "affectedSourceFileCount": 4,
+    "selectedTests": [
+      "tests/analyze.test.ts",
+      "tests/git/git-diff.analysis.test.ts",
+      "tests/git/git-diff.parsers.test.ts",
+      "tests/git/git-diff.temp-repo.test.ts"
+    ],
+    "totalTestCount": 31,
+    "fallbackReasons": [],
+    "proposedCommands": [],
+    "commandRefusalReason": "Repository declares no recognised test framework; DiffCI cannot construct a command that would run a subset of its tests",
+    "unroutedTestPaths": [
+      "tests/analyze.test.ts",
+      "tests/git/git-diff.analysis.test.ts",
+      "tests/git/git-diff.parsers.test.ts",
+      "tests/git/git-diff.temp-repo.test.ts"
+    ],
+    "blindSpot": false,
+    "riskSignals": [],
+    "graph": {
+      "nodes": 79,
+      "edges": 180,
+      "confidence": "COMPLETE",
+      "effectiveConfidence": "COMPLETE",
+      "durationMs": 1872,
+      "phasesMs": {
+        "repositoryDiscovery": 54.1898,
+        "scopeDiscovery": 0.3792,
+        "adapterInventory": 5.4485,
+        "adapters": 0.1223,
+        "typescriptProgram": 1677.4309,
+        "importExtractionAndResolution": 130.7754,
+        "graphFinalization": 4.1404
+      },
+      "adapterMetrics": {}
+    },
+    "pathBaseline": {
+      "mode": "SELECTIVE",
+      "selectedTestCount": 3,
+      "selectedTests": [
+        "tests/git/git-diff.analysis.test.ts",
+        "tests/git/git-diff.parsers.test.ts",
+        "tests/git/git-diff.temp-repo.test.ts"
+      ],
+      "matchedRules": [
+        "directory scoping -> tests under tests/git"
+      ]
+    },
+    "analysisStatus": "SAFE_TO_PROPOSE"
+  },
+  "payload": {
+    "includesFilePaths": true,
+    "includesFileContents": false,
+    "includesEnvironment": false,
+    "includesCredentials": false
+  },
+  "nonInterference": {
+    "headShaBefore": "cdf3bf288715261666cdc074c4a335e8653d4f9a",
+    "headShaAfter": "cdf3bf288715261666cdc074c4a335e8653d4f9a",
+    "worktreeDigestBefore": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktreeDigestAfter": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "worktreeUnchanged": true,
+    "reportWrittenOutsideRepository": true,
+    "workflowFindings": []
+  },
+  "timings": {
+    "totalMs": 2956,
+    "preObserveMs": 194,
+    "phasesMs": {
+      "context": 249,
+      "engineLoad": 271,
+      "eligibility": 1,
+      "delta": 345,
+      "graph": 1873,
+      "impactAndCommands": 8,
+      "finalization": 206
+    }
+  }
+}
