@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DependencyGraphResult } from "../repo/types.js";
 
-export const GRAPH_CACHE_SCHEMA_VERSION = "1";
+export const GRAPH_CACHE_SCHEMA_VERSION = "2";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

@@ -287,7 +287,7 @@ function resolveProjectReferenceInputs(
   if (visited.has(normalized)) return collected; // guard against reference cycles
   visited.add(normalized);
 
-  const { config, error } = ts.readConfigFile(configPath, ts.sys.readFile);
+  const { config, error } = ts.readConfigFile(toPosix(configPath), ts.sys.readFile);
   if (error || !config) return collected;
 
   const parsed = ts.parseJsonConfigFileContent(config, ts.sys, dirname(configPath), undefined, configPath);
@@ -406,7 +406,7 @@ function createProgram(
   let configFileParsingDiagnostics: readonly ts.Diagnostic[] = [];
 
   if (configPath) {
-    const { config, error } = ts.readConfigFile(configPath, ts.sys.readFile);
+    const { config, error } = ts.readConfigFile(toPosix(configPath), ts.sys.readFile);
     if (error) {
       throw new Error(ts.flattenDiagnosticMessageText(error.messageText, "\n"));
     }
@@ -755,10 +755,37 @@ export async function buildDependencyGraph(
   let filesParsed = sourceFiles.length;
   let followedImplementationFiles = 0;
 
+  // Resolve each importer with its own nearest project, never another package's
+  // aliases. Invalid project configuration remains a hard safety blocker.
+  const projectOptions = new Map<string, ts.CompilerOptions>();
+  function optionsFor(file: string): ts.CompilerOptions {
+    let directory = dirname(file);
+    while (toRelativeInternal(repoPath, directory) !== undefined) {
+      const config = join(directory, "tsconfig.json");
+      if (existsSync(config)) {
+        if (!projectOptions.has(config)) {
+          const read = ts.readConfigFile(toPosix(config), ts.sys.readFile);
+          const parsed = read.error ? undefined : ts.parseJsonConfigFileContent(read.config, ts.sys, directory, undefined, config);
+          // No-input diagnostics do not invalidate module-resolution options.
+          if (!parsed || parsed.errors.some(error => error.code !== 18003)) {
+            adapterBlockers.push(`Invalid importer TypeScript configuration: ${toRelativeInternal(repoPath, config)}`);
+            projectOptions.set(config, compilerOptions);
+          } else projectOptions.set(config, parsed.options);
+        }
+        return projectOptions.get(config)!;
+      }
+      if (directory === repoPath || dirname(directory) === directory) break;
+      directory = dirname(directory);
+    }
+    return compilerOptions;
+  }
+
   for (const sf of sourceFiles) {
     const importerRel = toRelativeInternal(repoPath, sf.fileName);
     if (!importerRel || !isSourceFileName(sf.fileName)) continue;
     if (isExcludedPath(importerRel, options.excludeDirs ?? [])) continue;
+
+    const importerOptions = optionsFor(sf.fileName);
 
     const refs = extractImportRefs(sf);
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
@@ -778,8 +805,8 @@ export async function buildDependencyGraph(
       const resolvableSpecifier = specifierCategory === "relative" || specifierCategory === "absolute" || specifierCategory === "alias" ? stripImportQuery(ref.specifier) : ref.specifier;
       // TypeScript may resolve a Vue import to a declaration shim. Preserve the actual SFC edge.
       if (resolvableSpecifier.endsWith(".vue")) {
-        const compilerAliases = Object.entries(compilerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
-        const candidate = findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases.length ? compilerAliases : profile.pathAliases, compilerOptions.baseUrl ?? repoPath);
+        const compilerAliases = Object.entries(importerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
+        const candidate = findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases.length ? compilerAliases : profile.pathAliases, importerOptions.baseUrl ?? dirname(sf.fileName));
         const target = candidate && toRelativeInternal(repoPath, candidate);
         if (target && internalSourcePaths.has(target)) {
           addEdge(importerRel, target, ref.kind);
@@ -793,7 +820,7 @@ export async function buildDependencyGraph(
       const resolution = ts.resolveModuleName(
         resolvableSpecifier,
         sf.fileName,
-        compilerOptions,
+        importerOptions,
         ts.sys,
         moduleResolutionCache,
       );
@@ -838,7 +865,7 @@ export async function buildDependencyGraph(
       }
 
       if (targetRel && isSourceFileName(resolved)) {
-        if (scope && !resolved.endsWith(".d.ts") && !internalSourcePaths.has(targetRel)) {
+        if (!resolved.endsWith(".d.ts") && !internalSourcePaths.has(targetRel)) {
           // A real import can reach generated implementation excluded from the
           // initial walk. Parse it (and its imports) rather than silently dropping
           // the edge or loading every TypeScript declaration library again.
