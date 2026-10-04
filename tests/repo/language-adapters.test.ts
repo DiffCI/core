@@ -5,6 +5,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { buildDependencyGraph, classifyRepositoryProject } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
+import { DefaultCIPlanner } from "../../src/planner/planner.js";
+import { createTaskRegistry } from "../../src/planner/task-registry.js";
 import { planSelectiveTestCommands } from "../../src/planner/test-command.js";
 import type { GitDelta } from "../../src/git/types.js";
 
@@ -45,6 +47,35 @@ test("Vue source change reaches the importing test through a component", async (
   }
 });
 
+for (const unresolved of [false, true]) {
+  test(`Vue transitive selection ${unresolved ? "falls back on unresolved imports" : "excludes unrelated tests with complete evidence"}`, async () => {
+    const root = fixture({
+      "package.json": JSON.stringify({ devDependencies: { vitest: "1" } }),
+      "src/value.js": "export const value = 1;",
+      "src/derived.js": 'export { value } from "./value.js";',
+      "src/App.vue": `<script setup>import { value } from "./derived.js";${unresolved ? 'import "./missing.js";' : ""}</script><template>{{ value }}</template>`,
+      "src/unrelated.js": "export const unrelated = 2;",
+      "tests/app.test.js": 'import App from "../src/App.vue"; export const app = App;',
+      "tests/unrelated.test.js": 'import { unrelated } from "../src/unrelated.js"; export const result = unrelated;',
+    });
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      const impact = new ImpactAnalyzer().analyze(delta("src/value.js"), graph, graph.profile);
+      assert.equal(impact.fallbackRequired, unresolved);
+      assert.deepEqual(impact.affectedTests.map((item) => item.path), ["tests/app.test.js"]);
+      const plan = new DefaultCIPlanner(createTaskRegistry([])).plan({ delta: delta("src/value.js"), impact, profile: graph.profile });
+      assert.equal(plan.mode, unresolved ? "FULL" : "SELECTIVE");
+      assert.deepEqual(plan.selectedTests, unresolved
+        ? ["tests/app.test.js", "tests/unrelated.test.js"]
+        : ["tests/app.test.js"]);
+      assert.deepEqual(plan.skippedTests, unresolved ? [] : ["tests/unrelated.test.js"]);
+      if (!unresolved) assert.deepEqual(graph.adapterBlockers, []);
+      else assert.ok(impact.fallbackReasons.length > 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("Maven multi-module source change reaches downstream module tests", async () => {
   const root = fixture({
@@ -84,7 +115,6 @@ test("Maven plan uses the repository's declared CI lifecycle and profiles", asyn
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-
 test("Spring gs-multi-module shape selects application when library changes", async () => {
   const root = fixture({
     "pom.xml": `<project><groupId>org.springframework</groupId><artifactId>gs-multi-module</artifactId><version>0.0.1-SNAPSHOT</version><packaging>pom</packaging><modules><module>library</module><module>application</module></modules></project>`,
@@ -107,7 +137,6 @@ test("Spring gs-multi-module shape selects application when library changes", as
     assert.deepEqual(plan.commands[0]?.args, ["-pl", "application,library", "-am", "test"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
-
 
 test("Maven Kotlin multi-module source change reaches downstream tests", async () => {
   const root = fixture({
@@ -134,7 +163,6 @@ test("Maven Kotlin multi-module source change reaches downstream tests", async (
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-
 test("Jicofo-style Maven property dependency connects Kotlin modules", async () => {
   const root = fixture({
     "pom.xml": `<project><groupId>org.jitsi</groupId><artifactId>jicofo-parent</artifactId><version>1.1-SNAPSHOT</version><packaging>pom</packaging><modules><module>jicofo-common</module><module>jicofo-selector</module></modules></project>`,
@@ -155,7 +183,6 @@ test("Jicofo-style Maven property dependency connects Kotlin modules", async () 
     ]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
-
 
 test("Jicofo-style three-module reactor propagates common changes through selector to jicofo", async () => {
   const root = fixture({
