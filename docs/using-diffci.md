@@ -24,6 +24,53 @@ npx @diffci.com/diffci@latest observe --no-send
 
 `observe --no-send` reports selected tests, fallback reasons, and command availability without executing the repository's tests or sending a report. It does not establish runtime savings.
 
+## Recover a missing base in a shallow checkout
+
+DiffCI must be able to read both revisions, and the checkout must still be at the requested head. In CI, set `BASE` and `HEAD` to the full commit IDs supplied by the pull-request or merge-request event, then verify them before asking DiffCI for a plan:
+
+```sh
+BASE=0123456789abcdef0123456789abcdef01234567
+HEAD=89abcdef0123456789abcdef0123456789abcdef
+
+git rev-parse --is-shallow-repository
+git rev-parse --verify HEAD
+
+if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+  git fetch --no-tags --deepen=100 origin
+fi
+
+if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+  echo "DiffCI base is still unavailable; run the repository's full CI." >&2
+  exit 1
+fi
+
+if [ "$(git rev-parse HEAD)" != "$HEAD" ]; then
+  echo "The requested head is not checked out; run the repository's full CI." >&2
+  exit 1
+fi
+```
+
+Increase the deepen count or use `git fetch --no-tags --unshallow origin` when the base is farther back. Do not interpret a missing base, a fetch failure, or a head mismatch as an empty or safe selection.
+
+For a built checkout of this Core repository, request the advisory plan with both verified revisions:
+
+```sh
+node /path/to/core/dist/cli.js plan \
+  --repo "$PWD" \
+  --base "$BASE" \
+  --head "$HEAD"
+```
+
+For the published CLI, pass the same revisions to `check`:
+
+```sh
+npx --yes @diffci.com/diffci@latest check \
+  --base "$BASE" \
+  --head "$HEAD"
+```
+
+`plan` is advisory; `check` may execute repository test commands. If either command refuses or errors, run the repository's normal full validation.
+
 ## Reproduce a full fallback
 
 This synthetic project has one unsupported dependency shape: `loader.js` chooses an import at runtime, so static analysis cannot enumerate every module the changed loader may reach. The tree is:
