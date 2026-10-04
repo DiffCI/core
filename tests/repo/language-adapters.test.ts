@@ -112,6 +112,13 @@ test("Maven plan uses the repository's declared CI lifecycle and profiles", asyn
     assert.deepEqual(graph.adapterBlockers, []);
     const plan = planSelectiveTestCommands(graph.profile, ["tools/src/test/java/example/ToolTest.java"]);
     assert.deepEqual(plan.commands[0]?.args, ["-pl", "tools", "-am", "verify", "-P", "run-its"]);
+
+    writeFileSync(join(root, "diffci.json"), JSON.stringify({ maven: { goal: "deploy", profiles: ["run-its;unsafe"] } }));
+    const invalid = await buildDependencyGraph({ repoPath: root });
+    assert.ok(invalid.adapterBlockers?.includes("Invalid Maven lifecycle goal or profiles"));
+    const refused = planSelectiveTestCommands(invalid.profile, ["tools/src/test/java/example/ToolTest.java"]);
+    assert.deepEqual(refused.commands, []);
+    assert.match(refused.refusalReason ?? "", /Invalid Maven lifecycle goal or profiles/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
