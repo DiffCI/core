@@ -1,6 +1,21 @@
 # DiffCI Core
 
-**An open-source engine for understanding changes and planning less CI work conservatively.** Licensed under AGPL-3.0-only.
+**Open-source test-impact analysis for faster CI.** For developers and maintainers evaluating which tests a change affects, with conservative full-run fallbacks. Licensed under AGPL-3.0-only.
+
+Try the published CLI in an existing Git checkout with Git and Node.js 22.5+:
+
+```sh
+npx "@diffci.com/diffci@latest" check
+```
+
+It compares full and selected runtime when safe to measure, writes reports outside the checkout, and sends nothing by default. Test commands can generate files; keep required CI authoritative.
+
+**Measured example:** one controlled Cal.com sandbox replay measured **44.2% net reduction** in install + pretest + test runtime including analysis overhead. This is a job-equivalent comparison, not production savings or a forecast for your repository. [Method and limitations](https://diffci.com/case-studies/calcom).
+
+![Recorded Cal.com sandbox comparison](docs/calcom-runtime-evidence.svg)
+
+[Star Core](https://github.com/DiffCI/core) · [Volunteer a pilot repository](https://diffci.com/#pilot) · [Find a first contribution](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
+Watch → Custom → Releases and Discussions for benchmark results and support updates. [Public roadmap](docs/roadmap.md).
 
 This is the standalone Core engine. It analyzes local JavaScript/TypeScript repositories, supported Vue components, root Go modules and conventional Maven reactors, traces dependency impact, infers GitHub Actions structure and proposes test selections with evidence and full-run fallbacks. It works without a DiffCI account, hosted service or API key. See [the release boundary](docs/release-boundary.md) for support limits.
 
@@ -68,3 +83,5 @@ Only the explicitly extracted Core files and standalone tooling are in this repo
 See [LICENSE](LICENSE), [NOTICE](NOTICE) and [CONTRIBUTING.md](CONTRIBUTING.md). AGPL permits commercial use; it is not a non-commercial license. Its obligations, including those applicable to modified versions used over a network, are defined by the license. Grant eligibility depends on the particular grant agreement. No eligibility or legal separation is guaranteed by this repository layout.
 
 See [the release boundary](docs/release-boundary.md) for scope and current limitations.
+
+Useful? [Star the engine](https://github.com/DiffCI/core) and [share a reproducible pilot result](https://diffci.com/#pilot).

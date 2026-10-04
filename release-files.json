@@ -1,6 +1,14 @@
 {
   "description": "Explicitly reviewed public release file boundary; changes require review.",
   "files": [
+    ".devcontainer/devcontainer.json",
+    "context7.json",
+    "docs/adding-an-adapter.md",
+    "docs/calcom-runtime-evidence.svg",
+    "docs/contributing-fixtures.md",
+    "docs/growth-issues.json",
+    "docs/roadmap.md",
+    "docs/using-diffci.md",
     ".github/workflows/ci.yml",
     ".gitignore",
     "CONTRIBUTING.md",

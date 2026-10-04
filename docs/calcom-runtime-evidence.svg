@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="240" viewBox="0 0 780 240" role="img" aria-labelledby="title desc">
+<title id="title">Recorded Cal.com sandbox comparison: 44.2% net reduction</title>
+<desc id="desc">Full install, pretest and test runtime was 657.7 seconds. Selected runtime was 356.9 seconds plus about 10.1 seconds of analysis. One controlled sandbox comparison, not production savings.</desc>
+<rect width="780" height="240" rx="12" fill="#0c0e11"/>
+<g fill="#e5e7eb" font-family="monospace" font-size="18">
+<text x="26" y="40">Cal.com · recorded sandbox evidence</text>
+<text x="26" y="82">Full workload       657.7s</text>
+<text x="26" y="118">Selected workload   356.9s + ~10.1s analysis</text>
+<text x="26" y="158" fill="#5eead4">Net job-equivalent runtime reduction: 44.2%</text>
+<text x="26" y="202" font-size="14">One comparison · install + pretest + test · not production savings</text>
+</g></svg>
