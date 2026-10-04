@@ -1,0 +1,88 @@
+# Copy this file to .github/workflows/diffci-core-plan.yml in the repository
+# being evaluated. This workflow is advisory and must not replace required CI.
+name: DiffCI Core advisory plan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    name: Advisory plan (does not skip CI)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact pull-request head with its history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: target
+
+      - name: Check out DiffCI Core
+        uses: actions/checkout@v4
+        with:
+          repository: DiffCI/core
+          ref: main
+          path: core
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: core/package-lock.json
+
+      - name: Build Core
+        working-directory: core
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Verify the requested revisions and clean target
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        working-directory: target
+        run: |
+          test "$(git rev-parse HEAD)" = "$HEAD"
+          git cat-file -e "$BASE^{commit}"
+          test -z "$(git status --porcelain)"
+
+      - name: Create advisory JSON plan
+        id: diffci-plan
+        continue-on-error: true
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          node core/dist/cli.js plan \
+            --repo "$GITHUB_WORKSPACE/target" \
+            --base "$BASE" \
+            --head "$HEAD" \
+            > "$RUNNER_TEMP/diffci-plan.json" \
+            2> "$RUNNER_TEMP/diffci-plan-error.json"
+
+      - name: Upload advisory plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diffci-core-advisory-plan
+          path: |
+            ${{ runner.temp }}/diffci-plan.json
+            ${{ runner.temp }}/diffci-plan-error.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summarize advisory status
+        if: always()
+        env:
+          PLAN_OUTCOME: ${{ steps.diffci-plan.outcome }}
+        run: |
+          echo "## DiffCI Core advisory plan" >> "$GITHUB_STEP_SUMMARY"
+          echo "Plan outcome: $PLAN_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          echo "This plan does not execute, skip, or cancel required CI jobs." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$PLAN_OUTCOME" != "success" ]; then
+            echo "Core could not produce a plan. Run the repository's full CI." >> "$GITHUB_STEP_SUMMARY"
+          fi
