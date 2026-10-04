@@ -11,3 +11,5 @@ This is an evaluation roadmap, not a delivery guarantee. Existing support limits
 | Publish a benchmark roundup | Denominator includes failures, refusals and regressions; distinguish static selection from runtime |
 
 Watch → Custom → Releases and Discussions to follow published results and support changes. Release notes should state changed support boundaries, new fallback cases, and measured improvements only when artifacts exist. Aim to publish a monthly benchmark report; a month with no new measurements should say so explicitly.
+
+Monthly reports should start from the [benchmark report template](benchmark-report-template.md), which keeps unsuccessful attempts in the denominator and separates static selection, measured runtime, and modeled impacts.

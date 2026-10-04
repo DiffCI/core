@@ -4,6 +4,7 @@
     ".devcontainer/devcontainer.json",
     "context7.json",
     "docs/adding-an-adapter.md",
+    "docs/benchmark-report-template.md",
     "docs/calcom-runtime-evidence.svg",
     "docs/contributing-fixtures.md",
     "docs/growth-issues.json",
