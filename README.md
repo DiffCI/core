@@ -68,7 +68,23 @@ npm run audit:boundary
 npm run benchmark
 ```
 
-The benchmark constructs 100 modules and 100 tests locally, then measures three graph builds. It does not measure CI savings. Carbon and energy outputs are modeled estimates using caller-supplied assumptions, not physical measurements or verified avoided emissions.
+The benchmark constructs one temporary synthetic repository containing 100 chained modules and 100 importing test files. In one Node.js process it builds that same dependency graph three times, sequentially, and removes the fixture afterward. Install dependencies first with `npm ci`, then run `npm run benchmark` under Node.js 22.5 or later. Record the emitted `node` and `platform` alongside the machine CPU, memory, operating system, and competing workload when comparing runs. The three builds share process, operating-system, and compiler warmup effects; they are not independent repetitions with controlled cold caches.
+
+Each entry in `runs` has these fields:
+
+| Field | Interpretation |
+| --- | --- |
+| `basis: "measured"` | The process counters were observed rather than estimated. |
+| `scope: "current-process"` | Only the benchmark's Node.js process is covered, not the whole host, container, or CI job. |
+| `wallSeconds` | Elapsed wall-clock time around one `buildDependencyGraph` call. |
+| `cpuSeconds` | User plus system CPU time consumed by the current process during that call; it can differ from wall time. |
+| `rssBytesAtEnd` | Resident-set size sampled after the call. It is neither peak memory nor the memory allocated by that call alone. |
+| `nodes`, `edges` | Graph size. The current fixture should produce 200 nodes and 199 dependency edges. |
+| `confidence` | Dependency-graph confidence for this synthetic fixture. `COMPLETE` does not prove that a real repository can safely skip tests. |
+
+For example, `wallSeconds: 0.79`, `cpuSeconds: 0.84`, and `rssBytesAtEnd: 327868416` mean that one graph build elapsed for about 0.79 seconds, consumed about 0.84 current-process CPU seconds, and ended with roughly 328 MB RSS. They do **not** mean that CI became 0.79 seconds faster or saved 328 MB. The script does not execute tests, installation, builds, or a full-versus-selected comparison, so its timings must not be reported as CI savings.
+
+The separate `estimateImpact` API can calculate `estimatedUsd`, `estimatedKwh`, and `estimatedKgCo2e` only from caller-supplied `computeSeconds`, price, power, and grid-intensity assumptions. Those values have `basis: "estimated"`; they are modeled scenarios, not benchmark output, physical measurements, billing records, or verified avoided emissions.
 
 ## Core and Cloud
 
