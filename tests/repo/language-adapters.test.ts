@@ -3,12 +3,15 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { buildDependencyGraph, classifyRepositoryProject } from "../../src/repo/graph.js";
+import { buildDependencyGraph, classifyRepositoryProject, hydrateDependencyGraph } from "../../src/repo/graph.js";
+import { analyzeRepository } from "../../src/repo/analyzer.js";
+import { analyzeGoMetadata, goAdapter } from "../../src/repo/adapters/go.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import { DefaultCIPlanner } from "../../src/planner/planner.js";
 import { createTaskRegistry } from "../../src/planner/task-registry.js";
 import { planSelectiveTestCommands } from "../../src/planner/test-command.js";
 import type { GitDelta } from "../../src/git/types.js";
+import type { DependencyGraph } from "../../src/repo/types.js";
 
 function fixture(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "diffci-core-adapters-"));
@@ -45,6 +48,46 @@ test("Vue source change reaches the importing test through a component", async (
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("root Go module metadata selects transitive owners and excludes unrelated packages", () => {
+  const files = {
+    "go.mod": "module example.com/project\n\ngo 1.24\n",
+    "shared/value.go": "package shared\nconst Value = 1\n",
+    "shared/value_test.go": "package shared\nfunc TestValue() {}\n",
+    "service/service.go": "package service\nimport _ \"example.com/project/shared\"\n",
+    "service/service_test.go": "package service\nfunc TestService() {}\n",
+    "unrelated/value.go": "package unrelated\nconst Value = 2\n",
+    "unrelated/value_test.go": "package unrelated\nfunc TestValue() {}\n",
+  };
+  const root = fixture(files);
+  try {
+    const pkg = (path: string, importPath: string, options: Record<string, unknown>) => ({
+      Dir: join(root, path), ImportPath: importPath, Name: path, ...options,
+    });
+    const metadata = [
+      pkg("shared", "example.com/project/shared", { GoFiles: ["value.go"], TestGoFiles: ["value_test.go"] }),
+      pkg("service", "example.com/project/service", { GoFiles: ["service.go"], TestGoFiles: ["service_test.go"], Imports: ["example.com/project/shared"] }),
+      pkg("unrelated", "example.com/project/unrelated", { GoFiles: ["value.go"], TestGoFiles: ["value_test.go"] }),
+    ].map(value => JSON.stringify(value)).join("\n");
+    const profile = analyzeRepository({ repoPath: root });
+    const contribution = analyzeGoMetadata({ repoPath: root, files: Object.keys(files), profile }, metadata);
+    assert.deepEqual(contribution.blockers, []);
+    profile.goTestPackages = contribution.testPackages;
+    const graph = hydrateDependencyGraph({
+      nodes: contribution.sourcePaths.map(path => ({ path, isSource: true, isAsset: false, isTest: path.endsWith("_test.go"), isEntryPoint: false })),
+      edges: contribution.edges,
+    } as unknown as DependencyGraph, root);
+    const affected = graph.transitiveDependentsOf("shared/value.go").filter(path => path.endsWith("_test.go"));
+    assert.deepEqual(affected, ["service/service_test.go", "shared/value_test.go"]);
+    assert.ok(!affected.includes("unrelated/value_test.go"));
+    const plan = planSelectiveTestCommands(profile, affected);
+    assert.deepEqual(plan.commands[0]?.args, ["test", "-mod=readonly", "-json", "-count=1", "./service", "./shared"]);
+
+    const unsupported = goAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "nested/go.mod"], profile });
+    assert.ok(unsupported.blockers.includes("Go support requires one root go.mod; workspaces and nested modules require full validation"));
+    assert.deepEqual(unsupported.testPackages, {});
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 for (const unresolved of [false, true]) {
