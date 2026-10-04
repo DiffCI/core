@@ -16,3 +16,5 @@ Actual result and reproduction command:
 A good fixture contains a changed source, an importing test, and an unrelated test. Include transitive imports if relevant. Assert membership and fallback reasons, rather than incidental node order or timing. Unsupported configuration must produce uncertainty/full fallback, never an empty successful selection. Always remove temporary directories in `finally`.
 
 For a public-repository pilot, record the repository URL, base/head SHAs, DiffCI version, exact commands, environment, cache preparation, repetitions, raw reports, and limitations. Selection count is not measured savings. Do not claim zero false negatives from passing commands alone; include failure assessment and the scope of validation.
+
+Use the [benchmark report template](benchmark-report-template.md) for monthly roundups so refusals, failures, full fallbacks, and provenance invalidations remain in the published denominator.
