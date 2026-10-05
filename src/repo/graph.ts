@@ -758,6 +758,20 @@ export async function buildDependencyGraph(
   // Resolve each importer with its own nearest project, never another package's
   // aliases. Invalid project configuration remains a hard safety blocker.
   const projectOptions = new Map<string, ts.CompilerOptions>();
+  function hasUnavailableExternalBase(config: unknown, errors: readonly ts.Diagnostic[]): boolean {
+    if (!config || typeof config !== "object") return false;
+    const rawExtends = (config as { extends?: unknown }).extends;
+    const entries = Array.isArray(rawExtends) ? rawExtends : [rawExtends];
+    const hasPackageBase = entries.some(value =>
+      typeof value === "string" && !value.startsWith(".") && !value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value),
+    );
+    if (!hasPackageBase) return false;
+    // A read-only source clone deliberately has no node_modules. TypeScript reports a package-based
+    // `extends` that would normally be supplied by devDependencies as 5083/6053. The importing
+    // project's own compilerOptions are still parsed and are safer than borrowing another package's
+    // aliases. Any other diagnostic remains a hard blocker.
+    return errors.every(error => error.code === 18003 || error.code === 5083 || error.code === 6053);
+  }
   function optionsFor(file: string): ts.CompilerOptions {
     let directory = dirname(file);
     while (toRelativeInternal(repoPath, directory) !== undefined) {
@@ -767,7 +781,9 @@ export async function buildDependencyGraph(
           const read = ts.readConfigFile(toPosix(config), ts.sys.readFile);
           const parsed = read.error ? undefined : ts.parseJsonConfigFileContent(read.config, ts.sys, directory, undefined, config);
           // No-input diagnostics do not invalidate module-resolution options.
-          if (!parsed || parsed.errors.some(error => error.code !== 18003)) {
+          const invalid = !parsed || parsed.errors.some(error => error.code !== 18003)
+            && !hasUnavailableExternalBase(read.config, parsed.errors);
+          if (invalid) {
             adapterBlockers.push(`Invalid importer TypeScript configuration: ${toRelativeInternal(repoPath, config)}`);
             projectOptions.set(config, compilerOptions);
           } else projectOptions.set(config, parsed.options);
