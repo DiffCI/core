@@ -42,6 +42,27 @@ it("uses each package's aliases and follows newly resolved implementations", asy
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+it("uses local importer options when a package-provided base config is unavailable", async () => {
+  const { dir, write } = fixture();
+  try {
+    write("packages/a/tsconfig.json", JSON.stringify({
+      extends: "@tsconfig/node20/tsconfig.json",
+      compilerOptions: { moduleResolution: "Bundler", module: "ESNext", paths: { alias: ["./src/value.ts"] } },
+      include: ["src/**/*.ts"],
+    }));
+    write("packages/a/src/value.test.ts", "import {value} from 'alias'; console.log(value);");
+    write("packages/a/src/value.ts", "export const value=1;");
+
+    const result = await buildDependencyGraph({ repoPath: dir });
+    assert.ok(!result.adapterBlockers?.some(reason => reason.includes("Invalid importer")), JSON.stringify(result.adapterBlockers));
+    assert.deepEqual(result.graph.dependenciesOf("packages/a/src/value.test.ts"), ["packages/a/src/value.ts"]);
+
+    write("packages/a/tsconfig.json", JSON.stringify({ extends: "./missing-base.json", include: ["src/**/*.ts"] }));
+    const invalidLocalBase = await buildDependencyGraph({ repoPath: dir });
+    assert.ok(invalidLocalBase.adapterBlockers?.some(reason => reason.includes("Invalid importer")));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 it("routes npm projects while retaining entire type and property suites", () => {
   const { dir, write } = fixture();
   try {
