@@ -99,6 +99,7 @@
     "tests/planner/repo-agnostic-engine.test.ts",
     "tests/planner/test-command.test.ts",
     "tests/repo/analyzer.test.ts",
+    "tests/repo/go-runtime-inputs.test.ts",
     "tests/repo/graph.project-references.test.ts",
     "tests/repo/graph.test.ts",
     "tests/repo/impact.test.ts",

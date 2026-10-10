@@ -232,6 +232,7 @@ export class ImpactAnalyzer {
   private isTestFile: IsTestFile = DEFAULT_TEST_FILE_MATCHER;
   private layout: RepositoryLayout = UNKNOWN_REPOSITORY_LAYOUT;
   private repositoryFiles: ReadonlySet<string> | undefined;
+  private goEmbedPaths = new Set<string>();
   constructor(alwaysRunChecks: AlwaysRunCheck[] = DEFAULT_ALWAYS_RUN_CHECKS) { this.alwaysRunChecks = alwaysRunChecks; }
 
   analyze(delta: GitDelta, graphResult: DependencyGraphResult, profile: RepositoryProfile, options: ImpactAnalyzeOptions = {}): ImpactResult {
@@ -250,7 +251,18 @@ export class ImpactAnalyzer {
       const setupDependencies = new Set((profile.vueSetupPaths ?? []).flatMap(path => [path, ...graph.transitiveDependenciesOf(path)]));
       if (delta.files.some(file => allChangePaths(file).some(path => setupDependencies.has(path)))) fallbackReasons.push("Vue suite configuration or shared setup dependency changed; full validation required");
     }
-    if (profile.adapters?.some(adapter => adapter.id === "go") && delta.files.some(file => allChangePaths(file).some(isGoDiscoveryIgnoredPath))) {
+    const hasGoAdapter = profile.adapters?.some(adapter => adapter.id === "go");
+    this.goEmbedPaths = new Set(hasGoAdapter ? profile.goDependencyPaths?.embeds : []);
+    if (hasGoAdapter) {
+      // go list models package sources and embeds, not arbitrary runtime reads. Neither a
+      // familiar extension/directory nor membership in another adapter's graph proves ownership.
+      // Check both identities of renames/copies, including files absent from the HEAD inventory.
+      // Missing metadata in older cached profiles deliberately fails closed as well.
+      const modeledPaths = new Set([...(profile.goDependencyPaths?.sources ?? []), ...this.goEmbedPaths]);
+      const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))].filter(path => !modeledPaths.has(path));
+      if (unmodeledPaths.length) fallbackReasons.push(`Go runtime inputs outside source/embed metadata require full validation: ${unmodeledPaths.slice(0, 20).join(", ")}`);
+    }
+    if (hasGoAdapter && delta.files.some(file => allChangePaths(file).some(isGoDiscoveryIgnoredPath))) {
       fallbackReasons.push("Changes in Go discovery-excluded paths require full validation, including runtime test data");
     }
     const excludedGoRoots = profile.goExcludedModuleRoots ?? [];
@@ -377,6 +389,12 @@ export class ImpactAnalyzer {
     riskSignals: ImpactRiskSignal[],
     fallbackReasons: string[],
   ): void {
+    // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
+    // Traverse it before generic unknown/docs classification can discard the dependency.
+    if (this.goEmbedPaths.has(changedPath)) {
+      this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
+      return;
+    }
     const category = changedImpact.category;
     if (category === "test-fixture") {
       // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
