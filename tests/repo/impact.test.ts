@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { buildDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer, directlyChangedExecutableTests } from "../../src/repo/impact.js";
 import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, RepositoryProfile } from "../../src/repo/types.js";
 import type { ChangedFile, GitDelta, GitDeltaSummary } from "../../src/git/types.js";
@@ -486,4 +490,45 @@ describe("empty test universe fails closed (Phase 01, 2026-08-26)", () => {
     const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), makeProfile());
     assert.ok(!result.riskSignals.some((s) => s.reason === "TEST_UNIVERSE_EMPTY"));
   });
+});
+
+
+describe("deleted asset safety", () => {
+  it("keeps dependent selection when a supplied graph still contains the deleted asset", () => {
+    const graph = makeGraph(["src/value.json", "src/main.ts", "tests/main.test.ts", "tests/unrelated.test.ts"], [
+      ["src/main.ts", "src/value.json"], ["tests/main.test.ts", "src/main.ts"],
+    ]);
+    const profile = makeProfile();
+    const delta = makeDelta("base", "head", [{ path: "src/value.json", changeType: "deleted" }], {}, { deleted: 1 });
+    const impact = new ImpactAnalyzer().analyze(delta, makeDependencyGraphResult(graph), profile);
+    assert.equal(impact.fallbackRequired, false);
+    assert.deepEqual(impact.affectedTests.map(test => test.path), ["tests/main.test.ts"]);
+  });
+
+  for (const extension of ["json", "css", "txt"]) {
+    it(`falls back when a deleted .${extension} asset is absent from the HEAD graph`, async () => {
+      const root = mkdtempSync(join(tmpdir(), "diffci-deleted-asset-"));
+      try {
+        const files = {
+          "package.json": JSON.stringify({ devDependencies: { vitest: "1" } }),
+          "tsconfig.json": JSON.stringify({ compilerOptions: { module: "ESNext", moduleResolution: "Bundler" }, include: ["**/*.ts"] }),
+          "src/main.ts": `import value from './deleted.${extension}'; export { value };`,
+          "tests/main.test.ts": "import { value } from '../src/main'; export { value };",
+          "tests/unrelated.test.ts": "export const unrelated = 1;",
+        };
+        for (const [path, source] of Object.entries(files)) {
+          mkdirSync(dirname(join(root, path)), { recursive: true });
+          writeFileSync(join(root, path), source);
+        }
+        const result = await buildDependencyGraph({ repoPath: root });
+        const delta = makeDelta("base", "head", [{ path: `src/deleted.${extension}`, changeType: "deleted" }], {}, { deleted: 1 });
+        const impact = new ImpactAnalyzer().analyze(delta, result, result.profile);
+        assert.equal(impact.fallbackRequired, true);
+        assert.equal(impact.analysisStatus, "FALLBACK");
+        assert.ok(impact.riskSignals.some(signal => signal.reason === "DELETED_FILE_UNKNOWABLE_GRAPH"));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 });

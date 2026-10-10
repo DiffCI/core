@@ -399,6 +399,13 @@ export class ImpactAnalyzer {
     }
     if (category === "docs") return;
     if (isAssetFilePath(changedPath)) {
+      if (changedImpact.file.changeType === "deleted" && !hasNode(graph, changedPath)) {
+        const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
+        evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
+        riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+        return;
+      }
       this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
       return;
     }
