@@ -28,6 +28,8 @@ import ts from "typescript";
 export type TestFamily = "unit" | "snapshot" | "e2e" | "integration" | "benchmark";
 
 export interface TestRunnerConfig {
+  /** A known unsupported declaration that makes even a nonempty test universe incomplete. */
+  discoveryError?: string;
   /** Inline Vitest projects; undefined means no projects, null means ambiguous. */
   projects?: { name: string; includes: string[]; runtimeSelectionSafe: boolean }[] | null;
   runtimeSelectionUnsafe?: boolean;
@@ -59,6 +61,43 @@ export interface TestRunnerConfig {
    * the runner really executes, and a test DiffCI cannot see is a test it cannot select.
    */
   authoritative: boolean;
+}
+
+/** Root-relative patterns cannot be interpreted as repository-relative patterns. Keep
+ * default roots supported, but require full validation for roots we do not resolve. */
+function unsupportedRoot(source: string, runner: "vitest" | "jest"): string | undefined {
+  const key = runner === "jest" ? "rootDir" : "root";
+  const ast = ts.createSourceFile("config.ts", source, ts.ScriptTarget.Latest, true);
+  let unsupported = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+      && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      && (ts.isPropertyAccessExpression(node.left) && node.left.name.text === key
+        || ts.isElementAccessExpression(node.left) && ts.isStringLiteral(node.left.argumentExpression) && node.left.argumentExpression.text === key)) unsupported = true;
+    if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node))
+      && ((ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === key
+        || ts.isComputedPropertyName(node.name) && ts.isStringLiteral(node.name.expression) && node.name.expression.text === key)) {
+      const value = ts.isPropertyAssignment(node) ? node.initializer : undefined;
+      if (!value || !(ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value))
+        || ![".", "./", "./."].includes(value.text)) unsupported = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(ast);
+  return unsupported ? `Unsupported ${runner} ${key}; root-relative test discovery requires full validation` : undefined;
+}
+
+interface TestDiscoveryProfile {
+  testRunnerConfigs?: TestRunnerConfig[];
+  workspaceTestPackages?: { packageRoot: string; profile: TestDiscoveryProfile }[];
+}
+
+/** Discovery blockers also apply to declared workspace suites and empty selections. */
+export function testDiscoveryErrors(profile: TestDiscoveryProfile): string[] {
+  return [
+    ...(profile.testRunnerConfigs ?? []).flatMap(config => config.discoveryError ? [`${config.file}: ${config.discoveryError}`] : []),
+    ...(profile.workspaceTestPackages ?? []).flatMap(suite => testDiscoveryErrors(suite.profile).map(reason => `${suite.packageRoot}/${reason}`)),
+  ];
 }
 
 function runtimeIsolationUnsafe(source: string): boolean {
@@ -269,7 +308,9 @@ export function discoverTestRunnerConfigs(repoPath: string, scripts: Record<stri
     const runner = m[1]!.toLowerCase() as "vitest" | "jest";
     const isDefault = m[2] === undefined;
     const extracted = extractTestPatterns(source);
+    const discoveryError = unsupportedRoot(source, runner);
     configs.push({
+      ...(discoveryError ? { discoveryError } : {}),
       ...(runner === "vitest" ? { projects: inlineProjects(source) } : {}),
       ...(runner === "vitest" && runtimeIsolationUnsafe(source) ? { runtimeSelectionUnsafe: true } : {}),
       file: name,
@@ -282,8 +323,19 @@ export function discoverTestRunnerConfigs(repoPath: string, scripts: Record<stri
       roots: extracted.roots,
       declaresTests: extracted.declaresTests,
       isDefault,
-      authoritative: extracted.declaresTests && extracted.complete && extracted.includes.length > 0,
+      authoritative: !discoveryError && extracted.declaresTests && extracted.complete && extracted.includes.length > 0,
     });
+  }
+
+  // A bare runner config still has a real default suite. Until those defaults can be
+  // assigned per invocation, neither an explicit sibling nor a first matching config
+  // can safely replace it. Partial declarations have the same missing-suite risk.
+  if (configs.length > 1) {
+    for (const config of configs) {
+      if (!config.authoritative && !config.discoveryError) {
+        config.discoveryError = "Multiple runner configurations require completely understood explicit test includes; full validation required";
+      }
+    }
   }
 
   // THE REPLACEMENT RULE, and it is deliberately narrow.
@@ -306,9 +358,10 @@ export function discoverTestRunnerConfigs(repoPath: string, scripts: Record<stri
 
   // Excludes, ignores and roots are NARROWING, so they are honoured only from configs whose
   // declaration was fully understood - and only when the declaration is actually in force.
-  // Narrowing metadata is honoured ONLY from an authoritative DEFAULT config. A variant roots or
-  // ignore list governs that variant own job, and applying it repository-wide would over-narrow.
-  const authoritative = replacedDefaults ? defaults : [];
+  // A restriction belongs to one runner invocation, not to the union of all suites.
+  // With multiple configs, keep the conservative include union without global vetoes:
+  // a named suite may deliberately run files excluded by the default config.
+  const authoritative = replacedDefaults && configs.length === 1 ? defaults : [];
   return {
     configs,
     patterns: Array.from(patterns),
@@ -422,8 +475,8 @@ export interface TestFileMatcherOptions {
   roots?: readonly string[];
 }
 
-function compile(patterns: readonly string[]): RegExp[] {
-  return patterns.flatMap((p) => expandBraces(p.includes("/") ? p : `**/${p}`)).map(globToRegex);
+function compile(patterns: readonly string[], widenBarePatterns = true): RegExp[] {
+  return patterns.flatMap((p) => expandBraces(!widenBarePatterns || p.includes("/") ? p : `**/${p}`)).map(globToRegex);
 }
 
 /** Builds a matcher over repo-relative posix paths. Patterns without a slash (bare filename globs)
@@ -433,7 +486,9 @@ export function createTestFileMatcher(
   options: TestFileMatcherOptions = {},
 ): TestFileMatcher {
   const regexes = compile(patterns);
-  const excludes = compile(options.excludePatterns ?? []);
+  // Widening an include is conservative, but widening an exclude can hide tests.
+  // In particular, `example.test.js` excludes only that root-relative file.
+  const excludes = compile(options.excludePatterns ?? [], false);
   const authoritative = compile(options.authoritativePatterns ?? []);
   const ignoreRegexes = options.ignoreRegexes ?? [];
   const roots = options.roots ?? [];
