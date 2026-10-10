@@ -25,6 +25,7 @@ interface ImportRef {
   specifier: string;
   kind: DependencyEdgeKind;
   dynamic: boolean;
+  computed?: boolean;
 }
 
 const SOURCE_EXTENSIONS = new Set([
@@ -108,6 +109,11 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
         const kind: DependencyEdgeKind = isTypeOnly ? "type-import" : "import";
         refs.push({ specifier: specifier.text, kind, dynamic: false });
       }
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const specifier = node.moduleReference.expression;
+      if (specifier && ts.isStringLiteral(specifier)) {
+        refs.push({ specifier: specifier.text, kind: node.isTypeOnly ? "type-import" : "require", dynamic: false });
+      }
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
@@ -116,30 +122,15 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       }
     } else if (ts.isCallExpression(node)) {
       const firstArg = node.arguments[0];
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword && firstArg) {
-        if (ts.isStringLiteral(firstArg)) {
-          refs.push({
-            specifier: firstArg.text,
-            kind: "dynamic-import",
-            dynamic: true,
-          });
-        } else {
-          refs.push({
-            specifier: firstArg.getText(sourceFile).slice(0, 200),
-            kind: "dynamic-import",
-            dynamic: true,
-          });
-        }
-      } else if (
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "require" &&
-        firstArg &&
-        ts.isStringLiteral(firstArg)
-      ) {
+      const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
+      if ((isImport || isRequire) && firstArg) {
+        const literal = ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg);
         refs.push({
-          specifier: firstArg.text,
-          kind: "require",
-          dynamic: false,
+          specifier: literal ? firstArg.text : firstArg.getText(sourceFile).slice(0, 200),
+          kind: isImport ? "dynamic-import" : "require",
+          dynamic: isImport || !literal,
+          computed: !literal,
         });
       }
     }
@@ -806,6 +797,13 @@ export async function buildDependencyGraph(
     const refs = extractImportRefs(sf);
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
+      // Expression text is not a module name. In particular, import(name) must
+      // not be classified as an external package called "name".
+      if (ref.computed) {
+        recordUnresolved(importerRel, ref, "computed module specifier requires full validation");
+        recordReference("unresolved", importerRel, ref);
+        continue;
+      }
       if (!ref.specifier) {
         recordUnresolved(importerRel, ref, "empty specifier");
         recordReference("unresolved", importerRel, ref);
@@ -1258,14 +1256,16 @@ function computeConfidence(
  * graph for EVERY delta, for as long as that one file's import stays unresolved, regardless of whether
  * the delta being analyzed has anything to do with it.
  *
- * This narrows that: an unresolved import only makes THIS delta's confidence untrustworthy if the
- * unresolved import's importer file is actually reachable from the delta's changed files (in either
+ * For static unresolved references, this narrows that: an unresolved import makes THIS delta's
+ * confidence untrustworthy if its importer is actually reachable from the changed files (in either
  * direction - the changed file might depend on the incomplete file, or something reachable from the
  * changed file might). If none of the graph's unresolved imports are anywhere near this delta, the
  * graph's real incompleteness elsewhere cannot plausibly affect what can safely be determined about
  * THIS specific change.
  *
  * Deliberately NOT narrowed - these remain hard, global blockers regardless of the delta:
+ * - Unresolved runtime imports/requires: a computed target has no known graph edge, so lack of
+ *   reachability cannot establish that it does not load one of the changed files.
  * - `sourceFileCount === 0` (an empty graph gives no reachability information to reason about at all).
  * - `integrity.criticalCount > 0` (the graph's own internal structure is broken - a construction bug,
  *   not a property of any one file, so no delta-specific narrowing is meaningful).
@@ -1278,6 +1278,9 @@ function computeConfidence(
  * sourceFileCount or integrity triggered it. */
 export function refineConfidenceForDelta(result: DependencyGraphResult, changedFiles: string[]): GraphConfidence {
   if (result.adapterBlockers?.length) return "UNSAFE";
+  // An unresolved runtime target can be any changed file. Its missing edge
+  // cannot prove the importer is unrelated to the delta.
+  if (result.unresolved.some(ref => ref.dynamic)) return "UNSAFE";
   // Anything that was never UNSAFE in the first place passes through untouched - there is nothing to
   // narrow, and re-deriving sourceFileCount/integrity from raw fields here (rather than trusting the
   // already-computed confidence) would be both redundant and a real correctness risk: a caller's
