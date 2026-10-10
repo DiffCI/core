@@ -664,6 +664,11 @@ export async function buildDependencyGraph(
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
   profile.goTestPackages = Object.assign({}, ...contributions.map((item) => item.testPackages));
   profile.goTestEnvironment = contributions.find((item) => item.id === "go")?.executionEnv;
+  const goContribution = contributions.find((item) => item.id === "go");
+  profile.goDependencyPaths = goContribution ? {
+    sources: [...new Set(goContribution.sourcePaths)].sort(),
+    embeds: [...new Set(goContribution.assetPaths)].sort(),
+  } : undefined;
   profile.mavenTestModules = Object.assign({}, ...contributions.filter((item) => item.id === "maven").map((item) => item.testPackages));
   const adapterTests = contributions.flatMap((item) => item.testFiles);
   profile.testFilePaths = [...new Set([...profile.testFilePaths, ...adapterTests])].sort();
