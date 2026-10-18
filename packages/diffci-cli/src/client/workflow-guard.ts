@@ -44,7 +44,7 @@ const WRITE_PERMISSION = "write";
 export interface WorkflowGuardOptions {
   /**
    * How a step is recognised as the DiffCI action. Defaults to any `uses:` mentioning "diffci",
-   * which covers `owner/DiffCI.com@sha`, a local `./.github/actions/diffci`, and a future npm-published
+   * which covers `DiffCI/core@sha`, a local `./.github/actions/diffci`, and a future npm-published
    * action alike.
    */
   actionPattern?: RegExp;
@@ -91,7 +91,7 @@ function listWorkflowFiles(repoPath: string): string[] {
  */
 /**
  * Does this step run DiffCI? Two forms have to be recognised, and only one of them has "diffci" in the
- * string: a third-party repository writes `uses: owner/DiffCI.com@<sha>`, while this repository (and
+ * string: a third-party repository writes `uses: DiffCI/core@<sha>`, while this repository (and
  * anyone vendoring the action) writes `uses: ./`, which names a directory. A guard that missed the
  * local form would report "no job runs the DiffCI action" for the one installation we control - and
  * silently check nothing.

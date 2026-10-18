@@ -162,4 +162,4 @@ Run `npm test` for this revision. Even though the report lists one selected test
 - `REFUSED` and `ERROR` mean analysis did not succeed. Use the normal test commands and inspect the reported reason.
 - One paired timing is preliminary. Repeat measurements and account for cache and setup costs before claiming savings.
 
-For supported languages and setup limits, see the [support matrix](https://github.com/DiffCI/DiffCI.com/blob/main/docs/language-support.md). For the difference between this engine and the published CLI, see the [package relationship](https://github.com/DiffCI/DiffCI.com/blob/main/docs/package-relationship.md).
+For supported languages and setup limits, see [What is included](../README.md#what-is-included). For the published CLI and source boundary, see [the release boundary](release-boundary.md#published-cli-source-archive).

@@ -1,7 +1,0 @@
-# The historical CLI source archive is retained byte-for-byte, including its
-# original line endings and upstream terminal blank lines. Do not normalize the
-# archive during migration or checkout on Windows.
-/packages/diffci-cli/** -text
-/packages/diffci-cli/LICENSE -whitespace
-/packages/diffci-cli/src/client/spec-conflicts.ts -whitespace
-/packages/diffci-cli/src/client/working-tree.ts -whitespace

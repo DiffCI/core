@@ -1,6 +1,6 @@
 {
   "name": "@diffci.com/diffci",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "description": "Fail-closed, change-aware verification for AI coding agents with conservative affected-test selection",
   "keywords": [
     "ci",
@@ -24,10 +24,17 @@
   "mcpName": "io.github.DiffCI/diffci",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DiffCI/DiffCI.com.git"
+    "url": "git+https://github.com/DiffCI/core.git",
+    "directory": "packages/diffci-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/DiffCI/core/issues"
   },
   "homepage": "https://diffci.com/",
   "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.5.0"
@@ -37,147 +44,26 @@
     "diffci-mcp": "dist-client/src/client/mcp.js"
   },
   "files": [
-    "action.yml",
     "dist-client/src/client",
     "dist-client/src/preflight",
     "README.md",
-    "site/assets/calcom-runtime-evidence.svg",
-    "server.json",
-    "glama.json",
-    "llms.txt",
-    "docs/ai-agents.md",
-    "docs/adoption-outreach.md",
-    "docs/adoption-metrics.md",
-    "docs/agent-adoption-kit.md",
-    "docs/agent-adoption-targets.md",
-    "docs/mcp.md",
-    "docs/codex.md",
-    "docs/claude-code.md",
-    "docs/cursor.md",
-    "docs/copilot.md",
-    "docs/grok.md",
-    "docs/distribution.md",
-    "docs/npm-adoption.md",
-    "docs/language-support.md",
-    "SECURITY.md",
-    "SUPPORT.md",
-    "COMMERCIAL.md",
-    ".claude-plugin/marketplace.json",
-    ".agents/plugins/marketplace.json",
-    "docs/agent-plugin.md",
-    "packaging/agent-plugin",
-    "packaging/public-plugin"
+    "LICENSE"
   ],
-  "exports": {
-    "./*": {
-      "types": "./dist/src/*.d.ts",
-      "default": "./dist/src/*.js"
-    }
-  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "tsc",
-    "test": "tsx --test \"tests/**/*.test.ts\"",
-    "check": "npm run check:public-metadata && npm run typecheck && npm run test",
-    "prepack": "npm run build:client",
-    "package:smoke": "node scripts/package-smoke.mjs",
-    "diffci": "tsx scripts/diffci.ts",
-    "diffci:verify": "tsx src/client/cli.ts verify --changed --json",
-    "impact": "tsx scripts/diffci.ts impact",
-    "observe": "tsx src/client/cli.ts observe",
-    "verify-workflow": "tsx src/client/cli.ts verify-workflow",
+    "build": "npm run build:client",
     "build:client": "tsc -p tsconfig.client.json && node scripts/ensure-client-executables.mjs",
-    "build:agent": "tsx scripts/build-agent.ts",
-    "inspect:agent": "tsx scripts/inspect-agent-package.ts",
-    "dogfood": "tsx scripts/dogfood-observe.ts",
-    "dogfood:report": "tsx scripts/dogfood-report.ts",
-    "dogfood:mutate": "tsx scripts/dogfood-mutate.ts",
-    "dogfood:qualify": "tsx scripts/dogfood-qualify.ts",
-    "dogfood:freeze": "tsx scripts/dogfood-freeze.ts",
-    "shadow": "tsx scripts/diffci-shadow.ts",
-    "shadow-report": "tsx scripts/diffci-shadow-report.ts",
-    "evidence:dentalpresence": "tsx scripts/dentalpresence-evidence-report.ts",
-    "evidence:dentalpresence-pairs": "tsx scripts/dentalpresence-pair-report.ts",
-    "check:dentalpresence": "tsx scripts/check-dentalpresence.ts",
-    "audit:dentalpresence": "tsx scripts/audit-dentalpresence-graph.ts",
-    "audit:dentalpresence-impact": "tsx scripts/audit-dentalpresence-impact.ts",
-    "research:stage0": "tsx src/research/cli/run-stage0.ts",
-    "research:sandbox:deploy": "wrangler deploy --config wrangler.research-sandbox.jsonc",
-    "shadow:upload-source": "tsx scripts/upload-shadow-source.ts",
-    "shadow:deploy": "tsx scripts/deploy-research-sandbox.ts",
-    "shadow:screen": "tsx scripts/screen-shadow-eligibility.ts",
-    "shadow:status": "node scripts/shadow-status.mjs",
-    "shadow:report": "tsx scripts/generate-shadow-report.ts",
-    "shadow:freshness": "tsx scripts/check-deployment-freshness.ts",
-    "shadow:missed-commits": "tsx scripts/derive-missed-commits.ts",
-    "github-runner:deploy": "wrangler deploy --config wrangler.github-runner.jsonc",
-    "product:deploy": "wrangler deploy --config wrangler.product.jsonc",
-    "product:migrate": "tsx scripts/migrate-product-db.ts",
-    "site:dev": "wrangler dev --config wrangler.site.jsonc --port 8788",
-    "site:check": "tsx --test tests/site/seo.test.ts tests/site/site-worker.test.ts",
-    "site:prepare": "npm run site:sitemap && npm run site:check",
-    "site:deploy": "npm run site:prepare && wrangler deploy --config wrangler.site.jsonc && npm run site:indexnow",
-    "site:sitemap": "node scripts/generate-site-sitemap.mjs",
-    "site:indexnow": "node scripts/submit-indexnow.mjs",
-    "release:sync": "node scripts/sync-public-metadata.mjs",
-    "study:render": "tsx scripts/render-open-study.ts",
-    "validation:deploy": "wrangler deploy --config wrangler.validation-env.jsonc",
-    "validation:pack": "tsx scripts/diffci-validation-cli.ts pack",
-    "validation:start": "tsx scripts/diffci-validation-cli.ts start",
-    "validation:status": "tsx scripts/diffci-validation-cli.ts status",
-    "validation:collect": "tsx scripts/diffci-validation-cli.ts collect",
-    "dogfood:compare": "tsx scripts/dogfood-compare.ts",
-    "verify:savings-pilot": "tsx scripts/verify-savings-pilot.ts",
-    "test:calibration": "tsx --test \"tests/scripts/harness-calibration.test.ts\" \"tests/scripts/compute-usage.test.ts\"",
-    "agent:equivalence": "tsx scripts/agent-equivalence.ts",
-    "dogfood:economics": "tsx scripts/dogfood-economics.ts",
-    "analyze:buckets": "tsx scripts/analyze-selection-buckets.ts",
-    "trace:selection": "tsx scripts/trace-selection-provenance.ts",
-    "diagnose:symbols": "tsx scripts/diagnose-symbol-precision.ts",
-    "eligibility": "tsx scripts/economic-eligibility.ts",
-    "calibrate": "tsx scripts/calibrate-repository.ts",
-    "survey": "tsx scripts/survey-run.ts",
-    "diagnose:candidate": "tsx scripts/diagnose-candidate.ts",
-    "select:candidate": "tsx scripts/select-source-candidate.ts",
-    "survey:density": "tsx scripts/survey-mapping-density.ts",
-    "trace:imports": "tsx scripts/trace-import-resolution.ts",
-    "select:compute-proof": "tsx scripts/select-compute-proof.ts",
-    "funnel:qualification": "tsx scripts/qualification-funnel.ts",
-    "select:mechanism-proof": "tsx scripts/select-mechanism-proof.ts",
-    "observe:pairs": "tsx scripts/observe-named-pairs.ts",
-    "qualify:universe": "tsx scripts/qualify-universe.ts",
-    "corpus:register": "tsx scripts/register-corpus-entry.ts",
-    "ci:benchmark": "tsx scripts/ci-inference-benchmark.ts",
-    "ci:reproduce": "tsx scripts/ci-reproduction.ts",
-    "cloud:pilot": "tsx scripts/diffci-analysis-fanout-cli.ts",
-    "check:oss-boundary": "node scripts/check-oss-boundary.mjs",
-    "check:public-metadata": "node scripts/check-public-metadata.mjs",
-    "registry:verify": "node scripts/verify-mcp-registry.mjs"
+    "prepack": "npm run build:client",
+    "package:check": "node scripts/check-package-boundary.mjs",
+    "package:smoke": "node scripts/package-smoke.mjs"
   },
   "dependencies": {
-    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#9d575cef7b1dd118300cd6298c9f85a8c1a44ad8",
-    "@types/node": "^22.15.12",
-    "@vue/compiler-sfc": "3.5.42",
-    "typescript": "^5.8.3",
+    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#4c76be14cec37d94eb7df93922f3c29d202f4e65",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@cloudflare/containers": "^0.3.7",
-    "@cloudflare/sandbox": "0.12.5",
-    "esbuild": "^0.28.2",
-    "pdf-lib": "^1.17.1",
-    "tsx": "^4.23.12",
-    "wrangler": "4.120.0"
-  },
-  "diffci": {
-    "alwaysRunTests": [
-      "**/security.test.*",
-      "**/test-security.*",
-      "**/*api-guardrails*",
-      "**/verify-*.test.*",
-      "**/validate-*.test.*",
-      "scripts/**/*.test.mjs"
-    ]
+    "@types/node": "^22.15.12",
+    "typescript": "^5.8.3"
   },
   "bundleDependencies": [
     "@diffci.com/core"

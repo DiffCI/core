@@ -1,10 +1,12 @@
-DiffCI repository licensing notice
+DiffCI CLI licensing notice
 
-DiffCI has two separate licensing boundaries.
+This package and its bundled DiffCI Core dependency are licensed under the GNU
+Affero General Public License version 3.0 only (AGPL-3.0-only). Their public
+source and release boundary are documented at
+https://github.com/DiffCI/core/blob/main/docs/release-boundary.md.
 
-1. DiffCI Core, the installable open-source package published as `@diffci.com/diffci`, is licensed under the GNU Affero General Public License version 3.0 only (AGPL-3.0-only). The OSS package boundary is defined in `docs/oss-boundary.md` and enforced by `npm run check:oss-boundary`.
-
-2. Commercial DiffCI, including hosted-service, product, billing, runner, research, operations, site, deployment, and control-plane source outside the OSS package boundary, is proprietary software. Those files are not open source and are not licensed under the AGPL unless they are deliberately moved into the OSS package boundary in a later change.
+Hosted DiffCI services, operational systems, and other product components are
+not included in this package or this public source repository.
 
 The AGPL-3.0 license text for DiffCI Core follows.
                     GNU AFFERO GENERAL PUBLIC LICENSE

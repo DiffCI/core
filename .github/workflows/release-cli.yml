@@ -1,0 +1,69 @@
+name: Publish CLI
+
+on:
+  push:
+    tags:
+      - "cli-release-v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish @diffci.com/diffci
+    runs-on: ubuntu-24.04
+    env:
+      GIT_SSH_COMMAND: /bin/false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: packages/diffci-cli/package-lock.json
+
+      - name: Install npm with trusted-publishing support
+        run: npm install --global npm@11
+
+      - name: Require an exact release tag
+        working-directory: packages/diffci-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          expected="cli-release-v$version"
+          test "$GITHUB_REF_NAME" = "$expected"
+
+      - name: Install CLI dependencies
+        working-directory: packages/diffci-cli
+        run: npm ci --no-audit --fund=false
+
+      - name: Verify the release package
+        working-directory: packages/diffci-cli
+        run: |
+          npm run typecheck
+          npm run build
+          npm run package:check
+          npm run package:smoke
+
+      - name: Refuse an already-published version
+        id: npm_version
+        working-directory: packages/diffci-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name=$(node -p "require('./package.json').name")
+          package_version=$(node -p "require('./package.json').version")
+          if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
+            echo "Refusing to republish $package_name@$package_version" >&2
+            exit 1
+          fi
+
+      - name: Publish with npm trusted publishing
+        working-directory: packages/diffci-cli
+        run: npm publish --access public --provenance

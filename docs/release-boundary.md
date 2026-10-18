@@ -26,11 +26,13 @@ The private product may retain its existing engine snapshot while package integr
 
 ## Published CLI source archive
 
-`packages/diffci-cli/` initially holds the hash-bound corresponding source for
-the already-published `@diffci.com/diffci@0.3.10` executable. It contains only
-the public client/MCP source closure, its build metadata, and the public Core
-dependency; it intentionally excludes product services and operations. The
-archive's `SOURCE-ARCHIVE.md` and `SOURCE-MANIFEST.json` identify the original
-commit and npm tarball, and its regression test verifies every recorded digest.
-It is a historical source archive, not an instruction to publish that revision
-again. A later Core-native CLI release must undergo its own boundary review.
+The hash-bound corresponding source for the already-published
+`@diffci.com/diffci@0.3.10` executable is retained at the immutable
+[`cli-v0.3.10-source`](https://github.com/DiffCI/core/tree/cli-v0.3.10-source/packages/diffci-cli)
+tag. It contains only the public client/MCP source closure, its build metadata,
+and the public Core dependency; it intentionally excludes product services and
+operations. See [published CLI source archives](source-archives.md) for the
+historical lockfile's HTTPS-only build instructions.
+
+The live `packages/diffci-cli/` directory is the separately reviewed,
+Core-native successor package. It is not a rewrite of the historical archive.
