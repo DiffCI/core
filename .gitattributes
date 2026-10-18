@@ -1,0 +1,5 @@
+# The historical CLI source archive is retained byte-for-byte, including these
+# upstream terminal blank lines. Do not normalize the archive during migration.
+/packages/diffci-cli/LICENSE -whitespace
+/packages/diffci-cli/src/client/spec-conflicts.ts -whitespace
+/packages/diffci-cli/src/client/working-tree.ts -whitespace

@@ -1,0 +1,21 @@
+{
+  // Build config for the client-side observer only (Phase 02, 2026-08-26).
+  //
+  // The GitHub Action installs this repository's PRODUCTION dependencies only - `npm ci --omit=dev` -
+  // inside somebody else's CI, where every second and every megabyte is charged to them. Compiling the
+  // whole of src/ would drag in the Cloudflare Worker modules and their dev-only type packages, so this
+  // config names one entry point and lets tsc follow the imports: whatever the observer actually needs
+  // is compiled, and nothing else is.
+  //
+  // If a future edit makes this build fail with a missing @cloudflare/* type, the cause is an import
+  // that pulled server code into the client path. Fix the import, not this file.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-client",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false
+  },
+  "files": ["src/client/cli.ts", "src/client/mcp.ts"],
+  "include": []
+}

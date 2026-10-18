@@ -31,6 +31,10 @@ retains existing CI jobs, and uploads an advisory report. See the
 [observer Action guide](docs/github-action-observer.md) and
 [workflow example](examples/github-actions-observer.yml).
 
+The [v0.3.10 CLI source archive](packages/diffci-cli/SOURCE-ARCHIVE.md) keeps
+the corresponding public source available for the already-published npm
+executable while distribution migrates to Core.
+
 Try the published CLI in an existing Git checkout with Git and Node.js 22.5+:
 
 ```sh

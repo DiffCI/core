@@ -23,3 +23,14 @@ The high-level API requires a clean checkout at the requested head. Lower-level 
 `measure` observes the current process, excluding child-process CPU, and reports ending RSS rather than peak memory. `estimateImpact` returns assumptions and explicitly estimated energy/carbon/cost. It does not establish an avoided-compute counterfactual or environmental savings.
 
 The private product may retain its existing engine snapshot while package integration is migrated separately. Separate repositories alone do not determine obligations for combined works. Future externally contributed code must retain its license and cannot automatically be used under proprietary terms.
+
+## Published CLI source archive
+
+`packages/diffci-cli/` initially holds the hash-bound corresponding source for
+the already-published `@diffci.com/diffci@0.3.10` executable. It contains only
+the public client/MCP source closure, its build metadata, and the public Core
+dependency; it intentionally excludes product services and operations. The
+archive's `SOURCE-ARCHIVE.md` and `SOURCE-MANIFEST.json` identify the original
+commit and npm tarball, and its regression test verifies every recorded digest.
+It is a historical source archive, not an instruction to publish that revision
+again. A later Core-native CLI release must undergo its own boundary review.

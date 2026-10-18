@@ -8,9 +8,19 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = JSON.parse(readFileSync(join(root, 'release-files.json'), 'utf8'));
 const allowed = new Set(manifest.files);
 const errors = [];
+const sourceRoots = [
+  {
+    prefix: 'src/',
+    allowsPackage: (specifier) => ['typescript', 'yaml', '@vue/compiler-sfc'].includes(specifier),
+  },
+  {
+    prefix: 'packages/diffci-cli/src/',
+    allowsPackage: (specifier) => specifier === 'yaml' || specifier === '@diffci.com/core' || specifier.startsWith('@diffci.com/core/'),
+  },
+];
 function files(dir) {
   return readdirSync(dir).flatMap(name => {
-    if (['.git', 'node_modules', 'dist', 'coverage'].includes(name) || name.endsWith('.tgz')) return [];
+    if (['.git', 'node_modules', 'dist', 'dist-client', 'coverage'].includes(name) || name.endsWith('.tgz')) return [];
     const full = join(dir, name);
     const stat = lstatSync(full);
     if (stat.isSymbolicLink()) { errors.push(`Symlink is not allowed: ${relative(root, full)}`); return []; }
@@ -30,14 +40,15 @@ const secretPatterns = [
 for (const file of actual) {
   const content = readFileSync(join(root, file), 'utf8');
   if (secretPatterns.some(pattern => pattern.test(content))) errors.push(`Potential credential in ${file} (value redacted)`);
-  if (!file.startsWith('src/') || !file.endsWith('.ts')) continue;
+  const sourceRoot = sourceRoots.find(({ prefix }) => file.startsWith(prefix));
+  if (!sourceRoot || !file.endsWith('.ts')) continue;
   const ast = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true);
   function check(specifier) {
     if (specifier.startsWith('.')) {
       const full = resolve(dirname(join(root, file)), specifier.replace(/\.js$/, '.ts'));
       const rel = relative(root, full).split(sep).join('/');
-      if (!rel.startsWith('src/') || !allowed.has(rel) || !existsSync(full)) errors.push(`Non-Core import in ${file}: ${specifier}`);
-    } else if (!specifier.startsWith('node:') && !['typescript', 'yaml', '@vue/compiler-sfc'].includes(specifier)) errors.push(`Unapproved dependency in ${file}: ${specifier}`);
+      if (!rel.startsWith(sourceRoot.prefix) || !allowed.has(rel) || !existsSync(full)) errors.push(`Non-Core import in ${file}: ${specifier}`);
+    } else if (!specifier.startsWith('node:') && !sourceRoot.allowsPackage(specifier)) errors.push(`Unapproved dependency in ${file}: ${specifier}`);
   }
   function walk(node) {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) check(node.moduleSpecifier.text);

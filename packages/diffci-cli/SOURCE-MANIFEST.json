@@ -1,0 +1,120 @@
+{
+  "schema": "diffci.source-archive.v1",
+  "package": "@diffci.com/diffci",
+  "version": "0.3.10",
+  "sourceCommit": "c2314eb9dfb965ca1e6a17ef1ccffe9f5843eea6",
+  "npm": {
+    "shasum": "41dda3e616ff374888be2278981126836083b5a3",
+    "integrity": "sha512-uQcS9/ICMo4VCmvx7j829AdWMjJkUdcaiRegxRDc9orUrQBkhNqr2dmRlxlXd+hMRqX85KourasUfBUs5JeSNg=="
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "07ac84d9b7ba31f22354e402356de3eed2b1111cc1ed17ad020d9c21b5b0c13f"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "a2587315fa161e05116ff72e8643e91226a36da542bc160dee82c33c99f048c1"
+    },
+    {
+      "path": "package.json",
+      "sha256": "1e18230990c17259d39229c0b6e5554454557316146376cd25d7ecb833ae6a8c"
+    },
+    {
+      "path": "scripts/ensure-client-executables.mjs",
+      "sha256": "6663f329e8fbc26ad9d11a380ca6bd9f272a50e6f850848bfc7a4769e3486eca"
+    },
+    {
+      "path": "SOURCE-ARCHIVE.md",
+      "sha256": "8674cc4227aba784edbf501c4114639074f294b48a799e8e4209fcd60673b3fb"
+    },
+    {
+      "path": "src/client/agent-selection.ts",
+      "sha256": "bc0f4c6d29dbfb420952e78e707b95b20471944b1cb0c731fb1f305b03fcc988"
+    },
+    {
+      "path": "src/client/cli.ts",
+      "sha256": "fa24ca786d334ba0ec749ed3f1ecfc248214d55f752d9112fb09efa9b0ce7aca"
+    },
+    {
+      "path": "src/client/context.ts",
+      "sha256": "836a0a93dee503c71a2543e9c67161d1859f95bbfd0d05d0e2a5db14058eee2c"
+    },
+    {
+      "path": "src/client/delivery-warning.ts",
+      "sha256": "01e7e920d81f89b7274c0f74657ea29d995233ee8e62ece4c42d930939912142"
+    },
+    {
+      "path": "src/client/economics.ts",
+      "sha256": "fd340fef608e15abec55c90baf8dec4787abd123f364c260ca08367e551e5d6d"
+    },
+    {
+      "path": "src/client/full-command.ts",
+      "sha256": "63431f9a00414b1ab012e62ba05c5c967a0a81222dde02e143c54d25bfdd0e6e"
+    },
+    {
+      "path": "src/client/install.ts",
+      "sha256": "a84ef303c8488a537b9d2afc78d33a224b159b6e7c25aca546e41572012c65c6"
+    },
+    {
+      "path": "src/client/mcp.ts",
+      "sha256": "5ece1f0a75fd6abb9125444e2278cdba19bd1ce953b98da348e5ab613ae67f14"
+    },
+    {
+      "path": "src/client/observe.ts",
+      "sha256": "fd65577ca47bc8180aa199a6b9b614c5233a9e8220318091e16cdf395669f000"
+    },
+    {
+      "path": "src/client/pilot-packet.ts",
+      "sha256": "59da7b49fa5d17cf25a617985fd489096c974c03f80880a0f29080a2fe737bc8"
+    },
+    {
+      "path": "src/client/report.ts",
+      "sha256": "ef4e3a5e261aecf8155394a990bd8b5011efde6f5ab22f3e48717f563c6d7f85"
+    },
+    {
+      "path": "src/client/spec-conflicts.ts",
+      "sha256": "57d7efc4e65a3969ad059f95a7f24572bf2bc1337f83e44eb25222a783092f12"
+    },
+    {
+      "path": "src/client/submit.ts",
+      "sha256": "335184e1288daeb564606327896bdf3dcd6763c5eed7e4266d98174cd37a1cc8"
+    },
+    {
+      "path": "src/client/usage-signal.ts",
+      "sha256": "7d376d789fd23750964e0fecd4ce3468812850f0362f12afdb87414a65065f19"
+    },
+    {
+      "path": "src/client/verify-savings.ts",
+      "sha256": "5ea2d326fd384e7f9cabb70f1b9f2ee28004c8daca89e2345a33e8ea112b21f5"
+    },
+    {
+      "path": "src/client/verify.ts",
+      "sha256": "abb0b4bfc860c82d18dff64efa3fe0a41cb5e66dc9dca5919d3a22e71143524b"
+    },
+    {
+      "path": "src/client/workflow-guard.ts",
+      "sha256": "6e1e1617f6fce247978ccfed283eaadd7ef930b69a70f1da87dc9e9ed758c638"
+    },
+    {
+      "path": "src/client/working-tree.ts",
+      "sha256": "e688bb610c55a58579aee4f33ec1a3ade8cd6aa27b882195580b11cdca8800ab"
+    },
+    {
+      "path": "src/preflight/fingerprint.ts",
+      "sha256": "093ea2b05d4a95a1a4ce85dc0e2ec2ec94febb9be3edde0d17dd9466a2b97486"
+    },
+    {
+      "path": "src/preflight/taxonomy.ts",
+      "sha256": "4b07c042bc824d2f4ec844b7d6a211816485a243be6150f352161a13a9e4f012"
+    },
+    {
+      "path": "tsconfig.client.json",
+      "sha256": "c056d55e69b06d37d2b6f1a36817923f43167b0e4b65d4d749b647b7fed9d312"
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "0f5503065f49aaceba3c22fed7aff680522d303a9ae6aaa13784edbbfedad97c"
+    }
+  ]
+}
