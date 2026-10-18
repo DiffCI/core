@@ -21,3 +21,33 @@ jobs:
       - run: npm run build
       - run: npm run audit:boundary
       - run: npm run benchmark
+
+  observer-action:
+    name: Observer Action smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: observe
+        uses: ./
+        with:
+          upload-artifact: "false"
+          redact-paths: "true"
+          fail-on-error: "true"
+      - name: Assert observer receipt
+        shell: bash
+        env:
+          DIFFCI_STATUS: ${{ steps.observe.outputs.status }}
+          DIFFCI_REPORT_PATH: ${{ steps.observe.outputs.report-path }}
+        run: |
+          set -euo pipefail
+          test "$DIFFCI_STATUS" = "OBSERVED"
+          test -n "$DIFFCI_REPORT_PATH"
+          test -f "$DIFFCI_REPORT_PATH"
+          case "$DIFFCI_REPORT_PATH" in
+            "$GITHUB_WORKSPACE"/*)
+              echo "Observer report must be outside the checkout" >&2
+              exit 1
+              ;;
+          esac

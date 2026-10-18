@@ -1,0 +1,114 @@
+name: DiffCI Core observer
+description: Observation-only change-aware CI analysis. Runs nothing, changes nothing, skips nothing.
+branding:
+  icon: eye
+  color: gray-dark
+
+inputs:
+  repository-path:
+    description: The checkout to observe. Defaults to the workspace.
+    required: false
+    default: ${{ github.workspace }}
+  base-sha:
+    description: Base commit. Leave empty to derive it from the event (pull request base, push before).
+    required: false
+    default: ""
+  head-sha:
+    description: Head commit. Must be given together with base-sha.
+    required: false
+    default: ""
+  node-version:
+    description: Node version used to run the observer. Only affects this job.
+    required: false
+    default: "22"
+  report-path:
+    description: Where to write the report. Must be outside the checkout. Defaults to RUNNER_TEMP.
+    required: false
+    default: ""
+  redact-paths:
+    description: Replace every file path in the report with a stable 12-character digest.
+    required: false
+    default: "false"
+  upload-artifact:
+    description: Upload the report as a workflow artifact.
+    required: false
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact.
+    required: false
+    default: diffci-observation
+  artifact-retention-days:
+    description: Retention for the uploaded artifact.
+    required: false
+    default: "7"
+  api-url:
+    description: >-
+      DiffCI ingest endpoint. Leave empty and nothing is sent anywhere - the report stays on the runner
+      as an artifact. Must be https.
+    required: false
+    default: ""
+  api-token:
+    description: >-
+      Ingest token for this repository. Pass it as a repository secret, never as a literal. Nothing is
+      sent without it.
+    required: false
+    default: ""
+  fail-on-error:
+    description: >-
+      Fail this step when observation refuses or errors. Default false, so a DiffCI problem never becomes
+      the workflow conclusion. Turn it on only while debugging an installation.
+    required: false
+    default: "false"
+
+outputs:
+  report-path:
+    description: Absolute path of the written report.
+    value: ${{ steps.observe.outputs.report-path }}
+  status:
+    description: OBSERVED, REFUSED, or ERROR.
+    value: ${{ steps.observe.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node for the observer
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # The published CLI is installed outside the observed checkout. That prevents npm from touching the
+    # checkout's lockfile or node_modules, and --ignore-scripts prevents package lifecycle scripts from
+    # running. This Action never runs repository scripts or changes jobs.
+    - name: Observe
+      id: observe
+      shell: bash
+      env:
+        DIFFCI_REPO: ${{ inputs.repository-path }}
+        DIFFCI_BASE: ${{ inputs.base-sha }}
+        DIFFCI_HEAD: ${{ inputs.head-sha }}
+        DIFFCI_OUT: ${{ inputs.report-path }}
+        DIFFCI_REDACT: ${{ inputs.redact-paths }}
+        DIFFCI_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        DIFFCI_API_URL: ${{ inputs.api-url }}
+        DIFFCI_TOKEN: ${{ inputs.api-token }}
+      run: |
+        set -euo pipefail
+        args=(observe --repo "$DIFFCI_REPO")
+        if [ -n "$DIFFCI_BASE" ]; then args+=(--base "$DIFFCI_BASE"); fi
+        if [ -n "$DIFFCI_HEAD" ]; then args+=(--head "$DIFFCI_HEAD"); fi
+        if [ -n "$DIFFCI_OUT" ]; then args+=(--out "$DIFFCI_OUT"); fi
+        if [ "$DIFFCI_REDACT" = "true" ]; then args+=(--redact-paths); fi
+        if [ "$DIFFCI_FAIL_ON_ERROR" = "true" ]; then args+=(--fail-on-error); fi
+        (
+          cd "$RUNNER_TEMP"
+          npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@0.3.10" diffci "${args[@]}"
+        )
+
+    - name: Upload observation report
+      if: ${{ inputs.upload-artifact == 'true' && steps.observe.outputs.report-path != '' }}
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.observe.outputs.report-path }}
+        retention-days: ${{ inputs.artifact-retention-days }}
+        if-no-files-found: warn

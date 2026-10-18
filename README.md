@@ -23,6 +23,14 @@ Cursor Marketplace reads [`.cursor-plugin/marketplace.json`](.cursor-plugin/mark
 from this repository. Before the public listing is approved, use the local MCP
 configuration in the agent-plugin package or visit https://diffci.com/mcp-server.
 
+## GitHub Action
+
+The public [`action.yml`](action.yml) is an observation-only GitHub Action
+wrapper. It runs the pinned published DiffCI CLI outside the observed checkout,
+retains existing CI jobs, and uploads an advisory report. See the
+[observer Action guide](docs/github-action-observer.md) and
+[workflow example](examples/github-actions-observer.yml).
+
 Try the published CLI in an existing Git checkout with Git and Node.js 22.5+:
 
 ```sh
