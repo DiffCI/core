@@ -20,6 +20,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run audit:boundary
+      - run: npm run agent:check
       - run: npm run benchmark
 
   observer-action:
@@ -32,6 +33,9 @@ jobs:
       - id: observe
         uses: ./
         with:
+          # The Action defaults to the release candidate. Smoke the last published
+          # CLI until that candidate is published, avoiding a pre-publish cycle.
+          cli-version: "0.3.11"
           upload-artifact: "false"
           redact-paths: "true"
           fail-on-error: "true"

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -63,6 +63,72 @@ function createFixture(parent) {
   return { repo, base, head: git(repo, ["rev-parse", "HEAD"]).trim() };
 }
 
+async function assertMcpInitialize(packageRoot, expectedVersion) {
+  const mcp = spawn(process.execPath, [join(packageRoot, "dist-client", "src", "client", "mcp.js")], {
+    cwd: packageRoot,
+    stdio: ["pipe", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let stderr = "";
+  mcp.stderr.setEncoding("utf8");
+  mcp.stderr.on("data", (chunk) => { stderr += chunk; });
+
+  try {
+    const response = await new Promise((resolveResponse, rejectResponse) => {
+      let stdout = "";
+      const timeout = setTimeout(() => rejectResponse(new Error(`MCP initialize timed out: ${stderr}`)), 10_000);
+      mcp.once("error", (error) => {
+        clearTimeout(timeout);
+        rejectResponse(error);
+      });
+      mcp.once("close", (code) => {
+        clearTimeout(timeout);
+        rejectResponse(new Error(`MCP exited before initialize (code ${code}): ${stderr}`));
+      });
+      mcp.stdout.setEncoding("utf8");
+      mcp.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        while (true) {
+          const newline = stdout.indexOf("\n");
+          if (newline === -1) return;
+          const line = stdout.slice(0, newline).trim();
+          stdout = stdout.slice(newline + 1);
+          if (!line) continue;
+          try {
+            const message = JSON.parse(line);
+            if (message.id === 1) {
+              clearTimeout(timeout);
+              resolveResponse(message);
+              return;
+            }
+          } catch {
+            // MCP stderr is reserved for diagnostics; ignore any unrelated stdout line here.
+          }
+        }
+      });
+      mcp.stdin.end(`${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "diffci-package-smoke", version: "1.0.0" } },
+      })}\n`);
+    });
+    assert(response.result?.serverInfo?.name === "diffci-mcp", `expected DiffCI MCP server, got ${JSON.stringify(response.result?.serverInfo)}`);
+    assert(response.result?.serverInfo?.version === expectedVersion, `expected MCP version ${expectedVersion}, got ${response.result?.serverInfo?.version ?? "none"}`);
+  } finally {
+    mcp.stdin.end();
+    if (mcp.exitCode === null) mcp.kill();
+    await new Promise((resolveClose) => {
+      if (mcp.exitCode !== null) return resolveClose();
+      const timeout = setTimeout(resolveClose, 1_000);
+      mcp.once("close", () => {
+        clearTimeout(timeout);
+        resolveClose();
+      });
+    });
+  }
+}
+
 const temp = mkdtempSync(join(tmpdir(), "diffci-cli-package-smoke-"));
 try {
   runNpm(["run", "build"]);
@@ -84,6 +150,7 @@ try {
   assert(existsSync(join(consumer, "node_modules", ".bin", process.platform === "win32" ? "diffci-mcp.cmd" : "diffci-mcp")), "consumer did not receive diffci-mcp binary");
   const version = runNpm(["exec", "--", "diffci", "version"], { cwd: consumer }).trim();
   assert(version === pack.version, `expected installed CLI ${pack.version}, got ${version}`);
+  await assertMcpInitialize(join(consumer, "node_modules", "@diffci.com", "diffci"), pack.version);
 
   const fixture = createFixture(temp);
   const reportPath = join(temp, "report.json");

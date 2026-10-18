@@ -7,7 +7,9 @@
 The public [`integrations/agent-plugin`](integrations/agent-plugin) package
 makes the published DiffCI CLI available as a checkout-aware local MCP plugin.
 It contains only public marketplace metadata, skills, and a pinned npm
-launcher; it does not include product services or private source.
+launcher; it does not include product services or private source. The
+[cross-agent installation guide](docs/agent-installation.md) covers Codex,
+Claude Code, Cursor, Grok, Meta Muse Code, and generic MCP hosts.
 
 ```sh
 # Codex
@@ -20,8 +22,10 @@ claude plugin install diffci@diffci-marketplace
 ```
 
 Cursor Marketplace reads [`.cursor-plugin/marketplace.json`](.cursor-plugin/marketplace.json)
-from this repository. Before the public listing is approved, use the local MCP
-configuration in the agent-plugin package or visit https://diffci.com/mcp-server.
+from this repository. Meta Muse Code reads the native root
+[`marketplace.json`](marketplace.json). Before a public listing is approved,
+use the local MCP configuration in the agent-plugin package or visit
+https://diffci.com/mcp-server.
 
 ## GitHub Action
 

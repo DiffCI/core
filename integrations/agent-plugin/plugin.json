@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "diffci",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Verify coding changes with affected tests and conservative full fallback.",
   "author": {
     "name": "DiffCI",

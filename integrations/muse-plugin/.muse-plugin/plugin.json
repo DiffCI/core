@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "name": "diffci",
+  "displayName": "DiffCI",
+  "version": "0.3.12",
+  "description": "Verify local code changes with conservative affected-test selection and full fallback.",
+  "compat": {
+    "source": "native",
+    "manifestDir": ".muse-plugin"
+  },
+  "capabilities": {
+    "skills": [
+      {
+        "id": "diffci-verify",
+        "path": "skills/diffci-verify/SKILL.md",
+        "enabledDefault": true
+      }
+    ],
+    "commands": [],
+    "hooks": [],
+    "mcpServers": [
+      {
+        "id": "diffci",
+        "transport": "stdio",
+        "command": [
+          "node",
+          "scripts/launch-diffci-mcp.cjs"
+        ]
+      }
+    ],
+    "reminders": []
+  }
+}

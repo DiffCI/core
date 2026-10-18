@@ -28,8 +28,15 @@ claude plugin install diffci@diffci-marketplace
 
 Cursor uses the repository-root `.cursor-plugin/marketplace.json` for public
 Marketplace review. Before that listing is approved, add the local server in
-[`mcp.json`](mcp.json) to the repository you want to verify. Setup guidance is
-available at https://diffci.com/mcp-server.
+[`mcp.json`](mcp.json) to the repository you want to verify.
+
+Grok Build can reuse the Claude Code marketplace and supports this same local
+MCP launcher. Meta Muse Code uses the separate native
+[`integrations/muse-plugin`](../muse-plugin) package so its local MCP server
+can be reviewed and enabled. See the [cross-agent installation guide](../../docs/agent-installation.md)
+for Grok, Muse, Cursor, and generic MCP-host setup. The hosted endpoint at
+https://diffci.com/mcp/v1 is read-only; use this local launcher whenever an
+agent must inspect a checkout or execute tests.
 
 The hosted DiffCI MCP endpoint is intentionally read-only. Use this local
 plugin whenever a coding agent must inspect a checkout or execute tests.

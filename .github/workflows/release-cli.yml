@@ -43,6 +43,9 @@ jobs:
         working-directory: packages/diffci-cli
         run: npm ci --no-audit --fund=false
 
+      - name: Verify cross-agent package metadata
+        run: node scripts/check-agent-packaging.mjs
+
       - name: Verify the release package
         working-directory: packages/diffci-cli
         run: |
@@ -67,3 +70,31 @@ jobs:
       - name: Publish with npm trusted publishing
         working-directory: packages/diffci-cli
         run: npm publish --access public --provenance
+
+      - name: Resolve the release smoke range
+        id: release_smoke_range
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "base=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke the published observer Action
+        id: observe
+        uses: ./
+        with:
+          base-sha: ${{ steps.release_smoke_range.outputs.base }}
+          head-sha: ${{ github.sha }}
+          upload-artifact: "false"
+          redact-paths: "true"
+          fail-on-error: "true"
+
+      - name: Assert observer receipt
+        shell: bash
+        env:
+          DIFFCI_STATUS: ${{ steps.observe.outputs.status }}
+          DIFFCI_REPORT_PATH: ${{ steps.observe.outputs.report-path }}
+        run: |
+          set -euo pipefail
+          test "$DIFFCI_STATUS" = "OBSERVED"
+          test -n "$DIFFCI_REPORT_PATH"
+          test -f "$DIFFCI_REPORT_PATH"
