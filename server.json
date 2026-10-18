@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.DiffCI/diffci",
+  "title": "DiffCI",
+  "description": "Fail-closed, change-aware verification for AI coding agents with affected-test guidance.",
+  "version": "0.3.11",
+  "websiteUrl": "https://diffci.com/mcp-server",
+  "repository": {
+    "url": "https://github.com/DiffCI/core",
+    "source": "github"
+  },
+  "icons": [
+    {
+      "src": "https://diffci.com/assets/diffci-mark.svg",
+      "mimeType": "image/svg+xml",
+      "sizes": [
+        "any"
+      ]
+    }
+  ],
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@diffci.com/diffci",
+      "version": "0.3.11",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ],
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://diffci.com/mcp/v1"
+    }
+  ]
+}

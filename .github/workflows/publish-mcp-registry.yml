@@ -1,0 +1,64 @@
+name: Publish MCP Registry listing
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-registry-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: mcp-registry-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install verified MCP publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly publisher_version="1.8.1"
+          readonly publisher_sha256="a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v${publisher_version}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${publisher_sha256}  mcp-publisher.tar.gz" | sha256sum --check --status
+          tar --extract --gzip --file=mcp-publisher.tar.gz mcp-publisher
+          chmod 0755 mcp-publisher
+          rm mcp-publisher.tar.gz
+
+      - name: Validate registry metadata
+        run: ./mcp-publisher validate server.json
+
+      - name: Authenticate with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish and verify listing
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 18); do
+            if npm run registry:verify; then
+              exit 0
+            fi
+            if ./mcp-publisher publish server.json && npm run registry:verify; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 18 ]; then
+              exit 1
+            fi
+            echo "Registry metadata has not propagated yet; retrying in 10 seconds ($attempt/18)."
+            sleep 10
+          done
