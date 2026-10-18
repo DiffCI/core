@@ -57,7 +57,7 @@ test("public observer Action preserves the reviewed observer contract", async ()
   assert.deepEqual(Object.keys(action.outputs), ["report-path", "status"]);
   assert.match(raw, /cd "\$RUNNER_TEMP"/);
   assert.match(raw, /uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
-  assert.match(raw, /npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci\.com\/diffci@0\.3\.10" diffci/);
+  assert.match(raw, /npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci\.com\/diffci@0\.3\.11" diffci/);
   assert.match(raw, /uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
 });
 

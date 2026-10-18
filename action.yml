@@ -101,7 +101,7 @@ runs:
         if [ "$DIFFCI_FAIL_ON_ERROR" = "true" ]; then args+=(--fail-on-error); fi
         (
           cd "$RUNNER_TEMP"
-          npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@0.3.10" diffci "${args[@]}"
+          npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@0.3.11" diffci "${args[@]}"
         )
 
     - name: Upload observation report
