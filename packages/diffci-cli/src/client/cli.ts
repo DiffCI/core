@@ -43,6 +43,7 @@ import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyR
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { buildPilotWorkflow, renderPilotPacket } from "./pilot-packet.js";
+import { observerIdentity } from "./package-identity.js";
 
 interface ParsedArgs {
   command?: string;
@@ -69,52 +70,6 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
   return { command, flags };
-}
-
-/**
- * The observer's own version and commit. Found by walking up from this file rather than by a fixed
- * relative path, because this module runs both from source (tsx, depth src/client) and from compiled
- * output (node, depth dist-client/src/client) and a hardcoded `../..` is right in exactly one of them.
- */
-function observerIdentity(): { version: string; root?: string; sha?: string } {
-  let current = dirname(import.meta.filename);
-  for (let depth = 0; depth < 8; depth++) {
-    const candidate = join(current, "package.json");
-    if (existsSync(candidate)) {
-      try {
-        const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { name?: string; version?: string };
-        if (parsed.name === "@diffci/observer") return { version: parsed.version ?? "0.0.0", root: current };
-        if (parsed.name === "@diffci.com/diffci" || parsed.name === "diffci") {
-          let sha: string | undefined;
-          try {
-            const gitRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-              cwd: current,
-              encoding: "utf8",
-              stdio: ["ignore", "pipe", "ignore"],
-            }).trim();
-            const packageRoot = resolve(current);
-            const normalizedGitRoot = resolve(gitRoot);
-            const rootsMatch = process.platform === "win32"
-              ? packageRoot.toLowerCase() === normalizedGitRoot.toLowerCase()
-              : packageRoot === normalizedGitRoot;
-            if (rootsMatch) {
-              sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: current, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-            }
-          } catch {
-            // Installed from a tarball rather than a checkout: there is no commit to report, and
-            // inventing one would be worse than the field being absent.
-          }
-          return { version: parsed.version ?? "0.0.0", root: current, sha };
-        }
-      } catch {
-        // Keep walking - an unreadable package.json above us says nothing about ours.
-      }
-    }
-    const parent = dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
-  return { version: "0.0.0" };
 }
 
 function defaultReportPath(env: NodeJS.ProcessEnv): string {

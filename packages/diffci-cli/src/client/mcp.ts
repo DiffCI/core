@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { agentChangedFiles, agentSelection } from "./agent-selection.js";
+import { requireDiffciPackageIdentity } from "./package-identity.js";
 
 type JsonRpcId = string | number | null;
 
@@ -18,7 +19,7 @@ interface ToolCallParams {
   arguments?: Record<string, unknown>;
 }
 
-const SERVER_INFO = { name: "diffci-mcp", version: "0.1.0" };
+const SERVER_INFO = { name: "diffci-mcp", version: requireDiffciPackageIdentity().version };
 
 const tools = [
   ...["diffci_changed_files", "diffci_select_tests", "diffci_explain_selection", "diffci_run_affected_tests"].map((name) => ({

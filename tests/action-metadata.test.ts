@@ -6,7 +6,7 @@ import YAML from "yaml";
 
 type CompositeAction = {
   name: string;
-  inputs: Record<string, unknown>;
+  inputs: Record<string, { default?: unknown }>;
   outputs: Record<string, unknown>;
   runs: {
     using: string;
@@ -35,6 +35,13 @@ async function readAction(): Promise<{ raw: string; action: CompositeAction }> {
   return { raw, action: YAML.parse(raw) as CompositeAction };
 }
 
+async function cliVersion(): Promise<string> {
+  const raw = await readFile(new URL("../packages/diffci-cli/package.json", import.meta.url), "utf8");
+  const manifest = JSON.parse(raw) as { version?: unknown };
+  if (typeof manifest.version !== "string") throw new Error("CLI package must declare a version");
+  return manifest.version;
+}
+
 test("public observer Action preserves the reviewed observer contract", async () => {
   const { raw, action } = await readAction();
 
@@ -45,6 +52,7 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "base-sha",
     "head-sha",
     "node-version",
+    "cli-version",
     "report-path",
     "redact-paths",
     "upload-artifact",
@@ -57,7 +65,10 @@ test("public observer Action preserves the reviewed observer contract", async ()
   assert.deepEqual(Object.keys(action.outputs), ["report-path", "status"]);
   assert.match(raw, /cd "\$RUNNER_TEMP"/);
   assert.match(raw, /uses: actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/);
-  assert.match(raw, /npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci\.com\/diffci@0\.3\.11" diffci/);
+  assert.equal(action.inputs["cli-version"]?.default, await cliVersion());
+  assert.match(raw, /DIFFCI_CLI_VERSION: \$\{\{ inputs\.cli-version \}\}/);
+  assert.match(raw, /DIFFCI_CLI_VERSION" =~ \^\(0\|\[1-9\]\[0-9\]\*\)\\\./);
+  assert.ok(raw.includes('npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@$DIFFCI_CLI_VERSION" diffci'));
   assert.match(raw, /uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
 });
 

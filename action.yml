@@ -21,6 +21,10 @@ inputs:
     description: Node version used to run the observer. Only affects this job.
     required: false
     default: "22"
+  cli-version:
+    description: Exact published DiffCI CLI version to run.
+    required: false
+    default: "0.3.12"
   report-path:
     description: Where to write the report. Must be outside the checkout. Defaults to RUNNER_TEMP.
     required: false
@@ -91,8 +95,13 @@ runs:
         DIFFCI_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
         DIFFCI_API_URL: ${{ inputs.api-url }}
         DIFFCI_TOKEN: ${{ inputs.api-token }}
+        DIFFCI_CLI_VERSION: ${{ inputs.cli-version }}
       run: |
         set -euo pipefail
+        if [[ ! "$DIFFCI_CLI_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+          echo "DiffCI CLI version must be an exact semver version" >&2
+          exit 2
+        fi
         args=(observe --repo "$DIFFCI_REPO")
         if [ -n "$DIFFCI_BASE" ]; then args+=(--base "$DIFFCI_BASE"); fi
         if [ -n "$DIFFCI_HEAD" ]; then args+=(--head "$DIFFCI_HEAD"); fi
@@ -101,7 +110,7 @@ runs:
         if [ "$DIFFCI_FAIL_ON_ERROR" = "true" ]; then args+=(--fail-on-error); fi
         (
           cd "$RUNNER_TEMP"
-          npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@0.3.11" diffci "${args[@]}"
+          npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@$DIFFCI_CLI_VERSION" diffci "${args[@]}"
         )
 
     - name: Upload observation report

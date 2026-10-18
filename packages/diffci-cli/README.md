@@ -13,9 +13,9 @@ destination is configured. Keep required project CI authoritative.
 
 ## MCP for coding agents
 
-The `diffci-mcp` binary exposes the same local analysis through MCP. Install the
-public Codex, Claude Code, or Cursor plugin metadata from the
-[DiffCI Core repository](https://github.com/DiffCI/core/tree/main/integrations/agent-plugin).
+The `diffci-mcp` binary exposes the same local analysis through MCP. Install
+the public Codex, Claude Code, Cursor, Grok, or Meta Muse Code integration from
+the [cross-agent installation guide](https://github.com/DiffCI/core/blob/main/docs/agent-installation.md).
 
 ## Source and license
 

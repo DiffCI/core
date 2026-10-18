@@ -36,6 +36,7 @@
     "test": "node scripts/run-tests.mjs",
     "benchmark": "node --import tsx scripts/benchmark.ts",
     "audit:boundary": "node scripts/audit-boundary.mjs",
+    "agent:check": "node scripts/check-agent-packaging.mjs",
     "registry:verify": "node scripts/verify-mcp-registry.mjs",
     "prepack": "npm run build",
     "prepare": "npm run build"

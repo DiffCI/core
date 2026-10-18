@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "source": "local",
+  "plugins": [
+    {
+      "name": "diffci",
+      "version": "0.3.12",
+      "install": {
+        "transport": "local-path",
+        "source": "integrations/muse-plugin"
+      },
+      "integrity": {
+        "digest": "sha256:65f5b7bd83ca36e0c8a9d8315a5769f19a3fee1aef7f9f8e9618f3f3168b193a"
+      },
+      "availability": {
+        "status": "available"
+      }
+    }
+  ]
+}
