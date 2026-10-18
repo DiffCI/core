@@ -1,0 +1,20 @@
+{
+  "name": "diffci-local",
+  "interface": {
+    "displayName": "DiffCI"
+  },
+  "plugins": [
+    {
+      "name": "diffci",
+      "source": {
+        "source": "local",
+        "path": "./integrations/agent-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "diffci-marketplace",
+  "owner": {
+    "name": "DiffCI",
+    "email": "support@diffci.com"
+  },
+  "metadata": {
+    "description": "DiffCI plugins for change-aware CI verification."
+  },
+  "plugins": [
+    {
+      "name": "diffci",
+      "source": "integrations/agent-plugin",
+      "description": "Verify coding changes with affected tests and conservative full fallback."
+    }
+  ]
+}

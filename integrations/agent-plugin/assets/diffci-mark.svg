@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">DiffCI mark</title>
+  <desc id="desc">An original CI job map with a short, evidence-backed route through selected work.</desc>
+  <g fill="#86a99d" opacity=".72">
+    <rect x="24" y="26" width="23" height="15" rx="4"/><rect x="57" y="26" width="23" height="15" rx="4"/><rect x="90" y="26" width="14" height="15" rx="4"/>
+    <rect x="41" y="70" width="23" height="15" rx="4"/><rect x="74" y="70" width="23" height="15" rx="4"/>
+  </g>
+  <path d="M18 79h27l21-37h43" fill="none" stroke="#4fd1a8" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="12" y="67" width="18" height="24" rx="5" fill="#4fd1a8"/>
+  <rect x="109" y="30" width="18" height="24" rx="5" fill="#4fd1a8"/>
+  <circle cx="66" cy="42" r="15" fill="#0c0e11" stroke="#4fd1a8" stroke-width="8"/>
+  <circle cx="66" cy="42" r="4" fill="#4fd1a8"/>
+</svg>

@@ -1,0 +1,47 @@
+{
+  "name": "diffci",
+  "version": "0.3.10",
+  "description": "Verify coding changes with affected tests and conservative full fallback.",
+  "author": {
+    "name": "DiffCI",
+    "email": "support@diffci.com",
+    "url": "https://diffci.com/"
+  },
+  "homepage": "https://diffci.com/mcp-server",
+  "repository": "https://github.com/DiffCI/core",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "ci",
+    "test-selection",
+    "mcp",
+    "codex",
+    "github-actions"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "DiffCI",
+    "shortDescription": "Verify local code changes",
+    "longDescription": "Inspect local changes, select affected tests conservatively, and run repository verification with a full fallback when the selection is uncertain.",
+    "developerName": "DiffCI",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Inspect local changes",
+      "Select affected tests",
+      "Run repository tests"
+    ],
+    "websiteURL": "https://diffci.com/mcp-server",
+    "supportURL": "https://diffci.com/contact",
+    "privacyPolicyURL": "https://diffci.com/data-handling",
+    "termsOfServiceURL": "https://diffci.com/terms",
+    "defaultPrompt": [
+      "Verify the changes in this repository with DiffCI.",
+      "Explain which affected tests DiffCI selected.",
+      "Check this DiffCI observer workflow for isolation."
+    ],
+    "brandColor": "#146B5A",
+    "brandColorDark": "#4FD1A8",
+    "composerIcon": "./assets/diffci-mark.svg",
+    "logo": "./assets/diffci-mark.svg"
+  }
+}

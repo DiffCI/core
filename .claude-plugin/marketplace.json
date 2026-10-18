@@ -1,0 +1,17 @@
+{
+  "name": "diffci-marketplace",
+  "description": "DiffCI plugins for change-aware CI verification.",
+  "version": "1.0.0",
+  "owner": {
+    "name": "DiffCI",
+    "email": "support@diffci.com",
+    "url": "https://diffci.com/"
+  },
+  "plugins": [
+    {
+      "name": "diffci",
+      "source": "./integrations/agent-plugin",
+      "description": "Change-aware CI verification with conservative affected-test selection and full fallback."
+    }
+  ]
+}

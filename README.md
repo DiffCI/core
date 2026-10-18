@@ -2,6 +2,27 @@
 
 **Open-source test-impact analysis for faster CI.** For developers and maintainers evaluating which tests a change affects, with conservative full-run fallbacks. Licensed under AGPL-3.0-only.
 
+## Coding-agent plugins
+
+The public [`integrations/agent-plugin`](integrations/agent-plugin) package
+makes the published DiffCI CLI available as a checkout-aware local MCP plugin.
+It contains only public marketplace metadata, skills, and a pinned npm
+launcher; it does not include product services or private source.
+
+```sh
+# Codex
+codex plugin marketplace add DiffCI/core
+codex plugin add diffci@diffci-local
+
+# Claude Code
+claude plugin marketplace add DiffCI/core
+claude plugin install diffci@diffci-marketplace
+```
+
+Cursor Marketplace reads [`.cursor-plugin/marketplace.json`](.cursor-plugin/marketplace.json)
+from this repository. Before the public listing is approved, use the local MCP
+configuration in the agent-plugin package or visit https://diffci.com/mcp-server.
+
 Try the published CLI in an existing Git checkout with Git and Node.js 22.5+:
 
 ```sh

@@ -1,0 +1,26 @@
+{
+  "name": "diffci",
+  "displayName": "DiffCI",
+  "version": "0.3.10",
+  "description": "Verify coding changes with affected tests and conservative full fallback.",
+  "author": {
+    "name": "DiffCI",
+    "email": "support@diffci.com",
+    "url": "https://diffci.com/"
+  },
+  "homepage": "https://diffci.com/",
+  "repository": "https://github.com/DiffCI/core",
+  "license": "AGPL-3.0-only",
+  "icon": "./assets/diffci-mark.svg",
+  "documentationUrl": "https://diffci.com/mcp-server",
+  "supportUrl": "https://diffci.com/contact",
+  "privacyPolicyUrl": "https://diffci.com/data-handling",
+  "termsOfServiceUrl": "https://diffci.com/terms",
+  "keywords": [
+    "ci",
+    "test-selection",
+    "mcp",
+    "claude-code",
+    "github-actions"
+  ]
+}
