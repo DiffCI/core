@@ -31,9 +31,9 @@ retains existing CI jobs, and uploads an advisory report. See the
 [observer Action guide](docs/github-action-observer.md) and
 [workflow example](examples/github-actions-observer.yml).
 
-The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/cli-v0.3.10-source/packages/diffci-cli)
-remains publicly available at an immutable Core tag while distribution migrates
-to the Core-native CLI package.
+The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
+remains publicly available at tagged Core commit `4c76be14` (`cli-v0.3.10-source`)
+while distribution migrates to the Core-native CLI package.
 
 Try the published CLI in an existing Git checkout with Git and Node.js 22.5+:
 
@@ -93,7 +93,7 @@ Declared pnpm workspaces with a single Vitest test phase can receive package-loc
 | Reproducible evaluation | Synthetic benchmark and portable regression tests |
 | Measurement | Current-process wall time, CPU time and ending RSS; explicit-input cost/energy/carbon estimates |
 
-The library entry point exports `analyzeCheckout`, `buildDependencyGraph`, `ImpactAnalyzer`, `DefaultCIPlanner`, `collectEvidence`, `inferPipeline`, `measure` and `estimateImpact`. Lower-level modules are available as package subpaths. This repository is the engine source, and the published [`@diffci.com/diffci` CLI](https://www.npmjs.com/package/@diffci.com/diffci) is released from it. The corresponding source for the previously published v0.3.10 package is retained in the [immutable source archive](https://github.com/DiffCI/core/tree/cli-v0.3.10-source/packages/diffci-cli).
+The library entry point exports `analyzeCheckout`, `buildDependencyGraph`, `ImpactAnalyzer`, `DefaultCIPlanner`, `collectEvidence`, `inferPipeline`, `measure` and `estimateImpact`. Lower-level modules are available as package subpaths. This repository is the engine source, and the published [`@diffci.com/diffci` CLI](https://www.npmjs.com/package/@diffci.com/diffci) is released from it. The corresponding source for the previously published v0.3.10 package is retained in the [source archive at tagged commit `4c76be14`](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli).
 
 ```sh
 npm run typecheck

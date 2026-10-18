@@ -22,6 +22,5 @@ public Codex, Claude Code, or Cursor plugin metadata from the
 This package is AGPL-3.0-only. Its current source lives in
 [`DiffCI/core`](https://github.com/DiffCI/core/tree/main/packages/diffci-cli).
 The corresponding source for the previously published `0.3.10` package is
-preserved at the immutable
-[`cli-v0.3.10-source`](https://github.com/DiffCI/core/tree/cli-v0.3.10-source/packages/diffci-cli)
-tag.
+preserved at [tagged Core commit `4c76be14`](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
+(`cli-v0.3.10-source`).

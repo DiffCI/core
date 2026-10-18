@@ -2,9 +2,8 @@
 
 The corresponding source for the already-published
 [`@diffci.com/diffci@0.3.10`](https://www.npmjs.com/package/@diffci.com/diffci/v/0.3.10)
-is preserved at the immutable
-[`cli-v0.3.10-source`](https://github.com/DiffCI/core/tree/cli-v0.3.10-source/packages/diffci-cli)
-tag. The tag contains the original source closure, package metadata, lockfile,
+is preserved at [tagged Core commit `4c76be14`](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
+(`cli-v0.3.10-source`). That source archive contains the original source closure, package metadata, lockfile,
 license, tarball integrity details, and a digest manifest.
 
 The historical lockfile is retained byte-for-byte and resolves its public Core

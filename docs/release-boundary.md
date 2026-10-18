@@ -27,9 +27,9 @@ The private product may retain its existing engine snapshot while package integr
 ## Published CLI source archive
 
 The hash-bound corresponding source for the already-published
-`@diffci.com/diffci@0.3.10` executable is retained at the immutable
-[`cli-v0.3.10-source`](https://github.com/DiffCI/core/tree/cli-v0.3.10-source/packages/diffci-cli)
-tag. It contains only the public client/MCP source closure, its build metadata,
+`@diffci.com/diffci@0.3.10` executable is retained at
+[tagged Core commit `4c76be14`](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
+(`cli-v0.3.10-source`). It contains only the public client/MCP source closure, its build metadata,
 and the public Core dependency; it intentionally excludes product services and
 operations. See [published CLI source archives](source-archives.md) for the
 historical lockfile's HTTPS-only build instructions.
