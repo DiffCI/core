@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "diffci",
   "displayName": "DiffCI",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "Verify local code changes with conservative affected-test selection and full fallback.",
   "compat": {
     "source": "native",
