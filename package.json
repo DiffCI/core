@@ -38,6 +38,7 @@
     "audit:boundary": "node scripts/audit-boundary.mjs",
     "agent:check": "node scripts/check-agent-packaging.mjs",
     "registry:verify": "node scripts/verify-mcp-registry.mjs",
+    "release:verify": "node scripts/verify-release.mjs",
     "prepack": "npm run build",
     "prepare": "npm run build"
   },

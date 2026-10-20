@@ -140,3 +140,28 @@ jobs:
             --latest \
             --notes "npm: \`$package_name@$package_version\`" \
             --generate-notes
+
+      - name: Tag the matching observer Action release
+        working-directory: packages/diffci-cli
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          action_tag="action-v$(node -p "require('./package.json').version")"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$action_tag" >/dev/null 2>&1; then
+            echo "Tag $action_tag already exists"
+            exit 0
+          fi
+          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$action_tag" \
+            -f message="Release DiffCI observer Action ${action_tag#action-}" \
+            -f object="$GITHUB_SHA" \
+            -f type=commit \
+            --jq .sha)
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$action_tag" -f sha="$tag_object" >/dev/null
+
+      - name: Verify npm, GitHub Release and tags agree
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/verify-release.mjs --surfaces=npm,github-release,tags

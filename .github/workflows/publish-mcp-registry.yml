@@ -62,3 +62,20 @@ jobs:
             echo "Registry metadata has not propagated yet; retrying in 10 seconds ($attempt/18)."
             sleep 10
           done
+
+      - name: Verify every release surface agrees
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 6); do
+            if npm run release:verify; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              exit 1
+            fi
+            echo "Registry latest flag has not propagated yet; retrying in 10 seconds ($attempt/6)."
+            sleep 10
+          done
