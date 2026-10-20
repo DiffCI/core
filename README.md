@@ -1,5 +1,7 @@
 # DiffCI Core
 
+[![DiffCI MCP server](https://mcprush.com/badge/diffci-mcp/card.svg)](https://mcprush.com/to/diffci-mcp?ref=badge)
+
 **Open-source test-impact analysis for faster CI.** For developers and maintainers evaluating which tests a change affects, with conservative full-run fallbacks. Licensed under AGPL-3.0-only.
 
 ## Coding-agent plugins
