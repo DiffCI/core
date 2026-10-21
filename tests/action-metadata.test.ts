@@ -69,7 +69,7 @@ test("public observer Action preserves the reviewed observer contract", async ()
   assert.match(raw, /DIFFCI_CLI_VERSION: \$\{\{ inputs\.cli-version \}\}/);
   assert.match(raw, /DIFFCI_CLI_VERSION" =~ \^\(0\|\[1-9\]\[0-9\]\*\)\\\./);
   assert.ok(raw.includes('npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@$DIFFCI_CLI_VERSION" diffci'));
-  assert.match(raw, /uses: actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/);
+  assert.match(raw, /uses: actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
 });
 
 test("public observer Action uses only composite-action contexts and safe descriptions", async () => {

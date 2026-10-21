@@ -12,7 +12,7 @@ permissions:
 jobs:
   publish:
     name: Publish @diffci.com/diffci
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       GIT_SSH_COMMAND: /bin/false
     steps:
