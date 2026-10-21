@@ -44,6 +44,7 @@ import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVeri
 import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { buildPilotWorkflow, renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
+import { diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
 
 interface ParsedArgs {
   command?: string;
@@ -153,55 +154,6 @@ const MANAGED_INSTRUCTIONS_END = "<!-- diffci:managed:end -->";
 
 function managedInstructions(content: string): string {
   return `${MANAGED_INSTRUCTIONS_BEGIN}\n${content.trim()}\n${MANAGED_INSTRUCTIONS_END}\n`;
-}
-
-function diffciWorkflow(version: string): string {
-  return `name: DiffCI observation
-on: [push, pull_request]
-permissions:
-  contents: read
-jobs:
-  diffci:
-    runs-on: ubuntu-24.04
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # immutable checkout pin
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # immutable setup-node pin
-        with:
-          node-version: 22
-      - run: npx "@diffci.com/diffci@${version}" observe --no-send
-`;
-}
-
-function diffciVerificationWorkflow(version: string): string {
-  return `name: DiffCI verification
-on: [push, pull_request]
-permissions:
-  contents: read
-jobs:
-  diffci-verify:
-    name: DiffCI verification
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # immutable checkout pin
-        with:
-          fetch-depth: 0
-          ref: \${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # immutable setup-node pin
-        with:
-          node-version: 22
-      - name: Verify changed code
-        run: npx "@diffci.com/diffci@${version}" verify --json --out "$RUNNER_TEMP/diffci-verification.json"
-      - name: Upload verification receipt
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: diffci-verification-\${{ github.run_id }}-\${{ github.run_attempt }}
-          path: \${{ runner.temp }}/diffci-verification.json
-          if-no-files-found: warn
-`;
 }
 
 function writeInitFile(repoPath: string, relativePath: string, content: string, force: boolean): string {

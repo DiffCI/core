@@ -1,8 +1,5 @@
 import type { ObservationReport } from "./report.js";
-
-const CHECKOUT_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1";
-const SETUP_NODE_SHA = "820762786026740c76f36085b0efc47a31fe5020";
-const UPLOAD_ARTIFACT_SHA = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+import { CHECKOUT_SHA, RUNNER, SETUP_NODE_SHA, UPLOAD_ARTIFACT_SHA } from "./workflow-templates.js";
 
 export interface PilotPacketOptions {
   label: string;
@@ -25,7 +22,7 @@ permissions:
 jobs:
   diffci-pilot:
     name: DiffCI pilot (non-blocking)
-    runs-on: ubuntu-24.04
+    runs-on: ${RUNNER}
     continue-on-error: true
     steps:
       - uses: actions/checkout@${CHECKOUT_SHA} # immutable checkout pin
