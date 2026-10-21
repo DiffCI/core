@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import YAML from "yaml";
-import { buildPilotWorkflow } from "../packages/diffci-cli/src/client/pilot-packet.js";
 import {
+  buildPilotWorkflow,
   CHECKOUT_SHA,
   RUNNER,
   SETUP_NODE_SHA,

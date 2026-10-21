@@ -52,3 +52,32 @@ jobs:
           if-no-files-found: warn
 `;
 }
+
+export function buildPilotWorkflow(version: string): string {
+  return `name: DiffCI pilot observation
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  diffci-pilot:
+    name: DiffCI pilot (non-blocking)
+    runs-on: ${RUNNER}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@${CHECKOUT_SHA} # immutable checkout pin
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@${SETUP_NODE_SHA} # immutable setup-node pin
+        with:
+          node-version: 22
+      - name: Observe only
+        run: npx "@diffci.com/diffci@${version}" observe --no-send --out "$RUNNER_TEMP/diffci-observe.json"
+      - name: Upload local observation
+        if: always()
+        uses: actions/upload-artifact@${UPLOAD_ARTIFACT_SHA} # immutable upload-artifact v7 pin
+        with:
+          name: diffci-observation-\${{ github.run_id }}-\${{ github.run_attempt }}
+          path: \${{ runner.temp }}/diffci-observe.json
+          if-no-files-found: warn
+`;
+}

@@ -42,9 +42,9 @@ import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conf
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
-import { buildPilotWorkflow, renderPilotPacket } from "./pilot-packet.js";
+import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
-import { diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
+import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
 
 interface ParsedArgs {
   command?: string;
