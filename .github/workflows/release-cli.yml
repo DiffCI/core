@@ -10,8 +10,57 @@ permissions:
   id-token: write
 
 jobs:
+  verify-muse-plugin-integrity:
+    name: Verify Muse marketplace package integrity
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install the checksum-verified Muse package validator
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly muse_version="1.4.11-R6667.1"
+          readonly muse_sha256="6fda12a6a4f236528dafa707384cf6395fe859b1438ef77c7be26ed9d7976839"
+          readonly muse_bin="$RUNNER_TEMP/muse"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$muse_bin" \
+            "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=$muse_version&file=muse-x86-linux"
+          echo "$muse_sha256  $muse_bin" | sha256sum --check --status
+          chmod 0755 "$muse_bin"
+          echo "MUSE_BIN=$muse_bin" >> "$GITHUB_ENV"
+
+      - name: Require the Muse marketplace digest to match its package tree
+        run: node scripts/check-muse-plugin-integrity.mjs
+
+  require-product-dispatch:
+    name: Require hosted MCP synchronizer
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Require a working narrowly scoped product dispatch token
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DIFFCI_PRODUCT_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || {
+            echo "DIFFCI_PRODUCT_DISPATCH_TOKEN is required before publishing a release." >&2
+            echo "Use a fine-grained token restricted to DiffCI/DiffCI.com with Contents: write." >&2
+            exit 1
+          }
+          # This event is intentionally not a trigger type in the product repository. It validates
+          # cross-repository dispatch permission before npm, tags, or registry state can advance.
+          gh api --method POST repos/DiffCI/DiffCI.com/dispatches \
+            -f event_type=diffci-core-release-preflight \
+            -f "client_payload[core_run_id]=$GITHUB_RUN_ID" >/dev/null
+
   publish:
     name: Publish @diffci.com/diffci
+    needs: [require-product-dispatch, verify-muse-plugin-integrity]
     runs-on: ubuntu-26.04
     env:
       GIT_SSH_COMMAND: /bin/false
@@ -54,8 +103,7 @@ jobs:
           npm run package:check
           npm run package:smoke
 
-      - name: Refuse an already-published version
-        id: npm_version
+      - name: Publish or verify the immutable npm package
         working-directory: packages/diffci-cli
         shell: bash
         run: |
@@ -63,13 +111,15 @@ jobs:
           package_name=$(node -p "require('./package.json').name")
           package_version=$(node -p "require('./package.json').version")
           if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
-            echo "Refusing to republish $package_name@$package_version" >&2
-            exit 1
+            published_git_head=$(npm view "$package_name@$package_version" gitHead)
+            test "$published_git_head" = "$GITHUB_SHA" || {
+              echo "$package_name@$package_version already exists but is from $published_git_head, not $GITHUB_SHA" >&2
+              exit 1
+            }
+            echo "$package_name@$package_version is already published from this release commit; reconciling downstream surfaces."
+          else
+            npm publish --access public --provenance
           fi
-
-      - name: Publish with npm trusted publishing
-        working-directory: packages/diffci-cli
-        run: npm publish --access public --provenance
 
       - name: Wait for npm registry propagation
         working-directory: packages/diffci-cli
@@ -130,7 +180,12 @@ jobs:
           package_version=$(node -p "require('./package.json').version")
           release_tag="v$package_version"
           if gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "GitHub Release $release_tag already exists"
+            target=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)
+            test "$(git rev-parse "$target")" = "$GITHUB_SHA" || {
+              echo "GitHub Release $release_tag targets $target, not $GITHUB_SHA" >&2
+              exit 1
+            }
+            echo "GitHub Release $release_tag already targets this release commit"
             exit 0
           fi
           gh release create "$release_tag" \
@@ -149,8 +204,15 @@ jobs:
         run: |
           set -euo pipefail
           action_tag="action-v$(node -p "require('./package.json').version")"
-          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$action_tag" >/dev/null 2>&1; then
-            echo "Tag $action_tag already exists"
+          if ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$action_tag" 2>/dev/null); then
+            type=$(jq -r .object.type <<<"$ref")
+            sha=$(jq -r .object.sha <<<"$ref")
+            if [ "$type" = "tag" ]; then sha=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .object.sha); fi
+            test "$sha" = "$GITHUB_SHA" || {
+              echo "Tag $action_tag targets $sha, not $GITHUB_SHA" >&2
+              exit 1
+            }
+            echo "Tag $action_tag already targets this release commit"
             exit 0
           fi
           tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
@@ -165,3 +227,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/verify-release.mjs --surfaces=npm,github-release,tags
+
+  publish-mcp-registry:
+    name: Publish matching MCP Registry listing
+    needs: publish
+    uses: ./.github/workflows/publish-mcp-registry.yml
+    permissions:
+      contents: read
+      id-token: write
+
+  notify-hosted-mcp:
+    name: Synchronize and deploy hosted MCP
+    needs: publish-mcp-registry
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Dispatch the verified release to the product deployer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DIFFCI_PRODUCT_DISPATCH_TOKEN }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./packages/diffci-cli/package.json').version")
+          gh api --method POST repos/DiffCI/DiffCI.com/dispatches \
+            -f event_type=diffci-core-release \
+            -f "client_payload[version]=$version" \
+            -f "client_payload[action_sha]=$RELEASE_COMMIT" >/dev/null

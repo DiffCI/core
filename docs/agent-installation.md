@@ -90,16 +90,20 @@ For a remote-only client, configure a Streamable HTTP MCP server at
 
 ## Release checklist
 
-For every CLI release, update the native Muse plugin version, its pinned npm
-version, and the Muse marketplace integrity digest together. Run the host
-validators before publishing:
+For every CLI release, update the native Muse plugin version and its pinned npm
+version with the other release metadata. Regenerate the Muse marketplace digest
+from the actual package tree rather than constructing a hash yourself. The
+release workflow independently verifies that digest before it publishes anything.
+With a Muse CLI binary available, run:
 
 ```sh
 muse skills validate integrations/muse-plugin/skills/diffci-verify
 muse plugins validate integrations/muse-plugin --json
-muse plugins install integrations/muse-plugin --json
+MUSE_BIN="$(command -v muse)" npm run agent:muse:sync
+npm run agent:muse:check
 ```
 
-Copy the returned `installed.package_sha256` into the root
-[`marketplace.json`](../marketplace.json), then validate the Git marketplace
-install in a clean Muse plugin store.
+`agent:muse:sync` uses a disposable Muse store, copies the canonical
+`installed.package_sha256` into the root
+[`marketplace.json`](../marketplace.json), and does not activate the plugin.
+Then validate the Git marketplace install in a clean Muse plugin store.

@@ -13,6 +13,7 @@ function aligned(version: string): ObservedRelease {
     githubLatestRelease: { tag: tags.release, draft: false, prerelease: false },
     tagCommits: { [tags.release]: COMMIT, [tags.cli]: COMMIT, [tags.action]: COMMIT },
     registryLatest: { version, packageVersion: version },
+    hostedMcp: { initializeVersion: version, serverCardVersion: version },
   };
 }
 
@@ -68,6 +69,15 @@ test("the MCP Registry latest entry must match the version and its npm package",
   assert.deepEqual(findReleaseMismatches("0.3.13", { ...aligned("0.3.13"), registryLatest: { version: "0.3.13", packageVersion: "0.3.12" } }), [
     "MCP Registry 0.3.13 points at npm 0.3.12, expected 0.3.13.",
   ]);
+});
+
+test("the hosted MCP initialize response and server card must match the release", () => {
+  assert.deepEqual(findReleaseMismatches("0.3.13", {
+    ...aligned("0.3.13"), hostedMcp: { initializeVersion: "0.3.12", serverCardVersion: "0.3.13" },
+  }), ["Hosted MCP initialize reports 0.3.12, expected 0.3.13."]);
+  assert.deepEqual(findReleaseMismatches("0.3.13", {
+    ...aligned("0.3.13"), hostedMcp: { initializeVersion: "0.3.13", serverCardVersion: "0.3.12" },
+  }), ["Hosted MCP server card reports 0.3.12, expected 0.3.13."]);
 });
 
 test("surfaces can be checked selectively before the registry is published", () => {

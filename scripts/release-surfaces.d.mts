@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-export type ReleaseSurface = "npm" | "github-release" | "tags" | "mcp-registry";
+export type ReleaseSurface = "npm" | "github-release" | "tags" | "mcp-registry" | "hosted-mcp";
 
 export interface ObservedRelease {
   npm?: { latest?: string; versions?: string[] };
@@ -8,6 +8,7 @@ export interface ObservedRelease {
   /** Tag name to the commit it resolves to; absent tags are omitted. */
   tagCommits?: Record<string, string>;
   registryLatest?: { version: string; packageVersion?: string } | null;
+  hostedMcp?: { initializeVersion?: string; serverCardVersion?: string } | null;
 }
 
 export const RELEASE_SURFACES: ReleaseSurface[];

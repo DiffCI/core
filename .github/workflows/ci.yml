@@ -30,12 +30,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Resolve the published CLI release
+        id: published_cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(npm view @diffci.com/diffci@latest version)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - id: observe
         uses: ./
         with:
           # The Action defaults to the release candidate. Smoke the last published
           # CLI until that candidate is published, avoiding a pre-publish cycle.
-          cli-version: "0.3.12"
+          cli-version: ${{ steps.published_cli.outputs.version }}
           upload-artifact: "false"
           redact-paths: "true"
           fail-on-error: "true"

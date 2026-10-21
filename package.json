@@ -37,6 +37,8 @@
     "benchmark": "node --import tsx scripts/benchmark.ts",
     "audit:boundary": "node scripts/audit-boundary.mjs",
     "agent:check": "node scripts/check-agent-packaging.mjs",
+    "agent:muse:check": "node scripts/check-muse-plugin-integrity.mjs",
+    "agent:muse:sync": "node scripts/check-muse-plugin-integrity.mjs --write",
     "registry:verify": "node scripts/verify-mcp-registry.mjs",
     "release:verify": "node scripts/verify-release.mjs",
     "prepack": "npm run build",

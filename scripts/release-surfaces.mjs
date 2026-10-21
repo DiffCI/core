@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 /** Every public surface that must name the same CLI release. */
-export const RELEASE_SURFACES = ["npm", "github-release", "tags", "mcp-registry"];
+export const RELEASE_SURFACES = ["npm", "github-release", "tags", "mcp-registry", "hosted-mcp"];
 
 export function releaseTags(version) {
   return { release: `v${version}`, cli: `cli-release-v${version}`, action: `action-v${version}` };
@@ -47,6 +47,16 @@ export function findReleaseMismatches(version, observed, surfaces = RELEASE_SURF
       problems.push(`MCP Registry latest is ${registry?.version ?? "missing"}, expected ${version}.`);
     } else if (registry.packageVersion !== version) {
       problems.push(`MCP Registry ${version} points at npm ${registry.packageVersion ?? "nothing"}, expected ${version}.`);
+    }
+  }
+
+  if (surfaces.includes("hosted-mcp")) {
+    const hosted = observed.hostedMcp;
+    if (hosted?.initializeVersion !== version) {
+      problems.push(`Hosted MCP initialize reports ${hosted?.initializeVersion ?? "missing"}, expected ${version}.`);
+    }
+    if (hosted?.serverCardVersion !== version) {
+      problems.push(`Hosted MCP server card reports ${hosted?.serverCardVersion ?? "missing"}, expected ${version}.`);
     }
   }
 

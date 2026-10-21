@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   verify:
-    name: npm, GitHub Release, tags and MCP Registry agree
+    name: packaged clients and all public release surfaces agree
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     steps:
@@ -19,6 +19,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+
+      - name: Verify Action, MCP manifest, and every plugin package on main
+        run: npm run agent:check
 
       - name: Verify every release surface names the CLI version on main
         env:

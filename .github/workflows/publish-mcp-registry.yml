@@ -1,6 +1,7 @@
 name: Publish MCP Registry listing
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,9 @@ concurrency:
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    # A manually dispatched repair must use main. The tagged CLI release invokes this reusable
+    # workflow at its immutable release commit after npm, release tags, and the Action are ready.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-26.04
     environment: mcp-registry-publish
     permissions:
@@ -63,14 +66,14 @@ jobs:
             sleep 10
           done
 
-      - name: Verify every release surface agrees
+      - name: Verify Core release surfaces agree
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           for attempt in $(seq 1 6); do
-            if npm run release:verify; then
+            if node scripts/verify-release.mjs --surfaces=npm,github-release,tags,mcp-registry; then
               exit 0
             fi
             if [ "$attempt" -eq 6 ]; then
