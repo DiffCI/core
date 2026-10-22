@@ -46,6 +46,9 @@ export interface RepositoryProfile {
   adapterBlockers?: string[];
   goTestPackages?: Record<string, string>;
   goTestEnvironment?: Record<string, string>;
+  /** Exact source/embed ownership reported by Go metadata, not generic graph membership.
+   * Absent (including older cached profiles) means changed paths require full validation. */
+  goDependencyPaths?: { sources: string[]; embeds: string[] };
   /** Maven/JUnit test file to owning reactor module (repo-relative, "." for root). */
   mavenTestModules?: Record<string, string>;
   /** Nested modules excluded by an explicit root-module execution scope. Changes here force full CI. */
@@ -175,6 +178,8 @@ export interface UnresolvedDependency {
   specifier: string;
   reason: string;
   dynamic: boolean;
+  /** The specifier is an expression, not a module name, so the target is unknown. */
+  computed?: boolean;
   typeOnly: boolean;
 }
 

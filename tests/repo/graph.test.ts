@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import {
   buildDependencyGraph,
   graphToJson,
@@ -637,4 +638,122 @@ describe("tsconfig discovery is clamped to the repository (Phase 01 F5, 2026-08-
       rmSync(outer, { recursive: true, force: true });
     }
   });
+});
+
+describe("runtime module references", () => {
+  // A literal import() names its only possible target. When that target is missing at HEAD (a
+  // generated file such as a framework's server bundle), it cannot load an unrelated changed file,
+  // so it must not force full validation for every delta in the repository.
+  it("narrows an unresolved literal import() like any other unresolved import", async () => {
+    const root = createTempRepo({
+      "src/changed.ts": "export const value = 1;",
+      "tests/changed.test.ts": "import { value } from '../src/changed'; export const v = value;",
+      "scripts/bootstrap.ts": "export const start = () => import('./server.js');",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.ok(result.unresolved.some(ref => ref.importer === "scripts/bootstrap.ts" && ref.dynamic && !ref.computed));
+      assert.notEqual(refineConfidenceForDelta(result, ["src/changed.ts"]), "UNSAFE");
+      assert.equal(refineConfidenceForDelta(result, ["scripts/bootstrap.ts"]), "UNSAFE");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat a local function named require as a module load", async () => {
+    const root = createTempRepo({
+      "src/check.ts": "const require = (condition: boolean, code: string) => { if (!condition) throw new Error(code); };\nexport const check = (value: unknown) => require(value === 1, 'value-required');",
+      "src/loader.ts": "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nexport const load = (name: string) => require(name);",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.ok(!result.unresolved.some(ref => ref.importer === "src/check.ts"), JSON.stringify(result.unresolved));
+      assert.ok(result.unresolved.some(ref => ref.importer === "src/loader.ts" && ref.computed));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, source] of Object.entries({
+    "variable import": "const path = './changed'; export const load = () => import(path);",
+    "conditional import": "export const load = () => import(true ? './changed' : './other');",
+    "interpolated import": "export const load = (name: string) => import(`./${name}`);",
+    "variable require": "const path = './changed'; export const load = () => require(path);",
+    "interpolated require": "export const load = (name: string) => require(`./${name}`);",
+  })) {
+    // A computed target can be any file, so the changed module has no edge to the loader. Every test
+    // that runs the loader is selected instead of a full run; a test that never runs it is not.
+    it(`selects the tests that run a ${name} when the changed target has no static edge`, async () => {
+      const root = createTempRepo({
+        "src/changed.ts": "export const value = 1;",
+        "src/other.ts": "export const value = 2;",
+        "src/loader.ts": source,
+        "tests/loader.test.ts": "import { load } from '../src/loader'; export const value = load('changed');",
+        "tests/unrelated.test.ts": "export const unrelated = 1;",
+      });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.equal(result.confidence, "UNSAFE");
+        assert.ok(result.unresolved.some(ref => ref.importer === "src/loader.ts" && ref.dynamic && ref.computed));
+        assert.notEqual(refineConfidenceForDelta(result, ["src/changed.ts"]), "UNSAFE");
+        const impact = new ImpactAnalyzer().analyze({
+          baseSha: "base", headSha: "head", files: [{ path: "src/changed.ts", changeType: "modified" }], directories: [],
+          summary: { total: 1, added: 0, modified: 1, deleted: 0, renamed: 0, copied: 0, unmerged: 0, unknown: 0 },
+          analysis: { empty: false, configChanged: false, dependencyManifestChanged: false, lockfileChanged: false, workflowChanged: false, infrastructureChanged: false, databaseChanged: false },
+        }, result, result.profile);
+        assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("; "));
+        const selected = impact.affectedTests.map(test => test.path);
+        assert.ok(selected.includes("tests/loader.test.ts"), JSON.stringify(selected));
+        assert.ok(!selected.includes("tests/unrelated.test.ts"), JSON.stringify(selected));
+        assert.ok(impact.evidence.some(item => item.reason === "COMPUTED_IMPORT" && item.changedFile === "src/loader.ts"));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const [name, source] of Object.entries({
+    import: "export const load = () => import(`./changed`);",
+    require: "export const load = () => require(`./changed`);",
+  })) {
+    it(`resolves no-substitution template ${name} as a literal dependency`, async () => {
+      const root = createTempRepo({
+        "src/changed.ts": "export const value = 1;",
+        "src/loader.ts": source,
+        "tests/loader.test.ts": "import { load } from '../src/loader'; export const value = load();",
+        "tests/unrelated.test.ts": "export const unrelated = 1;",
+      });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.equal(result.confidence, "COMPLETE");
+        assert.deepEqual(result.graph.transitiveDependentsOf("src/changed.ts"), ["src/loader.ts", "tests/loader.test.ts"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+describe("TypeScript import-equals dependencies", () => {
+  for (const typeOnly of [false, true]) {
+    it(`tracks ${typeOnly ? 'type-only' : 'runtime'} external-module import-equals declarations`, async () => {
+      const root = createTempRepo({
+        "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", module: "CommonJS", moduleResolution: "Node10" }, include: ["**/*.ts"] }),
+        "src/changed.ts": "const value = 1; export = value;",
+        "src/loader.ts": `import ${typeOnly ? 'type ' : ''}changed = require('./changed'); export ${typeOnly ? 'type Value = typeof changed' : 'const value = changed'};`,
+        "tests/loader.test.ts": "import './loader-helper';",
+        "tests/loader-helper.ts": "import '../src/loader';",
+        "tests/unrelated.test.ts": "export const unrelated = 1;",
+      });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.equal(result.confidence, "COMPLETE");
+        assert.ok(result.graph.edges.some(edge => edge.from === "src/loader.ts" && edge.to === "src/changed.ts" && edge.kind === (typeOnly ? "type-import" : "require")));
+        assert.ok(result.graph.transitiveDependentsOf("src/changed.ts").includes("tests/loader.test.ts"));
+        assert.ok(!result.graph.transitiveDependentsOf("src/changed.ts").includes("tests/unrelated.test.ts"));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 });

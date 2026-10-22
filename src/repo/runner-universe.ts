@@ -208,8 +208,11 @@ export function extractTestPatterns(source: string): ExtractedTestPatterns {
 
   const includes: string[] = [];
   for (const raw of [...(rawInclude ?? []), ...(rawTestMatch ?? [])]) {
-    // Negations and non-globs (env names and the like) are not part of the universe.
-    if (raw.startsWith("!") || !/[*/]/.test(raw)) continue;
+    // A literal filename is a valid include too. Dropping it while retaining another
+    // wildcard would incorrectly mark a partial test universe as complete.
+    // Negations are omitted conservatively: retaining their positive matches is wider.
+    if (raw.startsWith("!")) continue;
+    if (!raw.length) { complete = false; continue; }
     const value = stripRootDir(raw);
     if (value.includes(ROOT_DIR)) {
       // `<rootDir>` somewhere other than the front - not resolvable without evaluating the config.
@@ -228,7 +231,7 @@ export function extractTestPatterns(source: string): ExtractedTestPatterns {
 
   return {
     includes: Array.from(new Set(includes)),
-    excludeGlobs: Array.from(new Set((readKey("exclude") ?? []).map(stripRootDir).filter((g) => /[*/]/.test(g) && !g.includes(ROOT_DIR)))),
+    excludeGlobs: Array.from(new Set((readKey("exclude") ?? []).map(stripRootDir).filter((g) => g.length > 0 && !g.includes(ROOT_DIR)))),
     ignoreRegexSources: Array.from(new Set(readKey("testPathIgnorePatterns") ?? [])),
     roots,
     declaresTests,

@@ -25,6 +25,7 @@ interface ImportRef {
   specifier: string;
   kind: DependencyEdgeKind;
   dynamic: boolean;
+  computed?: boolean;
 }
 
 const SOURCE_EXTENSIONS = new Set([
@@ -97,16 +98,42 @@ function isExcludedPath(rel: string, excludeDirs: string[]): boolean {
   );
 }
 
+/**
+ * Whether `require` at this call names a local binding rather than the module loader, as in an
+ * assertion helper `const require = (condition, code) => ...`. Such calls load nothing, so treating
+ * their arguments as computed specifiers made every delta in one dogfood repository UNSAFE. A local
+ * `require` initialised from `createRequire(...)` is the loader and is not a shadow. Scopes are
+ * tracked during the walk: source files parsed by the Program have no parent pointers.
+ */
+function scopeShadowsRequire(scope: ts.Node): boolean {
+  const declares = (name: ts.BindingName | ts.Identifier | undefined) => !!name && ts.isIdentifier(name) && name.text === "require";
+  const loaderInitializer = (init: ts.Expression | undefined) =>
+    !!init && ts.isCallExpression(init) && ts.isIdentifier(init.expression) && init.expression.text === "createRequire";
+  const statementShadows = (statement: ts.Statement) =>
+    (ts.isFunctionDeclaration(statement) && declares(statement.name)) ||
+    (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((d) => declares(d.name) && !loaderInitializer(d.initializer)));
+  if ((ts.isBlock(scope) || ts.isSourceFile(scope) || ts.isModuleBlock(scope)) && scope.statements.some(statementShadows)) return true;
+  return ts.isFunctionLike(scope) && scope.parameters.some((p) => declares(p.name));
+}
+
 function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
   const refs: ImportRef[] = [];
+  let shadowDepth = 0;
 
   function visit(node: ts.Node) {
+    const shadows = scopeShadowsRequire(node);
+    if (shadows) shadowDepth++;
     if (ts.isImportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
         const isTypeOnly = node.importClause?.isTypeOnly ?? false;
         const kind: DependencyEdgeKind = isTypeOnly ? "type-import" : "import";
         refs.push({ specifier: specifier.text, kind, dynamic: false });
+      }
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const specifier = node.moduleReference.expression;
+      if (specifier && ts.isStringLiteral(specifier)) {
+        refs.push({ specifier: specifier.text, kind: node.isTypeOnly ? "type-import" : "require", dynamic: false });
       }
     } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
       const specifier = node.moduleSpecifier;
@@ -116,35 +143,21 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       }
     } else if (ts.isCallExpression(node)) {
       const firstArg = node.arguments[0];
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword && firstArg) {
-        if (ts.isStringLiteral(firstArg)) {
-          refs.push({
-            specifier: firstArg.text,
-            kind: "dynamic-import",
-            dynamic: true,
-          });
-        } else {
-          refs.push({
-            specifier: firstArg.getText(sourceFile).slice(0, 200),
-            kind: "dynamic-import",
-            dynamic: true,
-          });
-        }
-      } else if (
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "require" &&
-        firstArg &&
-        ts.isStringLiteral(firstArg)
-      ) {
+      const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require" && shadowDepth === 0;
+      if ((isImport || isRequire) && firstArg) {
+        const literal = ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg);
         refs.push({
-          specifier: firstArg.text,
-          kind: "require",
-          dynamic: false,
+          specifier: literal ? firstArg.text : firstArg.getText(sourceFile).slice(0, 200),
+          kind: isImport ? "dynamic-import" : "require",
+          dynamic: isImport || !literal,
+          computed: !literal,
         });
       }
     }
 
     ts.forEachChild(node, visit);
+    if (shadows) shadowDepth--;
   }
 
   visit(sourceFile);
@@ -693,6 +706,11 @@ export async function buildDependencyGraph(
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
   profile.goTestPackages = Object.assign({}, ...contributions.map((item) => item.testPackages));
   profile.goTestEnvironment = contributions.find((item) => item.id === "go")?.executionEnv;
+  const goContribution = contributions.find((item) => item.id === "go");
+  profile.goDependencyPaths = goContribution ? {
+    sources: [...new Set(goContribution.sourcePaths)].sort(),
+    embeds: [...new Set(goContribution.assetPaths)].sort(),
+  } : undefined;
   profile.mavenTestModules = Object.assign({}, ...contributions.filter((item) => item.id === "maven").map((item) => item.testPackages));
   const adapterTests = contributions.flatMap((item) => item.testFiles);
   profile.testFilePaths = [...new Set([...profile.testFilePaths, ...adapterTests])].sort();
@@ -758,6 +776,7 @@ export async function buildDependencyGraph(
       specifier: ref.specifier,
       reason,
       dynamic: ref.dynamic,
+      ...(ref.computed ? { computed: true } : {}),
       typeOnly: ref.kind === "type-import",
     });
   }
@@ -845,6 +864,13 @@ export async function buildDependencyGraph(
     const refs = extractImportRefs(sf);
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
+      // Expression text is not a module name. In particular, import(name) must
+      // not be classified as an external package called "name".
+      if (ref.computed) {
+        recordUnresolved(importerRel, ref, "computed module specifier requires full validation");
+        recordReference("unresolved", importerRel, ref);
+        continue;
+      }
       if (!ref.specifier) {
         recordUnresolved(importerRel, ref, "empty specifier");
         recordReference("unresolved", importerRel, ref);
@@ -1297,14 +1323,16 @@ function computeConfidence(
  * graph for EVERY delta, for as long as that one file's import stays unresolved, regardless of whether
  * the delta being analyzed has anything to do with it.
  *
- * This narrows that: an unresolved import only makes THIS delta's confidence untrustworthy if the
- * unresolved import's importer file is actually reachable from the delta's changed files (in either
+ * For static unresolved references, this narrows that: an unresolved import makes THIS delta's
+ * confidence untrustworthy if its importer is actually reachable from the changed files (in either
  * direction - the changed file might depend on the incomplete file, or something reachable from the
  * changed file might). If none of the graph's unresolved imports are anywhere near this delta, the
  * graph's real incompleteness elsewhere cannot plausibly affect what can safely be determined about
  * THIS specific change.
  *
  * Deliberately NOT narrowed - these remain hard, global blockers regardless of the delta:
+ * - Unresolved runtime imports/requires: a computed target has no known graph edge, so lack of
+ *   reachability cannot establish that it does not load one of the changed files.
  * - `sourceFileCount === 0` (an empty graph gives no reachability information to reason about at all).
  * - `integrity.criticalCount > 0` (the graph's own internal structure is broken - a construction bug,
  *   not a property of any one file, so no delta-specific narrowing is meaningful).
@@ -1317,6 +1345,12 @@ function computeConfidence(
  * sourceFileCount or integrity triggered it. */
 export function refineConfidenceForDelta(result: DependencyGraphResult, changedFiles: string[]): GraphConfidence {
   if (result.adapterBlockers?.length) return "UNSAFE";
+  // A computed runtime target can be any file, so its missing edge proves nothing about which changed
+  // file it loads. It cannot, however, change the behaviour of a test that never runs the importer:
+  // ImpactAnalyzer selects every test that does (COMPUTED_IMPORT) and falls back when the importer is
+  // outside the graph. Computed references are therefore excluded from reachability below rather
+  // than blocking every delta. A literal dynamic import names its only possible target and is
+  // narrowed like any other unresolved import.
   // Anything that was never UNSAFE in the first place passes through untouched - there is nothing to
   // narrow, and re-deriving sourceFileCount/integrity from raw fields here (rather than trusting the
   // already-computed confidence) would be both redundant and a real correctness risk: a caller's
@@ -1344,7 +1378,7 @@ export function refineConfidenceForDelta(result: DependencyGraphResult, changedF
   }
   const changedSet = new Set(changedFiles);
 
-  const relevantUnresolved = result.unresolved.some((u) => changedSet.has(u.importer) || reachableFromChanged.has(u.importer));
+  const relevantUnresolved = result.unresolved.some((u) => !u.computed && (changedSet.has(u.importer) || reachableFromChanged.has(u.importer)));
   if (relevantUnresolved) return "UNSAFE";
 
   // None of the unresolved imports are reachable from this delta's changed files - narrow to what

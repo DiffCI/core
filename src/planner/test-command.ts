@@ -26,7 +26,8 @@
  */
 import type { PackageManager, RepositoryProfile } from "../repo/types.js";
 import type { TestRunnerConfig } from "../repo/test-discovery.js";
-import { matchesGlob } from "../repo/test-discovery.js";
+import { matchesGlob, testDiscoveryErrors } from "../repo/test-discovery.js";
+import { compileIgnoreRegexes, isIgnoredPath, isUnderRoots } from "../repo/runner-universe.js";
 import { END_TO_END_FRAMEWORKS, type KnownTestFramework } from "../repo/test-framework.js";
 import type { CommandSpec } from "./types.js";
 
@@ -103,6 +104,12 @@ function frameworkOfConfig(config: TestRunnerConfig): KnownTestFramework {
   return config.runner;
 }
 
+function configAllowsPath(config: TestRunnerConfig, path: string): boolean {
+  return !config.excludeGlobs.some(glob => matchesGlob(path, glob))
+    && !isIgnoredPath(path, compileIgnoreRegexes(config.ignoreRegexSources))
+    && isUnderRoots(path, config.roots);
+}
+
 function buildCommand(
   framework: KnownTestFramework,
   packageManager: PackageManager,
@@ -131,7 +138,7 @@ export function planSelectiveTestCommands(
   profile: RepositoryProfile,
   selectedPaths: readonly string[],
 ): SelectiveTestCommandPlan {
-  const blockers = profile.adapterBlockers ?? profile.adapters?.flatMap((adapter) => adapter.blockers) ?? [];
+  const blockers = [...(profile.adapterBlockers ?? profile.adapters?.flatMap((adapter) => adapter.blockers) ?? []), ...testDiscoveryErrors(profile)];
   if (blockers.length) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: blockers.join("; ") };
   if (profile.workspaceTestPackages?.length) {
     const suites = profile.workspaceTestPackages;
@@ -261,7 +268,9 @@ export function planSelectiveTestCommands(
   // command runs which files, so those claims are honoured first.
   for (const config of configs) {
     if (config.includes.length === 0) continue;
-    const claimed = paths.filter((p) => remaining.has(p) && config.includes.some((glob) => matchesGlob(p, glob)));
+    // A file may execute under several configurations with different environments.
+    // Retain every applicable invocation; an earlier include is not exclusive ownership.
+    const claimed = paths.filter((p) => configAllowsPath(config, p) && config.includes.some((glob) => matchesGlob(p, glob)));
     if (claimed.length === 0) continue;
     for (const p of claimed) remaining.delete(p);
     const framework = frameworkOfConfig(config);
@@ -290,6 +299,11 @@ export function planSelectiveTestCommands(
       };
     }
     const rest = Array.from(remaining).sort();
+    const defaultConfigs = configs.filter(config => config.runner === primary && config.isDefault);
+    if (defaultConfigs.some(config => rest.some(path => !configAllowsPath(config, path)
+      || config.authoritative && !config.includes.some(glob => matchesGlob(path, glob))))) {
+      return { commands: [], groups: [], unroutedPaths: rest, refusalReason: "Selected tests are outside the default runner configuration" };
+    }
     groups.push({
       runnerId: primary,
       label: `${primary} (default configuration)`,

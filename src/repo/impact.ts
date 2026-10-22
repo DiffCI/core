@@ -6,7 +6,7 @@ import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, Entry
 import type { ChangedImpact, EntryPointImpact, ImpactEvidence, ImpactEvidencePath, ImpactReason, ImpactResult, ImpactRiskSignal, TestImpact } from "./impact-types.js";
 import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
-import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testFileMatcherForProfile } from "./test-discovery.js";
+import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
 import { infrastructureRole, isImplicitlyLoadedFile, resolveFileReferences } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
@@ -251,6 +251,7 @@ export class ImpactAnalyzer {
   private readRepositoryFile: ((path: string) => string | undefined) | undefined;
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
+  private goEmbedPaths = new Set<string>();
   constructor(alwaysRunChecks: AlwaysRunCheck[] = DEFAULT_ALWAYS_RUN_CHECKS) { this.alwaysRunChecks = alwaysRunChecks; }
 
   analyze(delta: GitDelta, graphResult: DependencyGraphResult, profile: RepositoryProfile, options: ImpactAnalyzeOptions = {}): ImpactResult {
@@ -273,14 +274,25 @@ export class ImpactAnalyzer {
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
-    const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? [])];
+    const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? []), ...testDiscoveryErrors(profile)];
     if (profile.vueScope) {
       const scope = profile.vueScope;
       if (delta.files.some(file => allChangePaths(file).some(path => !inVuePackage(path, scope.packageRoot)))) fallbackReasons.push("Changes outside the declared Vue package require full validation");
       const setupDependencies = new Set((profile.vueSetupPaths ?? []).flatMap(path => [path, ...graph.transitiveDependenciesOf(path)]));
       if (delta.files.some(file => allChangePaths(file).some(path => setupDependencies.has(path)))) fallbackReasons.push("Vue suite configuration or shared setup dependency changed; full validation required");
     }
-    if (profile.adapters?.some(adapter => adapter.id === "go") && delta.files.some(file => allChangePaths(file).some(isGoDiscoveryIgnoredPath))) {
+    const hasGoAdapter = profile.adapters?.some(adapter => adapter.id === "go");
+    this.goEmbedPaths = new Set(hasGoAdapter ? profile.goDependencyPaths?.embeds : []);
+    if (hasGoAdapter) {
+      // go list models package sources and embeds, not arbitrary runtime reads. Neither a
+      // familiar extension/directory nor membership in another adapter's graph proves ownership.
+      // Check both identities of renames/copies, including files absent from the HEAD inventory.
+      // Missing metadata in older cached profiles deliberately fails closed as well.
+      const modeledPaths = new Set([...(profile.goDependencyPaths?.sources ?? []), ...this.goEmbedPaths]);
+      const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))].filter(path => !modeledPaths.has(path));
+      if (unmodeledPaths.length) fallbackReasons.push(`Go runtime inputs outside source/embed metadata require full validation: ${unmodeledPaths.slice(0, 20).join(", ")}`);
+    }
+    if (hasGoAdapter && delta.files.some(file => allChangePaths(file).some(isGoDiscoveryIgnoredPath))) {
       fallbackReasons.push("Changes in Go discovery-excluded paths require full validation, including runtime test data");
     }
     const excludedGoRoots = profile.goExcludedModuleRoots ?? [];
@@ -339,6 +351,7 @@ export class ImpactAnalyzer {
     this.handleStructuralNextLayout(changedImpacts, profile, affectedEntryPoints, affectedSources, evidence);
     this.handleAddedEntryPoints(delta, affectedEntryPoints, affectedSources, affectedTests, evidence, fallbackReasons);
     this.collectAlwaysRunTests(profile, graph, affectedTests, evidence, graphResult.profile.vueRuntimeAlwaysRunPaths ?? []);
+    this.collectComputedImportTests(graphResult, graph, changedImpacts, affectedTests, evidence, riskSignals, fallbackReasons);
 
     // Changed-test self-selection invariant (2026-08-24): every executable directly-changed test
     // (added / modified / renamed-destination / copied-destination) MUST be present in the final
@@ -432,6 +445,12 @@ export class ImpactAnalyzer {
     riskSignals: ImpactRiskSignal[],
     fallbackReasons: string[],
   ): void {
+    // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
+    // Traverse it before generic unknown/docs classification can discard the dependency.
+    if (this.goEmbedPaths.has(changedPath)) {
+      this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
+      return;
+    }
     const category = changedImpact.category;
     if (category === "test-fixture") {
       // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
@@ -466,6 +485,13 @@ export class ImpactAnalyzer {
       return;
     }
     if (isAssetFilePath(changedPath)) {
+      if (changedImpact.file.changeType === "deleted" && !hasNode(graph, changedPath)) {
+        const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
+        evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
+        riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+        return;
+      }
       this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
       return;
     }
@@ -806,6 +832,39 @@ export class ImpactAnalyzer {
       else if (this.isTestFile(file.path)) result.push({ path: file.path, kind: "test" });
     }
     return result;
+  }
+
+  /**
+   * A computed `import(name)` or `require(path)` can load any file, so no graph edge says which changed
+   * file it reaches. It can only change what a test observes if that test runs the importer, so every
+   * test that does - the importer itself when it is a test, and each test depending on it - is
+   * selected whenever anything other than documentation changed. An importer outside the dependency
+   * graph has no known runners and requires full validation (2026-10-22, narrowing PR #32's global
+   * block: one repository's four computed imports had turned every analysis into a full run).
+   */
+  private collectComputedImportTests(
+    graphResult: DependencyGraphResult,
+    graph: DependencyGraph,
+    changedImpacts: ChangedImpact[],
+    affectedTests: Map<string, TestImpact>,
+    evidence: ImpactEvidence[],
+    riskSignals: ImpactRiskSignal[],
+    fallbackReasons: string[],
+  ): void {
+    const importers = [...new Set(graphResult.unresolved.filter((ref) => ref.computed).map((ref) => ref.importer))].sort();
+    if (importers.length === 0 || !changedImpacts.some((impact) => impact.category !== "docs")) return;
+    for (const importer of importers) {
+      if (!hasNode(graph, importer)) {
+        const message = `Computed module load in ${importer} is outside the dependency graph; full validation required`;
+        evidence.push(makeEvidence("COMPUTED_IMPORT", importer, message));
+        riskSignals.push({ level: "critical", reason: "COMPUTED_IMPORT", message, paths: [importer] });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+        continue;
+      }
+      const runners = [importer, ...graph.transitiveDependentsOf(importer)].filter((path) => this.isTestFile(path));
+      for (const test of runners) this.addAffectedTest(importer, test, graph, affectedTests, "COMPUTED_IMPORT", evidence);
+      evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected`));
+    }
   }
 
   private collectAlwaysRunTests(
