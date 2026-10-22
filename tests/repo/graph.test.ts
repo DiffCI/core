@@ -681,7 +681,9 @@ describe("runtime module references", () => {
     "variable require": "const path = './changed'; export const load = () => require(path);",
     "interpolated require": "export const load = (name: string) => require(`./${name}`);",
   })) {
-    it(`keeps full fallback for ${name} when the changed target has no static edge`, async () => {
+    // A computed target can be any file, so the changed module has no edge to the loader. Every test
+    // that runs the loader is selected instead of a full run; a test that never runs it is not.
+    it(`selects the tests that run a ${name} when the changed target has no static edge`, async () => {
       const root = createTempRepo({
         "src/changed.ts": "export const value = 1;",
         "src/other.ts": "export const value = 2;",
@@ -692,15 +694,18 @@ describe("runtime module references", () => {
       try {
         const result = await buildDependencyGraph({ repoPath: root });
         assert.equal(result.confidence, "UNSAFE");
-        assert.ok(result.unresolved.some(ref => ref.importer === "src/loader.ts" && ref.dynamic));
-        assert.equal(refineConfidenceForDelta(result, ["src/changed.ts"]), "UNSAFE");
+        assert.ok(result.unresolved.some(ref => ref.importer === "src/loader.ts" && ref.dynamic && ref.computed));
+        assert.notEqual(refineConfidenceForDelta(result, ["src/changed.ts"]), "UNSAFE");
         const impact = new ImpactAnalyzer().analyze({
           baseSha: "base", headSha: "head", files: [{ path: "src/changed.ts", changeType: "modified" }], directories: [],
           summary: { total: 1, added: 0, modified: 1, deleted: 0, renamed: 0, copied: 0, unmerged: 0, unknown: 0 },
           analysis: { empty: false, configChanged: false, dependencyManifestChanged: false, lockfileChanged: false, workflowChanged: false, infrastructureChanged: false, databaseChanged: false },
         }, result, result.profile);
-        assert.equal(impact.fallbackRequired, true);
-        assert.equal(impact.analysisStatus, "FALLBACK");
+        assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("; "));
+        const selected = impact.affectedTests.map(test => test.path);
+        assert.ok(selected.includes("tests/loader.test.ts"), JSON.stringify(selected));
+        assert.ok(!selected.includes("tests/unrelated.test.ts"), JSON.stringify(selected));
+        assert.ok(impact.evidence.some(item => item.reason === "COMPUTED_IMPORT" && item.changedFile === "src/loader.ts"));
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

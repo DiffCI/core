@@ -1345,11 +1345,12 @@ function computeConfidence(
  * sourceFileCount or integrity triggered it. */
 export function refineConfidenceForDelta(result: DependencyGraphResult, changedFiles: string[]): GraphConfidence {
   if (result.adapterBlockers?.length) return "UNSAFE";
-  // A computed runtime target can be any changed file. Its missing edge cannot
-  // prove the importer is unrelated to the delta. A literal dynamic import names
-  // its only possible target, so it is narrowed like any other unresolved import:
-  // a generated file such as import("./server.js") must not block every delta.
-  if (result.unresolved.some(ref => ref.computed)) return "UNSAFE";
+  // A computed runtime target can be any file, so its missing edge proves nothing about which changed
+  // file it loads. It cannot, however, change the behaviour of a test that never runs the importer:
+  // ImpactAnalyzer selects every test that does (COMPUTED_IMPORT) and falls back when the importer is
+  // outside the graph. Computed references are therefore excluded from reachability below rather
+  // than blocking every delta. A literal dynamic import names its only possible target and is
+  // narrowed like any other unresolved import.
   // Anything that was never UNSAFE in the first place passes through untouched - there is nothing to
   // narrow, and re-deriving sourceFileCount/integrity from raw fields here (rather than trusting the
   // already-computed confidence) would be both redundant and a real correctness risk: a caller's
@@ -1377,7 +1378,7 @@ export function refineConfidenceForDelta(result: DependencyGraphResult, changedF
   }
   const changedSet = new Set(changedFiles);
 
-  const relevantUnresolved = result.unresolved.some((u) => changedSet.has(u.importer) || reachableFromChanged.has(u.importer));
+  const relevantUnresolved = result.unresolved.some((u) => !u.computed && (changedSet.has(u.importer) || reachableFromChanged.has(u.importer)));
   if (relevantUnresolved) return "UNSAFE";
 
   // None of the unresolved imports are reachable from this delta's changed files - narrow to what

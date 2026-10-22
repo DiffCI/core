@@ -351,6 +351,7 @@ export class ImpactAnalyzer {
     this.handleStructuralNextLayout(changedImpacts, profile, affectedEntryPoints, affectedSources, evidence);
     this.handleAddedEntryPoints(delta, affectedEntryPoints, affectedSources, affectedTests, evidence, fallbackReasons);
     this.collectAlwaysRunTests(profile, graph, affectedTests, evidence, graphResult.profile.vueRuntimeAlwaysRunPaths ?? []);
+    this.collectComputedImportTests(graphResult, graph, changedImpacts, affectedTests, evidence, riskSignals, fallbackReasons);
 
     // Changed-test self-selection invariant (2026-08-24): every executable directly-changed test
     // (added / modified / renamed-destination / copied-destination) MUST be present in the final
@@ -831,6 +832,39 @@ export class ImpactAnalyzer {
       else if (this.isTestFile(file.path)) result.push({ path: file.path, kind: "test" });
     }
     return result;
+  }
+
+  /**
+   * A computed `import(name)` or `require(path)` can load any file, so no graph edge says which changed
+   * file it reaches. It can only change what a test observes if that test runs the importer, so every
+   * test that does - the importer itself when it is a test, and each test depending on it - is
+   * selected whenever anything other than documentation changed. An importer outside the dependency
+   * graph has no known runners and requires full validation (2026-10-22, narrowing PR #32's global
+   * block: one repository's four computed imports had turned every analysis into a full run).
+   */
+  private collectComputedImportTests(
+    graphResult: DependencyGraphResult,
+    graph: DependencyGraph,
+    changedImpacts: ChangedImpact[],
+    affectedTests: Map<string, TestImpact>,
+    evidence: ImpactEvidence[],
+    riskSignals: ImpactRiskSignal[],
+    fallbackReasons: string[],
+  ): void {
+    const importers = [...new Set(graphResult.unresolved.filter((ref) => ref.computed).map((ref) => ref.importer))].sort();
+    if (importers.length === 0 || !changedImpacts.some((impact) => impact.category !== "docs")) return;
+    for (const importer of importers) {
+      if (!hasNode(graph, importer)) {
+        const message = `Computed module load in ${importer} is outside the dependency graph; full validation required`;
+        evidence.push(makeEvidence("COMPUTED_IMPORT", importer, message));
+        riskSignals.push({ level: "critical", reason: "COMPUTED_IMPORT", message, paths: [importer] });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+        continue;
+      }
+      const runners = [importer, ...graph.transitiveDependentsOf(importer)].filter((path) => this.isTestFile(path));
+      for (const test of runners) this.addAffectedTest(importer, test, graph, affectedTests, "COMPUTED_IMPORT", evidence);
+      evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected`));
+    }
   }
 
   private collectAlwaysRunTests(
