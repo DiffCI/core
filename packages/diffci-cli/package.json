@@ -58,7 +58,7 @@
     "package:smoke": "node scripts/package-smoke.mjs"
   },
   "dependencies": {
-    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#4c76be14cec37d94eb7df93922f3c29d202f4e65",
+    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#5fbbebb1ffbfb027bec13b175182841a7895b5d4",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
