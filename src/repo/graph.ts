@@ -98,10 +98,31 @@ function isExcludedPath(rel: string, excludeDirs: string[]): boolean {
   );
 }
 
+/**
+ * Whether `require` at this call names a local binding rather than the module loader, as in an
+ * assertion helper `const require = (condition, code) => ...`. Such calls load nothing, so treating
+ * their arguments as computed specifiers made every delta in one dogfood repository UNSAFE. A local
+ * `require` initialised from `createRequire(...)` is the loader and is not a shadow. Scopes are
+ * tracked during the walk: source files parsed by the Program have no parent pointers.
+ */
+function scopeShadowsRequire(scope: ts.Node): boolean {
+  const declares = (name: ts.BindingName | ts.Identifier | undefined) => !!name && ts.isIdentifier(name) && name.text === "require";
+  const loaderInitializer = (init: ts.Expression | undefined) =>
+    !!init && ts.isCallExpression(init) && ts.isIdentifier(init.expression) && init.expression.text === "createRequire";
+  const statementShadows = (statement: ts.Statement) =>
+    (ts.isFunctionDeclaration(statement) && declares(statement.name)) ||
+    (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((d) => declares(d.name) && !loaderInitializer(d.initializer)));
+  if ((ts.isBlock(scope) || ts.isSourceFile(scope) || ts.isModuleBlock(scope)) && scope.statements.some(statementShadows)) return true;
+  return ts.isFunctionLike(scope) && scope.parameters.some((p) => declares(p.name));
+}
+
 function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
   const refs: ImportRef[] = [];
+  let shadowDepth = 0;
 
   function visit(node: ts.Node) {
+    const shadows = scopeShadowsRequire(node);
+    if (shadows) shadowDepth++;
     if (ts.isImportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
@@ -123,7 +144,7 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
     } else if (ts.isCallExpression(node)) {
       const firstArg = node.arguments[0];
       const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require" && shadowDepth === 0;
       if ((isImport || isRequire) && firstArg) {
         const literal = ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg);
         refs.push({
@@ -136,6 +157,7 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
     }
 
     ts.forEachChild(node, visit);
+    if (shadows) shadowDepth--;
   }
 
   visit(sourceFile);

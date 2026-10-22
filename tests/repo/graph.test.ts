@@ -660,6 +660,20 @@ describe("runtime module references", () => {
     }
   });
 
+  it("does not treat a local function named require as a module load", async () => {
+    const root = createTempRepo({
+      "src/check.ts": "const require = (condition: boolean, code: string) => { if (!condition) throw new Error(code); };\nexport const check = (value: unknown) => require(value === 1, 'value-required');",
+      "src/loader.ts": "import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\nexport const load = (name: string) => require(name);",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.ok(!result.unresolved.some(ref => ref.importer === "src/check.ts"), JSON.stringify(result.unresolved));
+      assert.ok(result.unresolved.some(ref => ref.importer === "src/loader.ts" && ref.computed));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   for (const [name, source] of Object.entries({
     "variable import": "const path = './changed'; export const load = () => import(path);",
     "conditional import": "export const load = () => import(true ? './changed' : './other');",
