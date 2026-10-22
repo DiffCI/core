@@ -178,6 +178,8 @@ export interface UnresolvedDependency {
   specifier: string;
   reason: string;
   dynamic: boolean;
+  /** The specifier is an expression, not a module name, so the target is unknown. */
+  computed?: boolean;
   typeOnly: boolean;
 }
 

@@ -641,6 +641,25 @@ describe("tsconfig discovery is clamped to the repository (Phase 01 F5, 2026-08-
 });
 
 describe("runtime module references", () => {
+  // A literal import() names its only possible target. When that target is missing at HEAD (a
+  // generated file such as a framework's server bundle), it cannot load an unrelated changed file,
+  // so it must not force full validation for every delta in the repository.
+  it("narrows an unresolved literal import() like any other unresolved import", async () => {
+    const root = createTempRepo({
+      "src/changed.ts": "export const value = 1;",
+      "tests/changed.test.ts": "import { value } from '../src/changed'; export const v = value;",
+      "scripts/bootstrap.ts": "export const start = () => import('./server.js');",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.ok(result.unresolved.some(ref => ref.importer === "scripts/bootstrap.ts" && ref.dynamic && !ref.computed));
+      assert.notEqual(refineConfidenceForDelta(result, ["src/changed.ts"]), "UNSAFE");
+      assert.equal(refineConfidenceForDelta(result, ["scripts/bootstrap.ts"]), "UNSAFE");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   for (const [name, source] of Object.entries({
     "variable import": "const path = './changed'; export const load = () => import(path);",
     "conditional import": "export const load = () => import(true ? './changed' : './other');",

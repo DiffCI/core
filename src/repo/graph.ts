@@ -754,6 +754,7 @@ export async function buildDependencyGraph(
       specifier: ref.specifier,
       reason,
       dynamic: ref.dynamic,
+      ...(ref.computed ? { computed: true } : {}),
       typeOnly: ref.kind === "type-import",
     });
   }
@@ -1322,9 +1323,11 @@ function computeConfidence(
  * sourceFileCount or integrity triggered it. */
 export function refineConfidenceForDelta(result: DependencyGraphResult, changedFiles: string[]): GraphConfidence {
   if (result.adapterBlockers?.length) return "UNSAFE";
-  // An unresolved runtime target can be any changed file. Its missing edge
-  // cannot prove the importer is unrelated to the delta.
-  if (result.unresolved.some(ref => ref.dynamic)) return "UNSAFE";
+  // A computed runtime target can be any changed file. Its missing edge cannot
+  // prove the importer is unrelated to the delta. A literal dynamic import names
+  // its only possible target, so it is narrowed like any other unresolved import:
+  // a generated file such as import("./server.js") must not block every delta.
+  if (result.unresolved.some(ref => ref.computed)) return "UNSAFE";
   // Anything that was never UNSAFE in the first place passes through untouched - there is nothing to
   // narrow, and re-deriving sourceFileCount/integrity from raw fields here (rather than trusting the
   // already-computed confidence) would be both redundant and a real correctness risk: a caller's
