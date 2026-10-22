@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { rmSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -82,6 +83,16 @@ describe("GraphCache", () => {
     const stale = JSON.stringify({ ...minimalGraph, cacheSchemaVersion: "0" });
     writeFileSync(`${cacheDir}/${key}.json`, stale);
     assert.equal(cache.load(key), undefined);
+  });
+
+  it("invalidates persisted schema-2 graphs even without an explicit engine version", () => {
+    const cache = new GraphCache({ cacheDir });
+    const oldKey = createHash("sha256").update(JSON.stringify({
+      schema: "2", commit: "abc", tsconfig: "", config: "", diffciVersion: "0.6.0-phase6",
+    })).digest("hex");
+    writeFileSync(`${cacheDir}/${oldKey}.json`, JSON.stringify({ ...minimalGraph, cacheSchemaVersion: "2" }));
+    assert.notEqual(buildGraphCacheKey({ commitSha: "abc" }), oldKey);
+    assert.equal(cache.load(oldKey), undefined, "pre-fix graphs must be rebuilt with the current analysis");
   });
 
   it("rejects corrupted serialized graph cache", () => {
