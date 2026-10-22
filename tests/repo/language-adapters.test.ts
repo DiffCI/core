@@ -260,3 +260,120 @@ test("Jicofo-style three-module reactor propagates common changes through select
     assert.deepEqual(plan.commands[0]?.args, ["-pl", "jicofo,jicofo-common,jicofo-selector", "-am", "test"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+function mavenSafetyFixture(extra: Record<string, string> = {}): Record<string, string> {
+  return {
+    "pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>library</module><module>application</module><module>unrelated</module></modules></project>",
+    "library/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>library</artifactId><version>1</version></project>",
+    "library/src/main/java/example/Library.java": "package example; public class Library {}",
+    "library/src/test/java/example/LibraryTest.java": "package example; public class LibraryTest {}",
+    "application/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application</artifactId><version>1</version><dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies></project>",
+    "application/src/main/java/example/App.java": "package example; public class App {}",
+    "application/src/test/java/example/AppTest.java": "package example; public class AppTest {}",
+    "unrelated/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>unrelated</artifactId><version>1</version></project>",
+    "unrelated/src/main/java/example/Other.java": "package example; public class Other {}",
+    "unrelated/src/test/java/example/OtherTest.java": "package example; public class OtherTest {}",
+    ...extra,
+  };
+}
+
+function mavenSafetyPlan(graph: Awaited<ReturnType<typeof buildDependencyGraph>>, changed: string) {
+  const change = delta(changed);
+  const impact = new ImpactAnalyzer().analyze(change, graph, graph.profile);
+  return new DefaultCIPlanner(createTaskRegistry([])).plan({ delta: change, impact, profile: graph.profile });
+}
+
+test("Maven discovers the default Surefire Test prefix without an empty selective result", async () => {
+  const files = mavenSafetyFixture();
+  delete files["application/src/test/java/example/AppTest.java"];
+  files["application/src/test/java/example/TestApp.java"] = "package example; public class TestApp {}";
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const plan = mavenSafetyPlan(graph, "application/src/main/java/example/App.java");
+    assert.equal(plan.mode, "SELECTIVE");
+    assert.ok(plan.selectedTests.includes("application/src/test/java/example/TestApp.java"));
+    assert.ok(plan.skippedTests.includes("unrelated/src/test/java/example/OtherTest.java"));
+    assert.deepEqual(plan.commandSpecs[0]?.args, ["-pl", "application", "-am", "test"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const scope of ["main", "test"]) {
+  test(`Maven ${scope} resource changes select owning and downstream module tests`, async () => {
+    const changed = `library/src/${scope}/resources/settings.json`;
+    const root = fixture(mavenSafetyFixture({ [changed]: '{"value":2}' }));
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      const plan = mavenSafetyPlan(graph, changed);
+      assert.equal(plan.mode, "SELECTIVE");
+      assert.ok(plan.selectedTests.includes("library/src/test/java/example/LibraryTest.java"));
+      assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+      assert.ok(plan.skippedTests.includes("unrelated/src/test/java/example/OtherTest.java"));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test("Maven resource-only dependency modules propagate resource changes to consuming tests", async () => {
+  const changed = "library/src/main/resources/settings.json";
+  const files = mavenSafetyFixture({ [changed]: '{"value":2}' });
+  delete files["library/src/main/java/example/Library.java"];
+  delete files["library/src/test/java/example/LibraryTest.java"];
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const plan = mavenSafetyPlan(graph, changed);
+    assert.equal(plan.mode, "SELECTIVE");
+    assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+    assert.ok(plan.skippedTests.includes("unrelated/src/test/java/example/OtherTest.java"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const [element, path] of [["sourceDirectory", "src/java/example/App.java"], ["testSourceDirectory", "tests/example/Behavior.java"]]) {
+  test(`Maven custom ${element} requires full validation`, async () => {
+    const files = mavenSafetyFixture({
+      "application/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application</artifactId><version>1</version><build><${element}>${path.slice(0, path.indexOf("/example/"))}</${element}></build></project>`,
+      [`application/${path}`]: "package example; public class Behavior {}",
+    });
+    const root = fixture(files);
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(graph.adapterBlockers?.some(reason => /custom source roots/i.test(reason)));
+      const plan = mavenSafetyPlan(graph, `application/${path}`);
+      assert.equal(plan.mode, "FULL");
+      assert.deepEqual(plan.skippedTests, []);
+      const command = planSelectiveTestCommands(graph.profile, ["application/src/test/java/example/AppTest.java"]);
+      assert.deepEqual(command.commands, []);
+      assert.match(command.refusalReason ?? "", /custom source roots/i);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test("Maven unresolved interpolated dependency coordinates require full validation", async () => {
+  const root = fixture(mavenSafetyFixture({
+    "application/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application</artifactId><version>1</version><properties><library.name>library</library.name></properties><dependencies><dependency><groupId>example</groupId><artifactId>${library.name}</artifactId><version>1</version></dependency></dependencies></project>",
+  }));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(graph.adapterBlockers?.some(reason => /unresolved dependency coordinates/i.test(reason)));
+    const plan = mavenSafetyPlan(graph, "library/src/main/java/example/Library.java");
+    assert.equal(plan.mode, "FULL");
+    assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+    assert.deepEqual(plan.skippedTests, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Maven unmodeled local parent dependency inheritance requires full validation", async () => {
+  const root = fixture(mavenSafetyFixture({
+    "pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>library</module><module>application-parent</module><module>application</module><module>unrelated</module></modules></project>",
+    "application-parent/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application-parent</artifactId><version>1</version><packaging>pom</packaging><dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies></project>",
+    "application/pom.xml": "<project><modelVersion>4.0.0</modelVersion><parent><groupId>example</groupId><artifactId>application-parent</artifactId><version>1</version><relativePath>../application-parent/pom.xml</relativePath></parent><artifactId>application</artifactId></project>",
+  }));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(graph.adapterBlockers?.some(reason => /parent dependency inheritance/i.test(reason)));
+    const plan = mavenSafetyPlan(graph, "library/src/main/java/example/Library.java");
+    assert.equal(plan.mode, "FULL");
+    assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+    assert.deepEqual(plan.skippedTests, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
