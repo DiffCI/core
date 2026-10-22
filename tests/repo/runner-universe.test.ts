@@ -26,6 +26,11 @@ import { describe, it } from "node:test";
 import { analyzeRepository } from "../../src/repo/analyzer.js";
 import { extractTestPatterns } from "../../src/repo/runner-universe.js";
 import { discoverTestRunnerConfigs, testFileMatcherForProfile } from "../../src/repo/test-discovery.js";
+import { buildDependencyGraph } from "../../src/repo/graph.js";
+import { ImpactAnalyzer } from "../../src/repo/impact.js";
+import { DefaultCIPlanner } from "../../src/planner/planner.js";
+import { createTaskRegistry } from "../../src/planner/task-registry.js";
+import type { GitDelta } from "../../src/git/types.js";
 
 function tmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "diffci-universe-"));
@@ -35,6 +40,22 @@ function write(root: string, rel: string, content: string): void {
   const full = join(root, rel);
   mkdirSync(dirname(full), { recursive: true });
   writeFileSync(full, content);
+}
+
+function sourceDelta(path = "src/value.js"): GitDelta {
+  return {
+    baseSha: "base", headSha: "head", files: [{ path, changeType: "modified" }], directories: [],
+    summary: { total: 1, added: 0, modified: 1, deleted: 0, renamed: 0, copied: 0, unmerged: 0, unknown: 0 },
+    analysis: { empty: false, configChanged: false, dependencyManifestChanged: false, lockfileChanged: false, workflowChanged: false, infrastructureChanged: false, databaseChanged: false },
+  };
+}
+
+async function sourcePlan(root: string) {
+  const graph = await buildDependencyGraph({ repoPath: root });
+  const delta = sourceDelta();
+  const impact = new ImpactAnalyzer().analyze(delta, graph, graph.profile);
+  const plan = new DefaultCIPlanner(createTaskRegistry([])).plan({ delta, impact, profile: graph.profile });
+  return { graph, impact, plan };
 }
 
 /** The ts-jest shape: a jest default config whose testMatch is scoped to src/, plus e2e/ and examples/. */
@@ -185,5 +206,137 @@ describe("defect 17 - testPathIgnorePatterns and roots", () => {
   it("roots confine the universe", () => {
     const x = extractTestPatterns(`export default { roots: ['<rootDir>/src'], testMatch: ['<rootDir>/**/*.spec.ts'] }`);
     assert.deepEqual(x.roots, ["src"]);
+  });
+});
+
+describe("complete runner declarations preserve every executable suite", () => {
+  it("retains a literal test filename alongside wildcard includes", async () => {
+    const root = tmpRepo();
+    try {
+      write(root, "package.json", JSON.stringify({ type: "module", scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "vitest.config.ts", "export default { test: { include: ['src/**/*.test.js', 'regression.test.js'] } };");
+      write(root, "src/value.js", "export const value = 1;");
+      write(root, "src/other.test.js", "import { test } from 'vitest'; test('unrelated', () => {});");
+      write(root, "regression.test.js", "import { test, expect } from 'vitest'; import { value } from './src/value.js'; test('regression', () => expect(value).toBe(1));");
+
+      const { graph, plan } = await sourcePlan(root);
+      assert.ok(graph.profile.testFilePaths.includes("regression.test.js"));
+      assert.equal(plan.mode, "SELECTIVE");
+      assert.deepEqual(plan.selectedTests, ["regression.test.js"]);
+      assert.ok(plan.commandSpecs.some(command => command.args.includes("regression.test.js")));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("routes literal excludes to the other suite without excluding same-named nested tests", async () => {
+    const root = tmpRepo();
+    try {
+      write(root, "package.json", JSON.stringify({ type: "module", scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "vitest.config.ts", "export default { test: { include: ['**/*.test.js'], exclude: ['regression.test.js'] } };");
+      write(root, "src/value.js", "export const value = 1;");
+      write(root, "src/other.test.js", "export const unrelated = true;");
+      write(root, "regression.test.js", "import { value } from './src/value.js'; export const checked = value;");
+      write(root, "src/regression.test.js", "import { value } from './value.js'; export const checked = value;");
+      const single = await sourcePlan(root);
+      assert.deepEqual(single.plan.selectedTests, ["src/regression.test.js"]);
+      assert.ok(!single.graph.profile.testFilePaths.includes("regression.test.js"));
+
+      write(root, "vitest.integration.config.ts", "export default { test: { include: ['regression.test.js'] } };");
+      const multiple = await sourcePlan(root);
+      assert.deepEqual(multiple.plan.selectedTests, ["regression.test.js", "src/regression.test.js"]);
+      assert.ok(multiple.plan.commandSpecs.some(command => command.args.includes("vitest.integration.config.ts") && command.args.includes("regression.test.js")));
+      assert.ok(multiple.plan.commandSpecs.every(command => !command.args.includes("vitest.config.ts") || !command.args.includes("regression.test.js")));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  for (const restriction of [
+    "exclude: ['test/integration/**']",
+    "roots: ['test/unit']",
+    "testPathIgnorePatterns: ['/integration/']",
+  ]) {
+    it(`does not apply one config's ${restriction.split(':')[0]} to a separate suite`, async () => {
+      const root = tmpRepo();
+      const runner = restriction.startsWith("exclude") ? "vitest" : "jest";
+      const include = runner === "vitest" ? "include" : "testMatch";
+      const config = (body: string) => runner === "vitest" ? `export default { test: { ${body} } };` : `export default { ${body} };`;
+      try {
+        write(root, "package.json", JSON.stringify({ type: "module", scripts: { test: `${runner} run`, "test:integration": `${runner} run --config ${runner}.integration.config.ts` }, devDependencies: { [runner]: "1" } }));
+        write(root, `${runner}.config.ts`, config(`${include}: ['**/*.test.js'], ${restriction}`));
+        write(root, `${runner}.integration.config.ts`, config(`${include}: ['test/integration/**/*.test.js']`));
+        write(root, "src/value.js", "export const value = 1;");
+        write(root, "test/unit/other.test.js", "export const unrelated = true;");
+        write(root, "test/integration/affected.test.js", "import { value } from '../../src/value.js'; export const checked = value;");
+
+        const { graph, plan } = await sourcePlan(root);
+        assert.ok(graph.profile.testFilePaths.includes("test/integration/affected.test.js"));
+        assert.equal(plan.mode, "SELECTIVE");
+        assert.deepEqual(plan.selectedTests, ["test/integration/affected.test.js"]);
+        assert.equal(plan.commandSynthesis?.status, "OK");
+        assert.equal(plan.commandSpecs.length, 1);
+        assert.ok(plan.commandSpecs[0]!.args.includes(`${runner}.integration.config.ts`));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  for (const [runner, rootSetting] of [["jest", "rootDir: 'app'"], ["vitest", "root: 'app'"], ["jest", "rootDir: process.env.TEST_ROOT"], ["jest", "['rootDir']: 'app'"]] as const) {
+    it(`falls back when ${runner} has an unsupported ${rootSetting}`, async () => {
+      const root = tmpRepo();
+      try {
+        write(root, "package.json", JSON.stringify({ type: "module", devDependencies: { [runner]: "1" } }));
+        write(root, `${runner}.config.ts`, runner === "jest"
+          ? `export default { ${rootSetting}, testMatch: ['<rootDir>/tests/**/*.test.js'] };`
+          : `export default { ${rootSetting}, test: { include: ['tests/**/*.test.js'] } };`);
+        write(root, "src/value.js", "export const value = 1;");
+        write(root, "tests/other.test.js", "export const unrelated = true;");
+        write(root, "app/tests/affected.test.js", "import { value } from '../../src/value.js'; export const checked = value;");
+
+        const { graph, plan } = await sourcePlan(root);
+        assert.ok(graph.profile.testFilePaths.length > 0, "a nonempty partial universe must not bypass fallback");
+        assert.equal(plan.mode, "FULL");
+        assert.ok(plan.fallbackReasons.some(reason => /rootDir|root/.test(reason)));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  for (const mutation of ["config.rootDir = 'app'", "config['rootDir'] = 'app'"]) {
+    it(`falls back for a mutated runner root: ${mutation}`, async () => {
+      const root = tmpRepo();
+      try {
+        write(root, "package.json", JSON.stringify({ type: "module", devDependencies: { jest: "1" } }));
+        write(root, "jest.config.ts", `const config = { testMatch: ['<rootDir>/tests/**/*.test.js'] }; ${mutation}; export default config;`);
+        write(root, "src/value.js", "export const value = 1;");
+        write(root, "tests/other.test.js", "export const unrelated = true;");
+        write(root, "app/tests/affected.test.js", "import { value } from '../../src/value.js'; export const checked = value;");
+        const { plan } = await sourcePlan(root);
+        assert.equal(plan.mode, "FULL");
+        assert.ok(plan.fallbackReasons.some(reason => reason.includes("rootDir")));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  for (const implicitDefault of [true, false]) {
+    it(`falls back when the ${implicitDefault ? 'default' : 'named'} config has an implicit suite`, async () => {
+      const root = tmpRepo();
+      try {
+        write(root, "package.json", JSON.stringify({ type: "module", devDependencies: { vitest: "1" } }));
+        write(root, "vitest.config.ts", implicitDefault ? "export default {};" : "export default { test: { include: ['src/**/*.test.js'] } };");
+        write(root, "vitest.browser.config.ts", implicitDefault ? "export default { test: { include: ['test/**/*.test.js'] } };" : "export default {};");
+        write(root, "src/value.js", "export const value = 1;");
+        write(root, "src/other.test.js", "export const unrelated = true;");
+        write(root, "test/affected.test.js", "import { value } from '../src/value.js'; export const checked = value;");
+        const { plan } = await sourcePlan(root);
+        assert.equal(plan.mode, "FULL");
+        assert.ok(plan.fallbackReasons.some(reason => reason.includes("explicit test includes")));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  it("keeps explicitly declared repository roots supported", () => {
+    const root = tmpRepo();
+    try {
+      write(root, "jest.config.ts", "export default { rootDir: '.', testMatch: ['<rootDir>/src/**/*.test.js'] };");
+      write(root, "vitest.config.ts", "export default { root: './', test: { include: ['src/**/*.test.js'] } };");
+      const discovery = discoverTestRunnerConfigs(root);
+      assert.ok(discovery.configs.every(config => config.authoritative && !config.discoveryError));
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

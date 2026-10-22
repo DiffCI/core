@@ -110,6 +110,33 @@ describe("selective test command synthesis", () => {
     assert.deepEqual(plan.unroutedPaths, []);
   });
 
+  it("runs a selected test in every configuration that executes it", () => {
+    const configs = ["vitest.config.ts", "vitest.integration.config.ts"].map(file => configOf({
+      file, runner: "vitest", includes: ["test/**/*.test.ts"], scripts: [], authoritative: true,
+    }));
+    const plan = planSelectiveTestCommands(profileOf({ frameworks: ["vitest"], configs }), ["test/value.test.ts"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.equal(plan.commands.length, 2, "configurations may use different environments for the same test");
+    assert.ok(plan.commands.some(command => command.args.includes("vitest.integration.config.ts")));
+  });
+
+  it("refuses an excluded selection instead of retrying it under the same default config", () => {
+    const configs = [configOf({ file: "vitest.config.ts", runner: "vitest", includes: ["**/*.test.ts"], scripts: [],
+      isDefault: true, authoritative: true, excludeGlobs: ["test/integration/**"] })];
+    const plan = planSelectiveTestCommands(profileOf({ frameworks: ["vitest"], configs }), ["test/integration/value.test.ts"]);
+    assert.ok(plan.refusalReason);
+    assert.equal(plan.commands.length, 0);
+  });
+
+  it("refuses incomplete root discovery even for an empty selection or a workspace child", () => {
+    const configs = [configOf({ file: "vitest.config.ts", runner: "vitest", includes: ["**/*.test.ts"], scripts: [],
+      discoveryError: "Unsupported vitest root; full validation required" })];
+    const child = profileOf({ frameworks: ["vitest"], configs });
+    assert.match(planSelectiveTestCommands(child, []).refusalReason!, /Unsupported vitest root/);
+    const workspace = { ...profileOf({}), workspaceTestPackages: [{ packageRoot: "packages/a", profile: child }] };
+    assert.match(planSelectiveTestCommands(workspace, []).refusalReason!, /packages\/a\/vitest.config.ts/);
+  });
+
   it("falls through to the primary framework's default configuration for unclaimed files", () => {
     const configs: TestRunnerConfig[] = [
       configOf({ file: "vitest.e2e.config.ts", runner: "vitest", includes: ["test/e2e/**/*.test.ts"], scripts: ["test:e2e"], family: "e2e" }),

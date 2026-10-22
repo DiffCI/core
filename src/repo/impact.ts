@@ -6,7 +6,7 @@ import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, Entry
 import type { ChangedImpact, EntryPointImpact, ImpactEvidence, ImpactEvidencePath, ImpactReason, ImpactResult, ImpactRiskSignal, TestImpact } from "./impact-types.js";
 import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
-import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testFileMatcherForProfile } from "./test-discovery.js";
+import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
 import { infrastructureRole, isImplicitlyLoadedFile, resolveFileReferences } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
@@ -273,7 +273,7 @@ export class ImpactAnalyzer {
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
-    const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? [])];
+    const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? []), ...testDiscoveryErrors(profile)];
     if (profile.vueScope) {
       const scope = profile.vueScope;
       if (delta.files.some(file => allChangePaths(file).some(path => !inVuePackage(path, scope.packageRoot)))) fallbackReasons.push("Changes outside the declared Vue package require full validation");
