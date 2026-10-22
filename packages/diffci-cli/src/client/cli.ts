@@ -317,6 +317,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     timeoutMs: numberFlag(flags, "timeout-ms") ?? 30 * 60 * 1000,
     tailBytes: numberFlag(flags, "tail-bytes") ?? 12_000,
     redactPaths: flags["redact-paths"] === true,
+    baselineOnFailure: flags["baseline-on-failure"] === true || env.DIFFCI_BASELINE_ON_FAILURE === "1",
   };
   const report = changed
     ? await verifyChanged(common)
@@ -819,7 +820,7 @@ Usage:
   diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--force]
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--repo <path>] [--out <file>] [--json]
-                [--redact-paths] [--timeout-ms <ms>]
+                [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]

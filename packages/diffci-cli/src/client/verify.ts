@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { batchCommand, measureCommands } from "./command-batches.js";
+import { compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
 import { observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
-import { measureCommand, type CommandMeasurement } from "./verify-savings.js";
+import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, type WorkingTreeSnapshot } from "./working-tree.js";
 
 export const VERIFICATION_SCHEMA = "diffci.verification.v1" as const;
@@ -17,6 +19,8 @@ export interface VerificationReport {
   schema: typeof VERIFICATION_SCHEMA;
   schema_version: "1";
   produced_at: string;
+  /** The DiffCI package that produced the receipt, so cohorts can be split by selector version. */
+  diffci_version?: string;
   scope: VerificationScope;
   verification: VerificationStatus;
   safe_to_continue: boolean;
@@ -24,8 +28,12 @@ export interface VerificationReport {
   changed_files: number;
   tests_available: number;
   tests_selected: number;
+  /** Affected tests the full test command does not run; executed after the selection (2026-10-21). */
+  tests_outside_full_suite?: number;
   selection: "none" | "selected" | "full";
   command?: string;
+  /** The parts `command` was run as, when one invocation would exceed the shell's command-line limit. */
+  commands?: string[];
   execution?: CommandMeasurement;
   commit_range?: {
     base_sha: string;
@@ -46,8 +54,15 @@ export interface VerificationReport {
     mode?: ObservationReport["result"] extends infer T ? (T extends { mode: infer M } ? M : never) : never;
     fallback_reasons: string[];
     error?: string;
+    /** Wall time of the analysis that chose the verification command. */
+    duration_ms?: number;
+    /** The graph's own confidence and the confidence after narrowing to this change. */
+    graph_confidence?: string;
+    effective_graph_confidence?: string;
   };
   required_actions: string[];
+  /** Present when a failed verification was rerun at the base commit (`--baseline-on-failure`). */
+  failure_baseline?: FailureBaseline;
 }
 
 interface VerifyOptions {
@@ -58,6 +73,8 @@ interface VerifyOptions {
   timeoutMs: number;
   tailBytes: number;
   redactPaths?: boolean;
+  /** Rerun a failed verification at the base commit to tell new failures from existing ones. */
+  baselineOnFailure?: boolean;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -142,6 +159,8 @@ async function executeObservation(
     mode: result?.mode,
     fallback_reasons: result?.fallbackReasons ?? [],
     error: observation.reason,
+    ...(observation.timings?.totalMs !== undefined ? { duration_ms: observation.timings.totalMs } : {}),
+    ...(result?.graph ? { graph_confidence: result.graph.confidence, effective_graph_confidence: result.graph.effectiveConfidence } : {}),
   };
 
   if (observation.status !== "OBSERVED" || !result) {
@@ -175,14 +194,14 @@ async function executeObservation(
     return report;
   }
 
-  const { selection, command, reason } = executableSelection(options.repoPath, result);
+  const { selection, command, commands, reason, outsideSuite } = executableSelection(options.repoPath, result);
 
   if (!command) {
     const inferred = inferFullCommand(options.repoPath);
     return blocked(before, scope, `no executable verification command is available: ${inferred.reason}`, analysis, counts, boundRange);
   }
 
-  const execution = measureCommand(command, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
+  const execution = measureCommands(commands, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
   let after: WorkingTreeSnapshot;
   try {
     after = captureWorkingTreeSnapshot(options.repoPath);
@@ -192,6 +211,7 @@ async function executeObservation(
       ...blocked(before, scope, `could not confirm the post-verification snapshot: ${message}`, analysis, counts, boundRange),
       selection,
       command,
+      ...(commands.length > 1 ? { commands } : {}),
       execution,
     };
   }
@@ -206,6 +226,13 @@ async function executeObservation(
       : execution.timedOut
         ? `verification timed out after ${options.timeoutMs}ms`
         : `verification command failed with exit code ${String(execution.exitCode)}`;
+  const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
+  const failureBaseline = verification === "failed" && !execution.timedOut && options.baselineOnFailure && baselineSha
+    ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
+    : undefined;
+  const baselineNote = failureBaseline && failureBaseline.status !== "unknown"
+    ? `; ${failureBaseline.reason} (${failureBaseline.base_sha.slice(0, 12)})`
+    : "";
 
   return {
     ...baseReport(before, scope, boundRange),
@@ -215,8 +242,10 @@ async function executeObservation(
     changed_files: counts.changedFiles,
     tests_available: counts.testsAvailable,
     tests_selected: selection === "full" ? counts.testsAvailable : counts.testsSelected,
+    ...(outsideSuite ? { tests_outside_full_suite: outsideSuite } : {}),
     selection,
     command,
+    ...(commands.length > 1 ? { commands } : {}),
     execution,
     snapshot: {
       ...baseReport(before, scope, boundRange).snapshot,
@@ -225,12 +254,22 @@ async function executeObservation(
       unchanged,
     },
     analysis,
-    required_actions: verification === "passed" ? [] : [finalReason],
+    required_actions: verification === "passed" ? [] : [finalReason + baselineNote],
+    ...(failureBaseline ? { failure_baseline: failureBaseline } : {}),
   };
+}
+
+function stamped(report: VerificationReport, version: string): VerificationReport {
+  const { schema, schema_version, produced_at, ...rest } = report;
+  return { schema, schema_version, produced_at, diffci_version: version, ...rest };
 }
 
 /** Verify exactly the staged, unstaged, and non-ignored untracked content currently on disk. */
 export async function verifyChanged(options: VerifyChangedOptions): Promise<VerificationReport> {
+  return stamped(await verifyChangedSnapshot(options), options.version);
+}
+
+async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<VerificationReport> {
   const repoPath = resolve(options.repoPath);
   let before: WorkingTreeSnapshot;
   try {
@@ -281,6 +320,10 @@ export async function verifyChanged(options: VerifyChangedOptions): Promise<Veri
 
 /** Verify a real commit range and bind the receipt to the clean commit that was actually executed. */
 export async function verifyRange(options: VerifyRangeOptions): Promise<VerificationReport> {
+  return stamped(await verifyCommitRange(options), options.version);
+}
+
+async function verifyCommitRange(options: VerifyRangeOptions): Promise<VerificationReport> {
   const repoPath = resolve(options.repoPath);
   let before: WorkingTreeSnapshot;
   try {
@@ -363,5 +406,29 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
     reason = fallback ? `full verification required: ${fallback}` : "full verification required";
   }
 
-  return { selection, command, reason };
+  // Affected tests the full command never runs are still affected: run them after the selection
+  // rather than counting them in it (2026-10-21).
+  const outside = result.testsOutsideFullSuite ?? [];
+  let outsideSuite = 0;
+  let primary: string | undefined;
+  let auxiliaryCommand: string | undefined;
+  if (command && outside.length) {
+    const auxiliary = result.outsideSuiteCommands?.length === 1 ? inferSelectedCommand(repoPath, result.outsideSuiteCommands[0]!, outside) : undefined;
+    if (auxiliary?.command) {
+      primary = command;
+      auxiliaryCommand = auxiliary.command;
+      command = `${command} && ${auxiliary.command}`;
+      outsideSuite = outside.length;
+      reason = `${reason}; also ran ${outside.length} affected test file(s) the full test command does not run`;
+    } else {
+      reason = `${reason}; ${outside.length} affected test file(s) outside the full test command were not run (${auxiliary?.reason ?? "no single command covers them"})`;
+    }
+  }
+
+  // Each part stays within the shell's command-line limit (cmd.exe stops at 8,191 characters).
+  const commands = command ? [
+    ...batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : []),
+    ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : []),
+  ] : [];
+  return { selection, command: commands.length ? commands.join(" && ") : command, commands, reason, outsideSuite };
 }

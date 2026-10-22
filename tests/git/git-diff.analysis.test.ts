@@ -42,7 +42,29 @@ describe("computeAnalysis", () => {
     const analysis = computeAnalysis(files);
     assert.strictEqual(analysis.databaseChanged, true);
     assert.strictEqual(analysis.infrastructureChanged, true);
-    assert.strictEqual(analysis.configChanged, true);
+    // Each is reported once, by its own signal, not again as configuration (2026-10-21).
+    assert.strictEqual(analysis.configChanged, false);
+    assert.deepStrictEqual(analysis.signalPaths?.infrastructure, ["ops/cloudflare/wrangler.toml"]);
+    assert.deepStrictEqual(analysis.signalPaths?.database, ["database/migrations/001.sql"]);
+  });
+
+  it("leaves code, documentation and data under ops/ to per-file classification", () => {
+    const analysis = computeAnalysis([
+      { path: "ops/cloudflare/src/routing.mjs", changeType: "modified" },
+      { path: "ops/cloudflare/README.md", changeType: "modified" },
+      { path: "ops/cloudflare-d1/production-route-coverage.json", changeType: "modified" },
+    ]);
+    assert.strictEqual(analysis.infrastructureChanged, false);
+    assert.strictEqual(analysis.configChanged, false);
+  });
+
+  it("treats only workflows and composite actions under .github/ as configuration", () => {
+    assert.strictEqual(computeAnalysis([{ path: ".github/ISSUE_TEMPLATE/bug.yml", changeType: "modified" }]).configChanged, false);
+    assert.strictEqual(computeAnalysis([{ path: ".github/copilot-instructions.md", changeType: "modified" }]).configChanged, false);
+    assert.strictEqual(computeAnalysis([{ path: ".github/actions/setup/action.yml", changeType: "modified" }]).configChanged, true);
+    const workflow = computeAnalysis([{ path: ".github/workflows/ci.yml", changeType: "modified" }]);
+    assert.strictEqual(workflow.configChanged, true);
+    assert.deepStrictEqual(workflow.signalPaths?.workflow, [".github/workflows/ci.yml"]);
   });
 });
 
