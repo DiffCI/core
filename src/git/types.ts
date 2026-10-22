@@ -39,6 +39,15 @@ export interface GitDeltaAnalysis {
   workflowChanged: boolean;
   infrastructureChanged: boolean;
   databaseChanged: boolean;
+  /** Changed files whose content shows they cannot change how tests run - a workflow with no test
+   * step, a package.json edit limited to fields outside the test script closure - and which therefore
+   * did not set a global flag above. Tests may still read them, so ImpactAnalyzer resolves their
+   * readers by reference and falls back to full validation when it cannot (2026-10-21). */
+  referenceResolvedPaths?: string[];
+  /** The changed paths behind each flag above, so a fallback reason can name its files (2026-10-21:
+   * "Configuration file(s) changed" was the most frequent reason in both telemetry cohorts and never
+   * said which file). Absent on analyses produced before this field existed. */
+  signalPaths?: Partial<Record<"config" | "dependencyManifest" | "lockfile" | "workflow" | "infrastructure" | "database", string[]>>;
 }
 
 export interface GitDelta extends GitCommitRange {

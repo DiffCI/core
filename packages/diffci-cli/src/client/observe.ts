@@ -217,8 +217,8 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
       if (economics.decision === "BYPASS_FULL") return finish("REFUSED", "eligibility", { reason: `ECONOMICS_FULL_BYPASS: ${economics.reason}. No selective command is authorized.` });
     }
 
-    const [{ analyzeGitDelta }, { classifyRepositoryProject, buildDependencyGraph }, { ImpactAnalyzer }, { runPathBaseline }, { commandSpecToString, planSelectiveTestCommands }] = await Promise.all([
-      import("@diffci.com/core/git/git-diff"), import("@diffci.com/core/repo/graph"), import("@diffci.com/core/repo/impact"), import("@diffci.com/core/planner/path-baseline"), import("@diffci.com/core/planner/test-command"),
+    const [{ analyzeGitDelta }, { classifyRepositoryProject, buildDependencyGraph }, { ImpactAnalyzer }, { runPathBaseline }, { commandSpecToString, planSelectiveTestCommands }, { repositoryFileReader }] = await Promise.all([
+      import("@diffci.com/core/git/git-diff"), import("@diffci.com/core/repo/graph"), import("@diffci.com/core/repo/impact"), import("@diffci.com/core/planner/path-baseline"), import("@diffci.com/core/planner/test-command"), import("@diffci.com/core/repo/file-references"),
     ]);
     markPhase("engineLoad");
 
@@ -252,6 +252,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
 
     const impact = new ImpactAnalyzer().analyze(delta, graphResult, profile, {
       repositoryFiles: deltaResult.inventory?.files,
+      readRepositoryFile: repositoryFileReader(repoPath),
     });
 
     const baseline = runPathBaseline(profile.testFilePaths, delta.files, profile);
@@ -263,6 +264,8 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
     const commandPlan = impact.fallbackRequired
       ? undefined
       : planSelectiveTestCommands(profile, selectedTests);
+    const outsideSuite = (impact.testsOutsideFullSuite ?? []).map((test) => test.path).sort();
+    const outsidePlan = outsideSuite.length ? planSelectiveTestCommands(profile, outsideSuite) : undefined;
 
     markPhase("impactAndCommands");
     return finish("OBSERVED", "complete", {
@@ -272,7 +275,12 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
         changedFiles: delta.files.map((file) => hashPath(file.path)),
         affectedSourceFileCount: impact.affectedSourceFiles.length,
         selectedTests: selectedTests.map(hashPath),
-        totalTestCount: profile.testFilePaths.length,
+        totalTestCount: impact.fullSuiteTestCount ?? profile.testFilePaths.length,
+        discoveredTestCount: profile.testFilePaths.length,
+        ...(outsideSuite.length ? {
+          testsOutsideFullSuite: outsideSuite.map(hashPath),
+          outsideSuiteCommands: outsidePlan?.refusalReason ? [] : (outsidePlan?.commands ?? []).map(commandSpecToString),
+        } : {}),
         fallbackReasons: impact.fallbackReasons,
         proposedCommands: (commandPlan?.commands ?? []).map(commandSpecToString),
         workspaceCommands: Boolean(profile.workspaceTestPackages?.length),

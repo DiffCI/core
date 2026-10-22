@@ -10,6 +10,8 @@ import {
   type GitDeltaSummary,
   type RepositoryInventory,
 } from "./types.js";
+import { infrastructureRole, testScriptClosure } from "../repo/file-references.js";
+import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 export const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -205,12 +207,14 @@ const CONFIG_PATTERNS = [
   /^webpack\.config\./,
   /^rollup\.config\./,
   /^esbuild\.config\./,
-  /^\.github\//,
+  // Only workflows and composite actions configure CI. Issue templates, CODEOWNERS and agent
+  // instructions under .github/ do not (2026-10-21).
+  /^\.github\/(?:workflows|actions)\//,
   /^\.docker/,
   /^Dockerfile/,
   /^docker-compose/,
-  /^ops\//,
-  /^database\//,
+  // ops/ and database/ are reported by their own signals below, not a second time as configuration
+  // (2026-10-21).
   /^package\.json$/,
   /^package-lock\.json$/,
   /^yarn\.lock$/,
@@ -252,6 +256,57 @@ export function hasRelevantPackageJsonChange(oldContent: string | undefined, new
     !PACKAGE_JSON_METADATA_FIELDS.has(field) && JSON.stringify(oldJson[field]) !== JSON.stringify(newJson[field]));
 }
 
+/**
+ * Fields whose change cannot alter how `npm test` runs, but which a test may read (a release test
+ * asserting `version`, a packaging test reading `files`). 2026-10-21 telemetry: `version` alone was the
+ * only package.json change in 18 of one dogfood repository's 84 full runs, and non-test scripts in 15 more.
+ */
+const PACKAGE_JSON_DATA_FIELDS = new Set(["version", "files", "private", "publishConfig", "funding", "mcpName"]);
+
+function parsePackageScripts(content: string | undefined): unknown {
+  if (content === undefined) return undefined;
+  try { return (JSON.parse(content) as { scripts?: unknown } | null)?.scripts; } catch { return undefined; }
+}
+
+function scriptRecord(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+/**
+ * How a modified package.json changed:
+ *   - `metadata`: only descriptive fields (hasRelevantPackageJsonChange is false);
+ *   - `data`: only PACKAGE_JSON_DATA_FIELDS and scripts outside the test closure (`test`, its
+ *     lifecycle hooks, install hooks, and every script they name) on either side - tests may read the
+ *     file, so it is resolved by reference rather than ignored;
+ *   - `behavioral`: anything else, including dependencies, engines, type, exports and unparseable JSON.
+ */
+export function packageJsonChangeKind(oldContent: string | undefined, newContent: string | undefined): "metadata" | "data" | "behavioral" {
+  if (!hasRelevantPackageJsonChange(oldContent, newContent)) return "metadata";
+  let oldJson: Record<string, unknown>;
+  let newJson: Record<string, unknown>;
+  try {
+    oldJson = JSON.parse(oldContent!);
+    newJson = JSON.parse(newContent!);
+  } catch {
+    return "behavioral";
+  }
+  const oldScripts = scriptRecord(oldJson.scripts);
+  const newScripts = scriptRecord(newJson.scripts);
+  if (!oldScripts || !newScripts) return "behavioral";
+  const closure = new Set([...testScriptClosure(oldScripts), ...testScriptClosure(newScripts)]);
+  for (const field of new Set([...Object.keys(oldJson), ...Object.keys(newJson)])) {
+    if (PACKAGE_JSON_METADATA_FIELDS.has(field) || PACKAGE_JSON_DATA_FIELDS.has(field)) continue;
+    if (JSON.stringify(oldJson[field]) === JSON.stringify(newJson[field])) continue;
+    if (field !== "scripts") return "behavioral";
+    for (const name of new Set([...Object.keys(oldScripts), ...Object.keys(newScripts)])) {
+      if (oldScripts[name] !== newScripts[name] && closure.has(name)) return "behavioral";
+    }
+  }
+  return "data";
+}
+
 /** Reads a file's content at a specific commit via `git show <sha>:<path>`, without touching the
  * working tree (safe to call regardless of what's currently checked out). Returns undefined - not an
  * error - when the file doesn't exist at that commit (a newly-added or since-deleted file), which is
@@ -267,20 +322,25 @@ export function computeAnalysis(files: ChangedFile[]): GitDeltaAnalysis {
     f.oldPath ? [f.path, f.oldPath] : [f.path],
   );
 
-  const matches = (pattern: RegExp) => paths.some((p) => pattern.test(p));
+  const matching = (test: (p: string) => boolean) => [...new Set(paths.filter(test))].sort();
+  const signalPaths: NonNullable<GitDeltaAnalysis["signalPaths"]> = {
+    config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p))),
+    dependencyManifest: matching((p) => p === "package.json"),
+    lockfile: matching((p) => /^(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p)),
+    workflow: matching((p) => p.startsWith(".github/workflows/")),
+    infrastructure: matching((p) => infrastructureRole(p) === "definition"),
+    database: matching((p) => p.startsWith("database/")),
+  };
 
   return {
     empty: files.length === 0,
-    configChanged: CONFIG_PATTERNS.some(matches),
-    dependencyManifestChanged: matches(/^package\.json$/),
-    lockfileChanged:
-      matches(/^package-lock\.json$/) ||
-      matches(/^yarn\.lock$/) ||
-      matches(/^pnpm-lock\.yaml$/) ||
-      matches(/^bun\.lockb$/),
-    workflowChanged: matches(/^\.github\/workflows\//),
-    infrastructureChanged: matches(/^ops\//),
-    databaseChanged: matches(/^database\//),
+    configChanged: signalPaths.config!.length > 0,
+    dependencyManifestChanged: signalPaths.dependencyManifest!.length > 0,
+    lockfileChanged: signalPaths.lockfile!.length > 0,
+    workflowChanged: signalPaths.workflow!.length > 0,
+    infrastructureChanged: signalPaths.infrastructure!.length > 0,
+    databaseChanged: signalPaths.database!.length > 0,
+    signalPaths,
   };
 }
 
@@ -426,19 +486,45 @@ export async function analyzeGitDelta(
     // behaviorally-relevant field actually changed - only attempted when the root package.json itself
     // was modified (not added/deleted/renamed, which stay unambiguously true - see
     // hasRelevantPackageJsonChange()'s own doc comment) and only ever narrows true -> false.
+    const narrowed = new Set<ChangedFile>();
+    const referenceResolvedPaths: string[] = [];
     if (analysis.dependencyManifestChanged) {
       const changedPackageJson = filesWithBinary.find((f) => f.path === "package.json" && f.changeType === "modified");
       if (changedPackageJson) {
         const oldContent = readFileAtSha(baseSha, "package.json", repoPath);
         const newContent = readFileAtSha(headSha, "package.json", repoPath);
-        analysis.dependencyManifestChanged = hasRelevantPackageJsonChange(oldContent, newContent);
-        if (!analysis.dependencyManifestChanged) {
-          // Do not let the generic path rule undo the content-level narrowing. Other config
-          // changes in the same delta must still force full validation.
-          analysis.configChanged = computeAnalysis(filesWithBinary.filter((f) => f !== changedPackageJson)).configChanged;
-        }
+        const kind = packageJsonChangeKind(oldContent, newContent);
+        analysis.dependencyManifestChanged = kind === "behavioral";
+        if (kind !== "behavioral") narrowed.add(changedPackageJson);
+        if (kind === "data") referenceResolvedPaths.push("package.json");
       }
     }
+    // 2026-10-21: a workflow that cannot run tests (deploy, publish, scan) cannot change a test
+    // outcome. Both sides of the change are inspected, since removing a test step changes CI too.
+    if (analysis.workflowChanged) {
+      const headScripts = scriptRecord(parsePackageScripts(readFileAtSha(headSha, "package.json", repoPath))) ?? {};
+      const baseScripts = scriptRecord(parsePackageScripts(readFileAtSha(baseSha, "package.json", repoPath))) ?? {};
+      for (const file of filesWithBinary) {
+        const sides = file.oldPath ? [file.path, file.oldPath] : [file.path];
+        if (!sides.every((p) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(p))) continue;
+        const before = file.changeType === "added" ? "" : readFileAtSha(baseSha, file.oldPath ?? file.path, repoPath);
+        const after = file.changeType === "deleted" ? "" : readFileAtSha(headSha, file.path, repoPath);
+        const mayRunTests = (text: string | undefined, scripts: Record<string, string>) => text !== "" && workflowMayRunTests(text, scripts);
+        if (mayRunTests(before, baseScripts) || mayRunTests(after, headScripts)) continue;
+        narrowed.add(file);
+        referenceResolvedPaths.push(file.path);
+      }
+    }
+    if (narrowed.size > 0) {
+      // Do not let the generic path rules undo the content-level narrowing. Other changes in the same
+      // delta must still force full validation.
+      const remaining = computeAnalysis(filesWithBinary.filter((f) => !narrowed.has(f)));
+      analysis.configChanged = remaining.configChanged;
+      analysis.workflowChanged = remaining.workflowChanged;
+      analysis.signalPaths = { ...analysis.signalPaths, config: remaining.signalPaths?.config, workflow: remaining.signalPaths?.workflow,
+        ...(analysis.dependencyManifestChanged ? {} : { dependencyManifest: [] }) };
+    }
+    if (referenceResolvedPaths.length > 0) analysis.referenceResolvedPaths = referenceResolvedPaths.sort();
 
     const delta: GitDelta = {
       baseSha,

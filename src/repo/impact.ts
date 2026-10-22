@@ -8,11 +8,17 @@ import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
+import { infrastructureRole, isImplicitlyLoadedFile, resolveFileReferences } from "./file-references.js";
+import { workflowFeedsTests } from "./workflow-test-steps.js";
+import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
+import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
 const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error","template","not-found","middleware","generatemetadata","generatestaticparams"]);
 
+// Lockfiles are reported by the lockfile rule; resolving their readers would only repeat it.
+function isLockfile(filePath: string): boolean { return /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(filePath); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 // "Is this a test?" is answered by the profile's test patterns (src/repo/test-discovery.ts) - one shared
@@ -40,14 +46,15 @@ function isConfigFile(filePath: string): boolean {
   if (base.startsWith("jest.config")) return true;
   if (base.startsWith("prettier.config")) return true;
   if (base.startsWith(".prettierrc")) return true;
-  if (filePath.startsWith(".github/")) return true;
+  if (/^\.github\/(?:workflows|actions)\//.test(filePath)) return true;
   if (filePath.includes("/Dockerfile")) return true;
   if (filePath.startsWith("docker")) return true;
   return false;
 }
-// The "ops" prefix test that used to lead this was redundant - "ops" is in the set below - and it
-// was the shape a hardcoded layout assumption takes, so the set alone now decides.
-function isInfrastructureFile(filePath: string): boolean { const INFRA_DIRS = new Set(["ops","terraform","cloudformation","pulumi","cdktf","deploy","deployments","kubernetes","k8s","helm","docker"]); const first = filePath.split("/")[0]; if (first && INFRA_DIRS.has(first)) return true; if (posix.basename(filePath).includes("Dockerfile")) return true; return false; }
+// Only conventionally-loaded deployment definitions are global (src/repo/file-references.ts,
+// infrastructureRole). Code, documentation and data under ops/ and its siblings are classified like
+// the same files anywhere else (2026-10-21).
+function isInfrastructureFile(filePath: string): boolean { return infrastructureRole(filePath) === "definition"; }
 function isDatabaseFile(filePath: string): boolean { const DATABASE_DIRS = new Set(["database","migrations","prisma","drizzle","supabase","schema"]); const first = filePath.split("/")[0]; return first ? DATABASE_DIRS.has(first) : false; }
 /**
  * Next.js file-name conventions, applied ONLY to repositories that are Next.js applications.
@@ -102,11 +109,15 @@ function shortestDependentPathToTest(graph: DependencyGraph, changedFilePath: st
 function collectScriptsAmong(candidates: Iterable<string>, isTestFile: IsTestFile, layout: RepositoryLayout): string[] { const result: string[] = []; for (const path of candidates) { if (isScriptFile(path, layout) && !isTestFile(path)) result.push(path); } return result.sort(); }
 function makeEvidence(reason: ImpactReason, changedFile: string, message: string, affectedFile?: string, path?: ImpactEvidencePath): ImpactEvidence { return { reason, changedFile, affectedFile, message, path }; }
 
-function classifyChangedFile(file: ChangedFile, isTestFile: IsTestFile, layout: RepositoryLayout, repositoryFiles?: ReadonlySet<string>): ChangedImpact["category"] {
+function classifyChangedFile(file: ChangedFile, isTestFile: IsTestFile, layout: RepositoryLayout, repositoryFiles?: ReadonlySet<string>, referenceResolved: ReadonlySet<string> = new Set()): ChangedImpact["category"] {
   const path = file.path;
   const oldPath = file.oldPath;
+  // Content inspection in analyzeGitDelta showed these cannot change how tests run; who reads them is
+  // resolved by reference (2026-10-21).
+  if (referenceResolved.has(path)) return "unknown";
   if (isConfigFile(path) || (oldPath && isConfigFile(oldPath))) return "config";
   if (isInfrastructureFile(path) || (oldPath && isInfrastructureFile(oldPath))) return "infrastructure";
+  if (infrastructureRole(path) === "data") return "unknown";
   if (isDatabaseFile(path) || (oldPath && isDatabaseFile(oldPath))) return "database";
   if (isSourceFilePath(path)) {
     if (isTestFile(path)) return "test";
@@ -177,6 +188,10 @@ export interface ImpactAnalyzeOptions {
    * Enables relationship-based classification (see isTranslatedDocumentationCompanion). Optional -
    * omitting it disables those rules and keeps prior behavior exactly. */
   repositoryFiles?: ReadonlySet<string>;
+  /** Reads a repo-relative file at HEAD (undefined when unreadable, binary or too large). Together with
+   * `repositoryFiles` it enables resolving the readers of non-code files by reference
+   * (src/repo/file-references.ts). Omitting it keeps such files unknown, exactly as before. */
+  readRepositoryFile?: (path: string) => string | undefined;
 }
 
 function changedFileReasons(file: ChangedFile): ImpactReason[] {
@@ -232,6 +247,10 @@ export class ImpactAnalyzer {
   private isTestFile: IsTestFile = DEFAULT_TEST_FILE_MATCHER;
   private layout: RepositoryLayout = UNKNOWN_REPOSITORY_LAYOUT;
   private repositoryFiles: ReadonlySet<string> | undefined;
+  private contentCleared: ReadonlySet<string> = new Set();
+  private readRepositoryFile: ((path: string) => string | undefined) | undefined;
+  private sortedRepositoryFiles: string[] = [];
+  private compiledProjectCache: CompiledProject[] | undefined;
   constructor(alwaysRunChecks: AlwaysRunCheck[] = DEFAULT_ALWAYS_RUN_CHECKS) { this.alwaysRunChecks = alwaysRunChecks; }
 
   analyze(delta: GitDelta, graphResult: DependencyGraphResult, profile: RepositoryProfile, options: ImpactAnalyzeOptions = {}): ImpactResult {
@@ -240,7 +259,18 @@ export class ImpactAnalyzer {
     this.isTestFile = testFileMatcherForProfile(profile);
     this.layout = repositoryLayout(profile);
     this.repositoryFiles = options.repositoryFiles;
-    const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles), reasons: changedFileReasons(file) }));
+    this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
+    this.compiledProjectCache = undefined;
+    // One read per file per analysis, however many changed files ask who reads them.
+    const read = options.readRepositoryFile;
+    const contents = new Map<string, string | undefined>();
+    this.readRepositoryFile = read && ((path: string) => {
+      if (!contents.has(path)) contents.set(path, read(path));
+      return contents.get(path);
+    });
+    const referenceResolved = new Set(delta.analysis.referenceResolvedPaths ?? []);
+    this.contentCleared = referenceResolved;
+    const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
     const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? [])];
@@ -323,6 +353,21 @@ export class ImpactAnalyzer {
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
     }
 
+    // 2026-10-21: affected tests that `npm test` never runs are not part of the full suite, so they are
+    // reported beside the selection rather than inside it (src/repo/script-universe.ts). They have
+    // already satisfied the changed-test invariant above and are still meant to be run.
+    const fullSuite = this.fullSuiteUniverse(profile, graph);
+    const testsOutsideFullSuite: TestImpact[] = [];
+    if (fullSuite?.complete) {
+      const inside = new Set(fullSuite.tests);
+      for (const [path, impact] of affectedTests) {
+        if (inside.has(path)) continue;
+        testsOutsideFullSuite.push(impact);
+        affectedTests.delete(path);
+        evidence.push(makeEvidence("OUTSIDE_FULL_SUITE", path, `${path} is not run by the test script; reported outside the full suite`));
+      }
+    }
+
     const fallbackRequired = effectiveGraphConfidence === "UNSAFE" || fallbackReasons.length > 0;
     const analysisStatus: ImpactResult["analysisStatus"] = fallbackRequired ? "FALLBACK" : "SAFE_TO_PROPOSE";
     const dedupedRiskSignals = Array.from(
@@ -334,6 +379,10 @@ export class ImpactAnalyzer {
       affectedSourceFiles: Array.from(affectedSources.keys()).sort(),
       affectedAssets: Array.from(affectedAssets.keys()).sort(),
       affectedTests: Array.from(affectedTests.values()).sort((a, b) => a.path.localeCompare(b.path)),
+      ...(fullSuite?.complete ? {
+        fullSuiteTestCount: fullSuite.tests.length,
+        testsOutsideFullSuite: testsOutsideFullSuite.sort((a, b) => a.path.localeCompare(b.path)),
+      } : {}),
       affectedEntryPoints: Array.from(affectedEntryPoints.values()).sort((a, b) => a.path.localeCompare(b.path)),
       affectedScripts: Array.from(affectedScripts.keys()).sort(),
       riskSignals: dedupedRiskSignals,
@@ -347,18 +396,24 @@ export class ImpactAnalyzer {
   }
 
   private applyGlobalRiskRules(delta: GitDelta, riskSignals: ImpactRiskSignal[], fallbackReasons: string[]): void {
-    const reasons: Array<{ reason: ImpactReason; message: string; check: (a: GitDelta["analysis"]) => boolean }> = [
-      { reason: "CONFIG_GLOBAL", message: "Configuration file(s) changed; full validation required", check: (a) => a.configChanged },
-      { reason: "DEPENDENCY_MANIFEST", message: "Dependency manifest changed; full validation required", check: (a) => a.dependencyManifestChanged },
-      { reason: "LOCKFILE_GLOBAL", message: "Lockfile changed; full validation required", check: (a) => a.lockfileChanged },
-      { reason: "WORKFLOW_GLOBAL", message: "GitHub workflow definition(s) changed; full validation required", check: (a) => a.workflowChanged },
-      { reason: "INFRASTRUCTURE_GLOBAL", message: "Infrastructure definition(s) changed; full validation required", check: (a) => a.infrastructureChanged },
-      { reason: "DATABASE_GLOBAL", message: "Database definition(s) changed; full validation required", check: (a) => a.databaseChanged },
+    type SignalKey = keyof NonNullable<GitDelta["analysis"]["signalPaths"]>;
+    const reasons: Array<{ reason: ImpactReason; message: string; signal: SignalKey; check: (a: GitDelta["analysis"]) => boolean }> = [
+      { reason: "CONFIG_GLOBAL", message: "Configuration file(s) changed; full validation required", signal: "config", check: (a) => a.configChanged },
+      { reason: "DEPENDENCY_MANIFEST", message: "Dependency manifest changed; full validation required", signal: "dependencyManifest", check: (a) => a.dependencyManifestChanged },
+      { reason: "LOCKFILE_GLOBAL", message: "Lockfile changed; full validation required", signal: "lockfile", check: (a) => a.lockfileChanged },
+      { reason: "WORKFLOW_GLOBAL", message: "GitHub workflow definition(s) changed; full validation required", signal: "workflow", check: (a) => a.workflowChanged },
+      { reason: "INFRASTRUCTURE_GLOBAL", message: "Infrastructure definition(s) changed; full validation required", signal: "infrastructure", check: (a) => a.infrastructureChanged },
+      { reason: "DATABASE_GLOBAL", message: "Database definition(s) changed; full validation required", signal: "database", check: (a) => a.databaseChanged },
     ];
     for (const rule of reasons) {
       if (rule.check(delta.analysis)) {
-        riskSignals.push({ level: "critical", reason: rule.reason, message: rule.message });
-        if (!fallbackReasons.includes(rule.message)) fallbackReasons.push(rule.message);
+        // The stable sentence stays a prefix, so consumers that categorise by it keep working; the
+        // files that triggered it follow (2026-10-21).
+        const paths = delta.analysis.signalPaths?.[rule.signal] ?? [];
+        const message = paths.length === 0 ? rule.message
+          : `${rule.message}: ${paths.slice(0, 5).join(", ")}${paths.length > 5 ? ` (+${paths.length - 5} more)` : ""}`;
+        riskSignals.push({ level: "critical", reason: rule.reason, message, ...(paths.length ? { paths: [...paths] } : {}) });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       }
     }
   }
@@ -391,6 +446,7 @@ export class ImpactAnalyzer {
       }
     }
     if (category === "unknown" || category === "test-fixture") {
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -398,12 +454,31 @@ export class ImpactAnalyzer {
       return;
     }
     if (category === "docs") return;
+    if (isAssetFilePath(changedPath) && !hasNode(graph, changedPath) && changedImpact.file.changeType !== "deleted" && !isDocumentationFile(changedPath, this.layout) && !isLockfile(changedPath)) {
+      // An asset no module imports can still be read from disk by a test. It used to select nothing
+      // and require nothing, which is a silent skip; it now needs reader evidence like any other
+      // non-code file (2026-10-21).
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      const message = `Unknown changed file: ${changedPath}`;
+      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
+      riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+      return;
+    }
     if (isAssetFilePath(changedPath)) {
       this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
       return;
     }
     if (category === "config" || category === "workflow" || category === "infrastructure" || category === "database") {
       evidence.push(makeEvidence("CONFIG_GLOBAL", changedPath, `Global ${category} change at ${changedPath}`));
+      return;
+    }
+    if (infrastructureRole(changedPath) === "code" && !hasNode(graph, changedPath) && changedImpact.file.changeType !== "deleted") {
+      // Code under ops/ is classified like code anywhere else only while the graph can see it.
+      const message = `Infrastructure code ${changedPath} is outside the dependency graph; full validation required`;
+      evidence.push(makeEvidence("INFRASTRUCTURE_GLOBAL", changedPath, message));
+      riskSignals.push({ level: "critical", reason: "INFRASTRUCTURE_GLOBAL", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       return;
     }
     if (category === "test") {
@@ -418,6 +493,90 @@ export class ImpactAnalyzer {
       return;
     }
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+  }
+
+  /** Projects some test compiles (src/repo/compiled-projects.ts), computed once per analysis and only
+   * when file contents are available. */
+  private compiledProjectsFor(graph: DependencyGraph): CompiledProject[] {
+    if (this.compiledProjectCache) return this.compiledProjectCache;
+    this.compiledProjectCache = !this.repositoryFiles || !this.readRepositoryFile ? [] : compiledProjects({
+      files: this.sortedRepositoryFiles,
+      read: this.readRepositoryFile,
+      isTestFile: this.isTestFile,
+      dependenciesOf: (path) => (hasNode(graph, path) ? graph.transitiveDependenciesOf(path) : []),
+    });
+    return this.compiledProjectCache;
+  }
+
+  /** The files the repository's test script runs, when that can be modelled completely. Only plain
+   * JavaScript/TypeScript profiles are modelled: workspaces, Vue scopes and Go/Maven adapters own
+   * their own universes. */
+  private fullSuiteUniverse(profile: RepositoryProfile, graph: DependencyGraph): ScriptUniverse | undefined {
+    if (!this.repositoryFiles || !this.readRepositoryFile) return undefined;
+    const owned = (record: Record<string, string> | undefined) => Object.keys(record ?? {}).length > 0;
+    if (profile.workspaceTestPackages?.length || profile.vueScope || owned(profile.goTestPackages) || owned(profile.mavenTestModules)) return undefined;
+    if (typeof profile.packageJson.scripts.test !== "string") return undefined;
+    const files = this.repositoryFiles;
+    return modelTestScriptUniverse({
+      scripts: profile.packageJson.scripts,
+      discoveredTests: profile.testFilePaths,
+      dependenciesOf: (path) => (hasNode(graph, path) ? graph.transitiveDependenciesOf(path) : []),
+      read: this.readRepositoryFile,
+      exists: (path) => files.has(path) || [...files].some((file) => file.startsWith(`${path.replace(/\/$/, "")}/`)),
+    });
+  }
+
+  /**
+   * Narrows an otherwise-unknown changed file to the tests that read it, when every reader resolves
+   * (src/repo/file-references.ts). Returns false, leaving the caller's full-validation fallback in
+   * place, when the inputs are unavailable, the file is loaded implicitly by tooling, or any reader
+   * cannot be resolved.
+   */
+  private resolveByReference(
+    changedPath: string,
+    graph: DependencyGraph,
+    profile: RepositoryProfile,
+    affectedSources: Map<string, ImpactEvidence[]>,
+    affectedEntryPoints: Map<string, EntryPointImpact>,
+    affectedTests: Map<string, TestImpact>,
+    affectedScripts: Map<string, ImpactEvidence[]>,
+    evidence: ImpactEvidence[],
+  ): boolean {
+    if (!this.repositoryFiles || !this.readRepositoryFile || isImplicitlyLoadedFile(changedPath)) return false;
+    const layout = this.layout;
+    const scripts = profile.packageJson.scripts;
+    const resolution = resolveFileReferences(changedPath, {
+      files: this.sortedRepositoryFiles,
+      read: this.readRepositoryFile,
+      isTestFile: this.isTestFile,
+      isDocumentation: (path) => layout.isDocumentationPath(path),
+      inGraph: (path) => hasNode(graph, path),
+      isCodeFile: isSourceFilePath,
+      workflowFeedsTests: (content, names) => workflowFeedsTests(content, names, scripts),
+      contentCleared: this.contentCleared,
+    });
+    if (resolution.unresolvable.length > 0) {
+      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, `References to ${changedPath} could not be resolved: ${resolution.unresolvable[0]}`));
+      return false;
+    }
+    for (const reader of resolution.readers) {
+      if (reader.kind !== "test" && reader.kind !== "graph-code") continue;
+      evidence.push(makeEvidence("FILE_REFERENCE", changedPath, `${reader.path} names ${reader.via}`, reader.path));
+    }
+    for (const test of resolution.tests) this.addAffectedTest(changedPath, test, graph, affectedTests, "FILE_REFERENCE", evidence);
+    for (const code of resolution.code) {
+      if (!affectedSources.has(code)) affectedSources.set(code, []);
+      affectedSources.get(code)!.push(makeEvidence("FILE_REFERENCE", changedPath, `${code} reads ${changedPath}`, code));
+      for (const dependent of graph.transitiveDependentsOf(code)) {
+        if (this.isTestFile(dependent)) this.addAffectedTest(changedPath, dependent, graph, affectedTests, "FILE_REFERENCE", evidence);
+        else if (nodeByPath(graph, dependent)?.isEntryPoint) this.addAffectedEntryPoint(dependent, profile, affectedEntryPoints, "FILE_REFERENCE", changedPath, evidence);
+      }
+      for (const scriptPath of collectScriptsAmong([code, ...graph.transitiveDependentsOf(code)], this.isTestFile, this.layout)) {
+        if (!affectedScripts.has(scriptPath)) affectedScripts.set(scriptPath, []);
+        affectedScripts.get(scriptPath)!.push(makeEvidence("FILE_REFERENCE", changedPath, `${changedPath} is read by script ${scriptPath}`, scriptPath));
+      }
+    }
+    return true;
   }
 
   private processAssetChange(
@@ -458,6 +617,13 @@ export class ImpactAnalyzer {
     affectedScripts: Map<string, ImpactEvidence[]>,
     evidence: ImpactEvidence[],
   ): void {
+    for (const project of this.compiledProjectsFor(graph)) {
+      if (!project.files.has(sourcePath)) continue;
+      for (const test of project.tests) {
+        this.addAffectedTest(sourcePath, test, graph, affectedTests, "COMPILED_PROJECT", evidence);
+        evidence.push(makeEvidence("COMPILED_PROJECT", sourcePath, `${test} compiles ${project.config}, which includes ${sourcePath}`, test));
+      }
+    }
     if (!hasNode(graph, sourcePath)) {
       if (isPotentialNextEntryPoint(sourcePath, this.layout) || isScriptFile(sourcePath, this.layout)) {
         this.addAffectedEntryPoint(sourcePath, profile, affectedEntryPoints, "NEW_ENTRY_POINT", sourcePath, evidence);

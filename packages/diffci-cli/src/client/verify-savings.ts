@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { arch, cpus, platform, release, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { failingTestNames } from "./failure-baseline.js";
 
 import { classifyFailureFromEvidence, computeFailureFingerprint } from "../preflight/fingerprint.js";
 import type { FailureClass } from "../preflight/taxonomy.js";
@@ -20,6 +21,8 @@ export interface CommandMeasurement {
   wallMs: number;
   stdoutTail: string;
   stderrTail: string;
+  /** Test names the runner reported as failing, from the complete output (not the tails). */
+  failingTests?: string[];
 }
 
 export interface VerifySavingsReport {
@@ -410,6 +413,14 @@ function assessFailures(trials: readonly SavingsTrial[]): FailureAssessment {
   return { kind: "inconclusive", confidence: "low", explanation: "The failures were not stable enough to classify conservatively.", evidence };
 }
 
+/** A `node --test` started while NODE_TEST_CONTEXT is set reports to that parent runner instead of
+ * running as its own suite, and exits 0 without executing anything. DiffCI launched from inside a test
+ * process (an agent's harness, DiffCI's own tests) must still measure the real suite (2026-10-21). */
+function withoutTestRunnerContext(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { NODE_TEST_CONTEXT: _context, ...rest } = env;
+  return rest;
+}
+
 export function measureCommand(command: string, options: Pick<VerifySavingsOptions, "cwd" | "timeoutMs" | "tailBytes">): CommandMeasurement {
   const startedAt = new Date().toISOString();
   const started = Date.now();
@@ -425,7 +436,7 @@ export function measureCommand(command: string, options: Pick<VerifySavingsOptio
     shell: false,
     windowsVerbatimArguments: process.platform === "win32",
     env: {
-      ...process.env,
+      ...withoutTestRunnerContext(process.env),
       CI: "1",
       FORCE_COLOR: "0",
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
@@ -433,6 +444,8 @@ export function measureCommand(command: string, options: Pick<VerifySavingsOptio
     },
   });
   const finishedAt = new Date().toISOString();
+  const failingTests = result.status === 0 ? [] : failingTestNames(`${result.stdout ?? ""}
+${result.stderr ?? ""}`);
   return {
     command,
     exitCode: result.status,
@@ -443,6 +456,7 @@ export function measureCommand(command: string, options: Pick<VerifySavingsOptio
     wallMs: Date.now() - started,
     stdoutTail: tail(result.stdout ?? "", options.tailBytes),
     stderrTail: tail(result.stderr ?? "", options.tailBytes),
+    ...(failingTests.length ? { failingTests } : {}),
   };
 }
 

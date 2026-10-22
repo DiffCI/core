@@ -521,16 +521,45 @@ function createProgram(
     fileNames = [...new Set([...fileNames, ...additionalSources])];
     options = { module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, target: ts.ScriptTarget.ES2022, ...options, allowJs: true };
   }
+  // The graph extracts syntax and import edges; it never asks TypeScript for a type checker or
+  // semantic diagnostics. Letting the Program resolve imports made it load every lib and node_modules
+  // declaration file: 5.6s of a median 8.2s analysis across a dogfood repository's paired runs (2026-10-21
+  // telemetry). Imports are resolved explicitly below with the original options, and an implementation
+  // file the root list missed is parsed when an import reaches it, within a budget that fails closed.
+  // `syntaxOnly` (scoped analysis) used to be the only caller given these options.
+  void syntaxOnly;
   const program = ts.createProgram({
     rootNames: fileNames,
-    // Scoped analysis already inventories every implementation file. It extracts
-    // syntax/import edges, never asks TypeScript for semantic diagnostics. Keep
-    // the original options below for explicit module resolution.
-    options: syntaxOnly ? { ...options, noResolve: true, noLib: true, types: [] } : options,
+    options: { ...options, noResolve: true, noLib: true, types: [] },
     configFileParsingDiagnostics,
   });
 
   return { program, options, fileNames, resolvedViaProjectReferences };
+}
+
+/**
+ * Module resolution asks whether the same `node_modules` directories and candidate files exist for
+ * every importer; the moduleResolutionCache does not cover those probes. They were the largest single
+ * cost of graph construction (2026-10-21 profile). The tree does not change during one analysis, so
+ * each answer is read from the disk once.
+ */
+function memoizedResolutionHost(system: ts.System): ts.ModuleResolutionHost {
+  const memo = <T>(fn: (path: string) => T) => {
+    const answers = new Map<string, T>();
+    return (path: string) => {
+      if (!answers.has(path)) answers.set(path, fn(path));
+      return answers.get(path)!;
+    };
+  };
+  return {
+    fileExists: memo((path) => system.fileExists(path)),
+    directoryExists: memo((path) => system.directoryExists(path)),
+    readFile: memo((path) => system.readFile(path)),
+    realpath: system.realpath ? memo((path) => system.realpath!(path)) : undefined,
+    getCurrentDirectory: () => system.getCurrentDirectory(),
+    getDirectories: memo((path) => system.getDirectories(path)),
+    useCaseSensitiveFileNames: system.useCaseSensitiveFileNames,
+  };
 }
 
 function classifySpecifier(specifier: string): "relative" | "absolute" | "alias" | "package" {
@@ -758,6 +787,7 @@ export async function buildDependencyGraph(
   // Resolve each importer with its own nearest project, never another package's
   // aliases. Invalid project configuration remains a hard safety blocker.
   const projectOptions = new Map<string, ts.CompilerOptions>();
+  const resolutionHost = memoizedResolutionHost(ts.sys);
   function hasUnavailableExternalBase(config: unknown, errors: readonly ts.Diagnostic[]): boolean {
     if (!config || typeof config !== "object") return false;
     const rawExtends = (config as { extends?: unknown }).extends;
@@ -772,7 +802,16 @@ export async function buildDependencyGraph(
     // aliases. Any other diagnostic remains a hard blocker.
     return errors.every(error => error.code === 18003 || error.code === 5083 || error.code === 6053);
   }
+  // Nearest tsconfig.json per importer directory. Probing the disk for every importer walked to the
+  // repository root once per file: about a third of graph build time on a 2,000-file repository (2026-10-21).
+  const nearestConfig = new Map<string, ts.CompilerOptions>();
   function optionsFor(file: string): ts.CompilerOptions {
+    const key = dirname(file);
+    let options = nearestConfig.get(key);
+    if (!options) { options = findOptionsFor(file); nearestConfig.set(key, options); }
+    return options;
+  }
+  function findOptionsFor(file: string): ts.CompilerOptions {
     let directory = dirname(file);
     while (toRelativeInternal(repoPath, directory) !== undefined) {
       const config = join(directory, "tsconfig.json");
@@ -837,7 +876,7 @@ export async function buildDependencyGraph(
         resolvableSpecifier,
         sf.fileName,
         importerOptions,
-        ts.sys,
+        resolutionHost,
         moduleResolutionCache,
       );
 

@@ -197,8 +197,15 @@ export interface ObservationResult {
   changedFiles: string[];
   affectedSourceFileCount: number;
   selectedTests: string[];
-  /** Every test file the engine could see. The denominator for any selection ratio. */
+  /** Test files the full test command runs: the denominator for any selection ratio. Every
+   * discovered test file when the test script could not be modelled (2026-10-21). */
   totalTestCount: number;
+  /** Every test file the engine could see, including those no full-suite phase runs. */
+  discoveredTestCount?: number;
+  /** Affected tests the full test command does not run. Never part of `selectedTests`, which stays a
+   * subset of the full suite; verification runs them with `outsideSuiteCommands`. */
+  testsOutsideFullSuite?: string[];
+  outsideSuiteCommands?: string[];
   fallbackReasons: string[];
   /** The command DiffCI would have run. Present even in observe mode - it is the claim being tested. */
   proposedCommands: string[];

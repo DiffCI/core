@@ -18,6 +18,9 @@ export type ImpactReason =
   | "INFRASTRUCTURE_GLOBAL"
   | "DATABASE_GLOBAL"
   | "UNKNOWN_FILE"
+  | "FILE_REFERENCE"
+  | "COMPILED_PROJECT"
+  | "OUTSIDE_FULL_SUITE"
   | "TEST_FIXTURE_OWNER"
   | "ALWAYS_RUN_POLICY"
   | "DELETED_FILE_LEGACY_DEPENDENTS"
@@ -78,6 +81,12 @@ export interface ImpactResult {
   affectedSourceFiles: string[];
   affectedAssets: string[];
   affectedTests: TestImpact[];
+  /** Number of test files the repository's test script runs, when src/repo/script-universe.ts could
+   * model it completely; absent otherwise (2026-10-21). */
+  fullSuiteTestCount?: number;
+  /** Affected tests that the test script does not run. Not part of the selection, which stays a
+   * subset of the full suite, but still worth running. Present only with `fullSuiteTestCount`. */
+  testsOutsideFullSuite?: TestImpact[];
   affectedEntryPoints: EntryPointImpact[];
   affectedScripts: string[];
 

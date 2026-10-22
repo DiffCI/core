@@ -39,12 +39,13 @@ export async function agentSelection(repoInput: string) {
   const after = captureWorkingTreeSnapshot(repoPath);
   const unchanged = before.baseSha === after.baseSha && before.treeSha === after.treeSha;
   let command: string | undefined;
+  let commands: string[] = [];
   let selection: "none" | "selected" | "full" = "none";
   let reason = "no uncommitted changes; use diffci_verify for a committed range";
   if (before.changed) {
     reason = observation?.reason ?? "analysis did not produce a runnable plan";
     if (observation?.status === "OBSERVED" && result) {
-      ({ command, selection, reason } = executableSelection(repoPath, result));
+      ({ command, commands, selection, reason } = executableSelection(repoPath, result));
       if (!command) reason = `no executable verification command is available: ${reason}`;
     }
   }
@@ -58,6 +59,8 @@ export async function agentSelection(repoInput: string) {
     tests_available: result?.totalTestCount ?? 0,
     tests_selected: selection === "full" ? result?.totalTestCount ?? 0 : selection === "selected" ? result?.selectedTests.length ?? 0 : 0,
     command: ready ? command : undefined,
+    // Run these one after another when present: the joined command exceeds the shell's limit.
+    ...(ready && commands.length > 1 ? { commands } : {}),
     reason: unchanged ? reason : "working tree changed during analysis; reanalyze",
     fallback_reasons: result?.fallbackReasons ?? [],
     analysis_status: observation?.status ?? "not_needed",

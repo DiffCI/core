@@ -331,14 +331,23 @@ describe("translated-documentation companion classification (2026-08-23, deepsee
     assert.ok(unknownSignal(result));
   });
 
-  it("keeps misleading names in config/infra locations on their stricter classification", () => {
+  it("keeps misleading names in CI and infrastructure-data locations fail-closed", () => {
+    // 2026-10-21: outside workflows and actions, .github/ is ordinary repository content, so a
+    // documented translation companion there is documentation like anywhere else.
     const repo = new Set([".github/README.md", "docker/README.md", "ops/README.md"]);
-    const gh = run([{ path: ".github/README.i18n.yaml", changeType: "modified" }], repo, { configChanged: true });
-    assert.strictEqual(gh.fallbackRequired, true);
-    assert.strictEqual(gh.changedFiles[0]?.category, "config");
-    const ops = run([{ path: "ops/README.i18n.yaml", changeType: "modified" }], repo, { infrastructureChanged: true });
+    const gh = run([{ path: ".github/README.i18n.yaml", changeType: "modified" }], repo);
+    assert.strictEqual(gh.fallbackRequired, false);
+    assert.strictEqual(gh.changedFiles[0]?.category, "docs");
+    const workflow = run([{ path: ".github/workflows/README.i18n.yaml", changeType: "modified" }], new Set([".github/workflows/README.md"]), { configChanged: true });
+    assert.strictEqual(workflow.fallbackRequired, true);
+    assert.strictEqual(workflow.changedFiles[0]?.category, "config");
+    // Data under ops/ is resolved by reference; without reader evidence it stays an unknown file.
+    const ops = run([{ path: "ops/README.i18n.yaml", changeType: "modified" }], repo);
     assert.strictEqual(ops.fallbackRequired, true);
-    assert.strictEqual(ops.changedFiles[0]?.category, "infrastructure");
+    assert.strictEqual(ops.changedFiles[0]?.category, "unknown");
+    const definition = run([{ path: "ops/cloudflare/wrangler.toml", changeType: "modified" }], repo, { infrastructureChanged: true });
+    assert.strictEqual(definition.fallbackRequired, true);
+    assert.strictEqual(definition.changedFiles[0]?.category, "infrastructure");
   });
 
   it("mixed change: an accepted companion does not suppress another fallback trigger in the same delta", () => {
