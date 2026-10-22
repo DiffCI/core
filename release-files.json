@@ -88,6 +88,7 @@
     "scripts/audit-boundary.mjs",
     "scripts/benchmark.ts",
     "scripts/check-agent-packaging.mjs",
+    "scripts/check-muse-plugin-integrity.mjs",
     "scripts/release-surfaces.d.mts",
     "scripts/release-surfaces.mjs",
     "scripts/run-tests.mjs",
