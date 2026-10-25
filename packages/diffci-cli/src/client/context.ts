@@ -46,7 +46,7 @@ const SYNTHETIC_TRIGGERS = new Set(["schedule", "workflow_dispatch", "repository
 
 const ZERO_SHA = "0000000000000000000000000000000000000000";
 
-function readEventPayload(env: ObservationEnvironment): Record<string, unknown> | undefined {
+export function readEventPayload(env: ObservationEnvironment): Record<string, unknown> | undefined {
   const path = env.GITHUB_EVENT_PATH;
   if (!path || !existsSync(path)) return undefined;
   try {

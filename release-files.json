@@ -192,6 +192,14 @@
     "tests/research/baseline/test-activity.test.ts",
     "tests/research/baseline/workflow-parser.test.ts",
     "tsconfig.check.json",
-    "tsconfig.json"
+    "tsconfig.json",
+    "packages/diffci-cli/scripts/run-tests.mjs",
+    "packages/diffci-cli/src/client/enforce-misses-collect.ts",
+    "packages/diffci-cli/src/client/enforce-misses.ts",
+    "packages/diffci-cli/src/client/enforce-policy.ts",
+    "packages/diffci-cli/src/client/telemetry.ts",
+    "packages/diffci-cli/tests/client/enforce-misses.test.ts",
+    "packages/diffci-cli/tests/client/enforce-policy.test.ts",
+    "packages/diffci-cli/tests/client/telemetry.test.ts"
   ]
 }

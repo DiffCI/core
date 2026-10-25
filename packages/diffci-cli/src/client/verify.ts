@@ -4,8 +4,9 @@ import { join, resolve } from "node:path";
 
 import { batchCommand, measureCommands } from "./command-batches.js";
 import { compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
+import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
-import { observe } from "./observe.js";
+import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, type WorkingTreeSnapshot } from "./working-tree.js";
@@ -31,6 +32,8 @@ export interface VerificationReport {
   /** Affected tests the full test command does not run; executed after the selection (2026-10-21). */
   tests_outside_full_suite?: number;
   selection: "none" | "selected" | "full";
+  /** The test files the selected command ran, when `selection` is "selected". The miss detector reads it. */
+  selected_tests?: string[];
   command?: string;
   /** The parts `command` was run as, when one invocation would exceed the shell's command-line limit. */
   commands?: string[];
@@ -63,6 +66,8 @@ export interface VerificationReport {
   required_actions: string[];
   /** Present when a failed verification was rerun at the base commit (`--baseline-on-failure`). */
   failure_baseline?: FailureBaseline;
+  /** Present only under `--policy enforce`. `applied` is true when the selected tests replaced the full suite. */
+  enforcement?: EnforcementDecision & { applied: boolean };
 }
 
 interface VerifyOptions {
@@ -82,6 +87,8 @@ export interface VerifyChangedOptions extends VerifyOptions {}
 export interface VerifyRangeOptions extends VerifyOptions {
   baseOverride?: string;
   headOverride?: string;
+  /** Opt-in enforce mode (docs/enforce-mode-01-plan.md). Absent means today's behaviour, unchanged. */
+  policy?: "enforce";
 }
 
 function receiptRange(range: ObservationCommitRange | undefined): VerificationReport["commit_range"] {
@@ -140,11 +147,29 @@ function unknownSnapshot(): WorkingTreeSnapshot {
 }
 
 async function executeObservation(
-  options: VerifyOptions,
+  options: VerifyOptions & { policy?: "enforce" },
   scope: VerificationScope,
   before: WorkingTreeSnapshot,
   observation: ObservationReport,
 ): Promise<VerificationReport> {
+  const enforcement = options.policy === "enforce"
+    ? evaluateEnforcement(collectEnforcementContext(makeGitRunner(options.repoPath), options.env, observation), observation)
+    : undefined;
+  const report = await executeWithPolicy(options, scope, before, observation, enforcement);
+  if (!enforcement) return report;
+  return { ...report, enforcement: { ...enforcement, applied: enforcement.fired_fallback === null && report.selection === "selected" } };
+}
+
+async function executeWithPolicy(
+  options: VerifyOptions,
+  scope: VerificationScope,
+  before: WorkingTreeSnapshot,
+  observation: ObservationReport,
+  enforcement: EnforcementDecision | undefined,
+): Promise<VerificationReport> {
+  // Under enforce, a fired fallback runs the full suite even where plain verify would block: an
+  // unusable analysis is a reason to run everything, never a reason to pass with nothing run.
+  const enforcedFull = enforcement !== undefined && enforcement.fired_fallback !== null;
   const result = observation.result;
   const range = observation.commitRange;
   const boundRange = scope === "commit-range" ? range : undefined;
@@ -163,12 +188,12 @@ async function executeObservation(
     ...(result?.graph ? { graph_confidence: result.graph.confidence, effective_graph_confidence: result.graph.effectiveConfidence } : {}),
   };
 
-  if (observation.status !== "OBSERVED" || !result) {
+  if ((observation.status !== "OBSERVED" || !result) && !enforcedFull) {
     return blocked(before, scope, observation.reason ?? "DiffCI analysis did not produce a verification plan", analysis, counts, boundRange);
   }
   if (scope === "commit-range") {
-    if (!range) return blocked(before, scope, "DiffCI did not resolve a commit range", analysis, counts);
-    if (range.headSha !== before.baseSha) {
+    if (!range && !enforcedFull) return blocked(before, scope, "DiffCI did not resolve a commit range", analysis, counts);
+    if (range && range.headSha !== before.baseSha) {
       return blocked(
         before,
         scope,
@@ -194,7 +219,9 @@ async function executeObservation(
     return report;
   }
 
-  const { selection, command, commands, reason, outsideSuite } = executableSelection(options.repoPath, result);
+  const { selection, command, commands, reason, outsideSuite } = enforcedFull || !result
+    ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
+    : executableSelection(options.repoPath, result);
 
   if (!command) {
     const inferred = inferFullCommand(options.repoPath);
@@ -244,6 +271,7 @@ async function executeObservation(
     tests_selected: selection === "full" ? counts.testsAvailable : counts.testsSelected,
     ...(outsideSuite ? { tests_outside_full_suite: outsideSuite } : {}),
     selection,
+    ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
     command,
     ...(commands.length > 1 ? { commands } : {}),
     execution,
@@ -376,10 +404,19 @@ export function formatVerificationSummary(report: VerificationReport): string {
   ];
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
   if (report.command) lines.push(`  command: ${report.command}`);
+  if (report.enforcement) {
+    const fired = report.enforcement.fired_fallback;
+    lines.push(`  enforce: ${report.enforcement.applied ? "applied" : fired ? `fell back to full (${fired}: ${report.enforcement.detail})` : "not applied"}`);
+  }
   return lines.join("\n");
 }
 
 
+
+function fullSelection(repoPath: string, reason: string) {
+  const command = inferFullCommand(repoPath).command;
+  return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0 };
+}
 
 /** Shared executable plan for read-only agent selection and verification. */
 export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>) {
