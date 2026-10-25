@@ -24,7 +24,7 @@ inputs:
   cli-version:
     description: Exact published DiffCI CLI version to run.
     required: false
-    default: "0.3.13"
+    default: "0.3.14"
   report-path:
     description: Where to write the report. Must be outside the checkout. Defaults to RUNNER_TEMP.
     required: false
