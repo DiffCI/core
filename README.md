@@ -125,6 +125,24 @@ For example, `wallSeconds: 0.79`, `cpuSeconds: 0.84`, and `rssBytesAtEnd: 327868
 
 The separate `estimateImpact` API can calculate `estimatedUsd`, `estimatedKwh`, and `estimatedKgCo2e` only from caller-supplied `computeSeconds`, price, power, and grid-intensity assumptions. Those values have `basis: "estimated"`; they are modeled scenarios, not benchmark output, physical measurements, billing records, or verified avoided emissions.
 
+## Sponsors
+
+DiffCI Core is supported by its [GitHub Sponsors](https://github.com/sponsors/DiffCI). Sponsorship funds maintenance, broader language and CI support, and reproducible benchmarks.
+
+### Partners
+
+No Partner sponsors yet. [Become the first](https://github.com/sponsors/DiffCI).
+
+### Team Sponsors
+
+No Team Sponsors yet. Team Sponsor logos also appear on [diffci.com/sponsors](https://diffci.com/sponsors).
+
+### Backers
+
+No Backers yet. Backers at $25/month or above are listed here.
+
+Sponsors' bug reports are labelled [`sponsor`](https://github.com/DiffCI/core/labels/sponsor) and triaged first.
+
 ## Core and Cloud
 
 | Component | Availability | License |
