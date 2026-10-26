@@ -55,7 +55,8 @@
     "build:client": "tsc -p tsconfig.client.json && node scripts/ensure-client-executables.mjs",
     "prepack": "npm run build:client",
     "package:check": "node scripts/check-package-boundary.mjs",
-    "package:smoke": "node scripts/package-smoke.mjs"
+    "package:smoke": "node scripts/package-smoke.mjs",
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@diffci.com/core": "git+https://github.com/DiffCI/core.git#e7ffdaf103800e71d74375afe4bc82604953bf19",
@@ -63,6 +64,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.12",
+    "tsx": "^4.23.15",
     "typescript": "^5.8.3"
   },
   "bundleDependencies": [

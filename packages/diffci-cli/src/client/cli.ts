@@ -17,6 +17,7 @@
  *   verify-savings     run a paired full-versus-selected timing check
  *   validate-specs     block conflicting same-turn change specifications
  *   verify-workflow    check that a DiffCI job in this repository's workflows cannot affect other jobs
+ *   enforce-misses     after a full run on main, find failures enforce mode would have skipped
  *   version            print the observer version
  *
  * Exit codes: `observe` exits 0 even when it refuses or errors, because a broken observer must not
@@ -37,7 +38,7 @@ import { addDiffciPackageScripts, detectPackageManager, installDiffci, type Supp
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { githubDeliveryWarning } from "./delivery-warning.js";
-import { sendUsageSignal } from "./usage-signal.js";
+import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
@@ -45,6 +46,17 @@ import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
+import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
+import {
+  findReceipt,
+  findWindowStart,
+  inferRerunArgs,
+  mergedPullRequests,
+  MISS_REPORT_FILE,
+  rerunFailingFiles,
+  spawnRunner,
+  type CollectOptions,
+} from "./enforce-misses-collect.js";
 
 interface ParsedArgs {
   command?: string;
@@ -280,6 +292,7 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   if (!includeWorkflow) console.log("  skipped .github/workflows/diffci.yml (pass --workflow to add it)");
   if (!includeVerificationWorkflow) console.log("  skipped .github/workflows/diffci-verify.yml (pass --verification-workflow to add it)");
   console.log(`\nDefault agent command: ${agentCommand}`);
+  console.log("\nOptional telemetry is off unless you have opted in. Use diffci telemetry --mode anonymous for execution counts, or --mode installations to also share a random installation ID. No repository content is sent. Use --mode off to disable; --no-send always overrides consent.");
   return 0;
 }
 
@@ -299,6 +312,15 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
   const changed = flags.changed === true;
   if (changed && (flags.base !== undefined || flags.head !== undefined)) {
     console.error("diffci verify accepts either --changed or --base/--head, not both");
+    return 2;
+  }
+  const policy = flags.policy === true ? "" : stringFlag(flags, "policy");
+  if (policy !== undefined && policy !== "enforce") {
+    console.error(`diffci verify --policy accepts only "enforce", got ${JSON.stringify(policy)}`);
+    return 2;
+  }
+  if (policy !== undefined && changed) {
+    console.error("diffci verify --policy enforce applies to a commit range, not --changed");
     return 2;
   }
   const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
@@ -325,7 +347,9 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
         ...common,
         baseOverride: stringFlag(flags, "base"),
         headOverride: stringFlag(flags, "head"),
+        policy,
       });
+  await recordUsage("verify", report.verification, identity.version, flags, env);
   if (reportPath) {
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
@@ -406,9 +430,7 @@ async function runCheck(flags: Record<string, string | boolean>, env: NodeJS.Pro
   const observationCode = await runObserve({ ...flags, out: reportPath, quiet: true, "no-send": true }, env);
   if (observationCode !== 0) return observationCode;
   const observation = JSON.parse(readFileSync(reportPath, "utf8")) as ObservationReport;
-  if ((flags["share-usage"] === true || env.DIFFCI_SHARE_USAGE === "1") && flags["no-send"] !== true) {
-    await sendUsageSignal({ command: "check", outcome: observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", version: observerIdentity().version });
-  }
+  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env);
   const print = (message: string): void => { if (flags.quiet !== true && flags.json !== true) console.log(message); };
   print(summarise(observation, true));
   print(`  observation report: ${reportPath}`);
@@ -530,9 +552,7 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
 
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  if ((flags["share-usage"] === true || env.DIFFCI_SHARE_USAGE === "1") && flags["no-send"] !== true) {
-    await sendUsageSignal({ command: "observe", outcome: report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", version: identity.version });
-  }
+  await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env);
 
   const summary = summarise(report);
   if (flags.json === true) {
@@ -616,6 +636,92 @@ function runVerifyWorkflow(flags: Record<string, string | boolean>, env: NodeJS.
     return 0;
   }
   console.log("\nBlocking findings above: as written, this installation CAN change what the rest of CI does.");
+  return 1;
+}
+
+/**
+ * Miss detection (docs/enforce-mode-01-plan.md, step 5). Exit 0: no miss. Exit 1: at least one miss.
+ * Exit 2: the full run left no results to classify, or the invocation is wrong. It never edits
+ * diffci.config.json or repository variables; it prints the entries for a human to add.
+ */
+function runEnforceMisses(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  const junitPath = stringFlag(flags, "junit");
+  const outFlag = stringFlag(flags, "out-dir");
+  const repository = stringFlag(flags, "repository") ?? env.GITHUB_REPOSITORY;
+  if (!junitPath || !outFlag || !repository) {
+    console.error("diffci enforce-misses needs --junit <file>, --out-dir <dir> and --repository <owner/name> (or GITHUB_REPOSITORY)");
+    return 2;
+  }
+  const outDir = resolve(outFlag);
+  if (outDir === repoPath || isInsideRepository(repoPath, outDir)) {
+    console.error(`Refusing to write the miss report inside the repository: ${outDir}. Use --out-dir outside the checkout.`);
+    return 2;
+  }
+  if (!existsSync(junitPath)) {
+    console.error(`No full-suite results at ${junitPath}: nothing can be classified, so no miss can be ruled out.`);
+    return 2;
+  }
+  const headSha = stringFlag(flags, "head") ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
+  const fullRun = parseJunit(readFileSync(junitPath, "utf8"), repoPath);
+  const failing = fullRun.filter((outcome) => outcome.failed);
+  const runUrl = env.GITHUB_RUN_ID ? `${env.GITHUB_SERVER_URL ?? "https://github.com"}/${repository}/actions/runs/${env.GITHUB_RUN_ID}` : undefined;
+  const notes: string[] = [];
+
+  let report: MissReport;
+  if (failing.length === 0) {
+    // A green run is the cheapest case and the most common one: no GitHub calls, and its record
+    // (no failures) becomes the next run's window start.
+    report = buildMissReport({ fullRun, rerun: undefined, baseline: [], pullRequests: [], headSha, producedAt: new Date().toISOString(), runUrl, window: { from_sha: null, source: "none" } });
+  } else {
+    const rerunJunit = stringFlag(flags, "rerun-junit");
+    const rerunArgs = inferRerunArgs(repoPath);
+    const files = [...new Set(failing.map((outcome) => outcome.file).filter(Boolean))];
+    const rerun = rerunJunit
+      ? parseJunit(readFileSync(rerunJunit, "utf8"), repoPath)
+      : rerunArgs && files.length > 0 ? rerunFailingFiles(repoPath, rerunArgs, files) : undefined;
+    if (!rerun) notes.push("failures were not re-run, so none could be ruled flaky; every failure was treated as deterministic");
+
+    const collect: CollectOptions = {
+      repoPath,
+      repository,
+      headSha,
+      runId: env.GITHUB_RUN_ID,
+      workDir: join(outDir, "downloads"),
+      run: spawnRunner,
+    };
+    const window = findWindowStart(collect);
+    if (!window.fromSha) notes.push("no earlier detector record or green full run was found, so no pull request could be held against these failures");
+    const pullRequests = mergedPullRequests(collect, window.fromSha).map((pr) => ({ ...pr, receipt: findReceipt(collect, pr) }));
+    report = buildMissReport({
+      fullRun,
+      rerun,
+      baseline: window.baseline,
+      pullRequests,
+      headSha,
+      producedAt: new Date().toISOString(),
+      runUrl,
+      window: { from_sha: window.fromSha, source: window.source },
+      notes,
+    });
+  }
+
+  mkdirSync(outDir, { recursive: true });
+  const markdown = formatMissReportMarkdown(report);
+  writeFileSync(join(outDir, MISS_REPORT_FILE), `${JSON.stringify(report, null, 2)}
+`, "utf8");
+  writeFileSync(join(outDir, "enforce-misses.md"), markdown, "utf8");
+  console.log(markdown);
+  if (report.misses === 0) return 0;
+
+  console.log("Add to enforce.openUnsafeMisses in diffci.config.json (not done automatically):");
+  console.log(JSON.stringify(report.open_unsafe_misses, null, 2));
+  if (flags["open-issue"] === true) {
+    const title = `DiffCI enforce: unsafe miss on main at ${headSha.slice(0, 12)}`;
+    const created = spawnRunner("gh", ["issue", "create", "--repo", repository, "--title", title, "--body-file", join(outDir, "enforce-misses.md")]);
+    if (created.ok) console.log(`Opened ${created.stdout.trim()}`);
+    else console.error(`Could not open an issue (${created.stderr.trim()}); the report is in ${outDir}.`);
+  }
   return 1;
 }
 
@@ -819,8 +925,9 @@ Pilot a repository: https://diffci.com/#pilot
 Usage:
   diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--force]
   diffci mcp
-  diffci verify [--changed | --base <sha> --head <sha>] [--repo <path>] [--out <file>] [--json]
-                [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure]
+  diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
+                [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--share-usage] [--no-send]
+  diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
@@ -836,6 +943,8 @@ Usage:
                          [--cache-prepare <command>] [--fixed-order]
   diffci validate-specs --file <json> [--json]
   diffci verify-workflow [--repo <path>]
+  diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
+                        [--head <sha>] [--rerun-junit <file>] [--open-issue]
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json.
@@ -856,12 +965,17 @@ observe analyses the checkout and writes one JSON report. It runs nothing and ch
 verify-savings runs both commands and reports measured paired runtime; it is an opt-in pilot command.
 validate-specs checks an explicit list of specification IDs and logical targets and blocks duplicates.
 verify-workflow checks that the job running DiffCI cannot affect any other job, and exits 1 if it can.
+enforce-misses classifies a full run's failures on main against the enforce dry-run receipts of the pull
+requests merged since the last recorded run, and exits 1 on a miss. It never edits configuration.
+Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.
 
 The report is sent only when both --api-url and --api-token are given (or DIFFCI_API_URL and
 DIFFCI_TOKEN are set). A failed send is reported and never fails the step - the report is on disk
 either way. Plain http is refused; the token is never printed.
---share-usage (or DIFFCI_SHARE_USAGE=1) sends only command, outcome, and version to DiffCI.
-No repository, commit, test, report, or persistent identifier is sent. --no-send disables it.
+--share-usage (or DIFFCI_SHARE_USAGE=1) opts in to command, outcome, version, surface and activity reporting.
+diffci telemetry --mode anonymous saves consent; --mode installations also shares a random local installation ID.
+--mode off disables saved consent and deletes the ID. --internal-usage labels tests/internal activity.
+No repository, commit, test, report, paths, or machine details are sent. --no-send or DIFFCI_NO_SEND=1 disables it.
 `;
 
 async function main(): Promise<void> {
@@ -875,6 +989,14 @@ async function main(): Promise<void> {
   }
 
   switch (command) {
+    case "telemetry": {
+      const mode = stringFlag(flags, "mode");
+      const preference = mode ? configureTelemetry(mode, flags["internal-usage"] === true, env) : readTelemetryPreference(env);
+      console.log(`DiffCI telemetry: ${preference.mode}; activity: ${preference.internal ? "internal" : "external"}.`);
+      console.log("Reporting includes command, outcome, version, surface and activity. Installation mode adds a random local ID; installations are not people. No repository content or machine details are sent. --no-send always overrides consent.");
+      process.exitCode = 0;
+      return;
+    }
     case "init":
       process.exitCode = runInit(flags, env);
       return;
@@ -904,6 +1026,9 @@ async function main(): Promise<void> {
       return;
     case "verify-workflow":
       process.exitCode = runVerifyWorkflow(flags, env);
+      return;
+    case "enforce-misses":
+      process.exitCode = runEnforceMisses(flags, env);
       return;
     case "version":
       console.log(observerIdentity().version);

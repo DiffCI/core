@@ -69,7 +69,7 @@ const tools = [
   },
   {
     name: "diffci_check",
-    description: "Analyze the repository, run inferred full and selected test commands when available, and report paired runtime. Sends nothing to DiffCI Cloud.",
+    description: "Analyze the repository, run inferred full and selected test commands when available, and report paired runtime. No report is uploaded. Optional aggregate telemetry follows the user's saved consent; DIFFCI_NO_SEND=1 overrides it.",
     inputSchema: {
       type: "object",
       properties: {

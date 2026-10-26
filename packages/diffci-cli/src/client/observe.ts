@@ -69,7 +69,7 @@ export interface ObserveOptions {
   vueAnalysisCacheDir?: string;
 }
 
-function makeGitRunner(repoPath: string): GitRunner {
+export function makeGitRunner(repoPath: string): GitRunner {
   return (args) => {
     try {
       const stdout = execFileSync("git", args, {
