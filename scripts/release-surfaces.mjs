@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 /** Every public surface that must name the same CLI release. */
 export const RELEASE_SURFACES = ["npm", "github-release", "tags", "mcp-registry", "hosted-mcp"];

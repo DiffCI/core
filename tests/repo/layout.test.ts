@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Phase 01 follow-up (2026-08-26): what a directory MEANS must come from the repository, and Next.js
  * conventions must only apply to Next.js applications.

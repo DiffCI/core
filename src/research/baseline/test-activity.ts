@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Stage 2C measurement-pipeline repair (2026-08-21, docs/research/2026-08-21-stage2c-*.md). Root cause:
  * inferCategory() (workflow-parser.ts) only ever looked at a job's `name:` field (or its YAML key) and

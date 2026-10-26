@@ -10,7 +10,7 @@
   },
   "homepage": "https://diffci.com/",
   "repository": "https://github.com/DiffCI/core",
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "keywords": [
     "ci",
     "test-selection",

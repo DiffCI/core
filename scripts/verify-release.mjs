@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 // Verifies that npm, the GitHub Release, release tags, the MCP Registry, and the hosted MCP endpoint
 // all name the CLI version. A release may verify the first four before its cross-repository site deploy;
 // the scheduled consistency workflow verifies every surface after deployment.

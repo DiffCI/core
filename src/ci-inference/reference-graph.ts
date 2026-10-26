@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * The reference graph — what an execution step DEPENDS ON in order to be reproducible.
  *

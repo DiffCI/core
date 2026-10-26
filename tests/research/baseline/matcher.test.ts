@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { matchesAny } from "../../../src/research/baseline/matcher.js";

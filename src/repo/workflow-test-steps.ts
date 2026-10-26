@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Can this GitHub Actions workflow run the repository's tests? (2026-10-21.)
  *

@@ -19,7 +19,7 @@ the [cross-agent installation guide](https://github.com/DiffCI/core/blob/main/do
 
 ## Source and license
 
-This package is AGPL-3.0-only. Its current source lives in
+This package is MIT-licensed. Its current source lives in
 [`DiffCI/core`](https://github.com/DiffCI/core/tree/main/packages/diffci-cli).
 The corresponding source for the previously published `0.3.10` package is
 preserved at [tagged Core commit `4c76be14`](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)

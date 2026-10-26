@@ -2,7 +2,7 @@
 
 [![DiffCI MCP server](https://mcprush.com/badge/diffci-mcp/card.svg)](https://mcprush.com/to/diffci-mcp?ref=badge)
 
-**Open-source test-impact analysis for faster CI.** For developers and maintainers evaluating which tests a change affects, with conservative full-run fallbacks. Licensed under AGPL-3.0-only.
+**Open-source test-impact analysis for faster CI.** For developers and maintainers evaluating which tests a change affects, with conservative full-run fallbacks. Licensed under the MIT License.
 
 ## Coding-agent plugins
 
@@ -147,7 +147,7 @@ Sponsors' bug reports are labelled [`sponsor`](https://github.com/DiffCI/core/la
 
 | Component | Availability | License |
 | --- | --- | --- |
-| This Core repository | Public source | AGPL-3.0-only |
+| This Core repository | Public source | MIT |
 | DiffCI Cloud: hosting, billing, organization management, dashboard, managed services | Private source | Proprietary; not included here |
 | Optional enterprise modules | Not released here | A separate source-available license would apply if offered |
 
@@ -155,7 +155,7 @@ Only the explicitly extracted Core files and standalone tooling are in this repo
 
 ## License and contributions
 
-See [LICENSE](LICENSE), [NOTICE](NOTICE) and [CONTRIBUTING.md](CONTRIBUTING.md). AGPL permits commercial use; it is not a non-commercial license. Its obligations, including those applicable to modified versions used over a network, are defined by the license. Grant eligibility depends on the particular grant agreement. No eligibility or legal separation is guaranteed by this repository layout.
+See [LICENSE](LICENSE), [NOTICE](NOTICE) and [CONTRIBUTING.md](CONTRIBUTING.md). Releases before the MIT switch were published under AGPL-3.0-only and are now also available under MIT; see [LICENSE-HISTORY.md](LICENSE-HISTORY.md). Grant eligibility depends on the particular grant agreement. No eligibility or legal separation is guaranteed by this repository layout.
 
 See [the release boundary](docs/release-boundary.md) for scope and current limitations.
 

@@ -12,7 +12,7 @@ The initial extraction includes these engine directories:
 
 Standalone additions are `src/analyze.ts`, `src/cli.ts`, `src/index.ts`, `src/measurement.ts`, the synthetic benchmark, release documentation and boundary checks. Tests use synthetic inputs and temporary repositories. Cloud-dependent integration tests and the original product-specific task-registry fixture are excluded.
 
-The following are outside this release: authentication, billing, organizations, dashboard, databases, Shadow enrollment/reconciliation/storage, hosted runners, deployment configurations, operational scripts, website, research datasets and proprietary enterprise code. No Git history from the private repository is copied. The AGPL license applies to the files in this public repository, not to every file in the original private repository.
+The following are outside this release: authentication, billing, organizations, dashboard, databases, Shadow enrollment/reconciliation/storage, hosted runners, deployment configurations, operational scripts, website, research datasets and proprietary enterprise code. No Git history from the private repository is copied. The MIT license applies to the files in this public repository, not to every file in the original private repository.
 
 ## Limitations
 

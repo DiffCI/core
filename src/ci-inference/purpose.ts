@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * What an operation is FOR, derived from structure rather than from text that happens to contain a
  * framework's name.

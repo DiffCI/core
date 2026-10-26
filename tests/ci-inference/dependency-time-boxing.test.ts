@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * ENGINE_COVERAGE_01 item 1 — time-boxed dependency resolution.
  *

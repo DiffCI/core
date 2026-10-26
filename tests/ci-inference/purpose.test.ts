@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * The two false TEST classifications from CI_REPRODUCTION_SAMPLE_01, as regression tests, plus the
  * true positives that must survive the fix.

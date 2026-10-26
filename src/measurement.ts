@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 import { performance } from "node:perf_hooks";
 
 /** Local process measurements, not host/container billing or hardware energy measurements. */

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Phase 01 (2026-08-26): the command DiffCI proposes must be one the TARGET repository could run.
  *
