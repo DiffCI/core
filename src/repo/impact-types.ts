@@ -88,6 +88,10 @@ export interface ImpactResult {
   /** Affected tests that the test script does not run. Not part of the selection, which stays a
    * subset of the full suite, but still worth running. Present only with `fullSuiteTestCount`. */
   testsOutsideFullSuite?: TestImpact[];
+  /** Phases of the root test script, verbatim, that a selective run must execute besides the selected
+   * test files (`node scripts/test-security.js`). Only produced with `selectTestPhases`; present
+   * whenever the selection relies on them. */
+  testPhases?: string[];
   affectedEntryPoints: EntryPointImpact[];
   affectedScripts: string[];
 

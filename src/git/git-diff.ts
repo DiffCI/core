@@ -12,6 +12,7 @@ import {
 } from "./types.js";
 import { infrastructureRole, testScriptClosure } from "../repo/file-references.js";
 import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
+import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 export const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -274,37 +275,109 @@ function scriptRecord(value: unknown): Record<string, string> | undefined {
   return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 }
 
+const TEST_FILE_WORD = /^(?:\.\/)?[A-Za-z0-9._@+\-/]+\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * The test files a test-closure script edit adds to or removes from an explicit file list, or
+ * undefined when the edit is anything else (2026-10-28). One dogfood repository's `test` script lists ~60 test
+ * files by path; agents add one to it in most commits that add a test, and every such edit forced the
+ * full suite (5 of the first 42 replayed commits). Only an insertion or removal of whole words that are
+ * test-file paths, inside an `&&` phase that runs `--test`, qualifies: the remaining words, in order,
+ * must be identical, so no flag, runner or other argument changed.
+ */
+export function testListEdit(oldBody: string, newBody: string): { added: string[]; removed: string[] } | undefined {
+  const phases = (body: string) => body.split("&&").map((phase) => phase.trim().split(/\s+/).filter(Boolean));
+  const oldPhases = phases(oldBody);
+  const newPhases = phases(newBody);
+  if (oldPhases.length !== newPhases.length) return undefined;
+  const added: string[] = [];
+  const removed: string[] = [];
+  for (let i = 0; i < oldPhases.length; i++) {
+    const before = oldPhases[i]!;
+    const after = newPhases[i]!;
+    const beforeSet = new Set(before);
+    const afterSet = new Set(after);
+    const phaseAdded = after.filter((word) => !beforeSet.has(word));
+    const phaseRemoved = before.filter((word) => !afterSet.has(word));
+    if (phaseAdded.length === 0 && phaseRemoved.length === 0) {
+      if (before.join(" ") !== after.join(" ")) return undefined; // reordered or duplicated words
+      continue;
+    }
+    if (!before.includes("--test") || !after.includes("--test")) return undefined;
+    if (![...phaseAdded, ...phaseRemoved].every((word) => TEST_FILE_WORD.test(word))) return undefined;
+    const kept = (words: string[], dropped: string[]) => words.filter((word) => !dropped.includes(word)).join(" ");
+    if (kept(before, phaseRemoved) !== kept(after, phaseAdded)) return undefined;
+    added.push(...phaseAdded.map((word) => word.replace(/^\.\//, "")));
+    removed.push(...phaseRemoved.map((word) => word.replace(/^\.\//, "")));
+  }
+  return { added, removed };
+}
+
+const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
+
+export interface PackageJsonChange {
+  kind: "metadata" | "data" | "dependencies" | "behavioral";
+  /** Test files a test-list edit added to the test script; they are now part of the suite. */
+  testScriptAddedPaths: string[];
+  /** Dependency names whose entry changed, when `kind` is `dependencies`. */
+  changedDependencies: string[];
+}
+
 /**
  * How a modified package.json changed:
  *   - `metadata`: only descriptive fields (hasRelevantPackageJsonChange is false);
- *   - `data`: only PACKAGE_JSON_DATA_FIELDS and scripts outside the test closure (`test`, its
- *     lifecycle hooks, install hooks, and every script they name) on either side - tests may read the
- *     file, so it is resolved by reference rather than ignored;
- *   - `behavioral`: anything else, including dependencies, engines, type, exports and unparseable JSON.
+ *   - `data`: only PACKAGE_JSON_DATA_FIELDS, scripts outside the test closure (`test`, its lifecycle
+ *     hooks, install hooks, and every script they name) on either side, and test-list edits (see
+ *     testListEdit) - tests may read the file, so it is resolved by reference rather than ignored;
+ *   - `dependencies`: as `data`, plus changed entries in dependencies, devDependencies or
+ *     optionalDependencies. Which tests that affects depends on the lockfile and on who imports each
+ *     package, so the caller decides, and stays behavioral when it cannot;
+ *   - `behavioral`: anything else, including peerDependencies, overrides, engines, type, exports,
+ *     workspaces and unparseable JSON.
  */
-export function packageJsonChangeKind(oldContent: string | undefined, newContent: string | undefined): "metadata" | "data" | "behavioral" {
-  if (!hasRelevantPackageJsonChange(oldContent, newContent)) return "metadata";
+export function packageJsonChange(oldContent: string | undefined, newContent: string | undefined): PackageJsonChange {
+  const result = (kind: PackageJsonChange["kind"], testScriptAddedPaths: string[] = [], changedDependencies: string[] = []): PackageJsonChange =>
+    ({ kind, testScriptAddedPaths, changedDependencies });
+  if (!hasRelevantPackageJsonChange(oldContent, newContent)) return result("metadata");
   let oldJson: Record<string, unknown>;
   let newJson: Record<string, unknown>;
   try {
     oldJson = JSON.parse(oldContent!);
     newJson = JSON.parse(newContent!);
   } catch {
-    return "behavioral";
+    return result("behavioral");
   }
   const oldScripts = scriptRecord(oldJson.scripts);
   const newScripts = scriptRecord(newJson.scripts);
-  if (!oldScripts || !newScripts) return "behavioral";
+  if (!oldScripts || !newScripts) return result("behavioral");
   const closure = new Set([...testScriptClosure(oldScripts), ...testScriptClosure(newScripts)]);
+  const added = new Set<string>();
+  const dependencies = new Set<string>();
   for (const field of new Set([...Object.keys(oldJson), ...Object.keys(newJson)])) {
     if (PACKAGE_JSON_METADATA_FIELDS.has(field) || PACKAGE_JSON_DATA_FIELDS.has(field)) continue;
     if (JSON.stringify(oldJson[field]) === JSON.stringify(newJson[field])) continue;
-    if (field !== "scripts") return "behavioral";
+    if (DEPENDENCY_FIELDS.has(field)) {
+      const before = scriptRecord(oldJson[field]);
+      const after = scriptRecord(newJson[field]);
+      if (!before || !after) return result("behavioral");
+      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) if (before[name] !== after[name]) dependencies.add(name);
+      continue;
+    }
+    if (field !== "scripts") return result("behavioral");
     for (const name of new Set([...Object.keys(oldScripts), ...Object.keys(newScripts)])) {
-      if (oldScripts[name] !== newScripts[name] && closure.has(name)) return "behavioral";
+      if (oldScripts[name] === newScripts[name] || !closure.has(name)) continue;
+      const edit = oldScripts[name] !== undefined && newScripts[name] !== undefined ? testListEdit(oldScripts[name]!, newScripts[name]!) : undefined;
+      if (!edit) return result("behavioral");
+      for (const path of edit.added) added.add(path);
     }
   }
-  return "data";
+  return result(dependencies.size > 0 ? "dependencies" : "data", [...added].sort(), [...dependencies].sort());
+}
+
+/** packageJsonChange's kind, with a dependency change reported as behavioral. */
+export function packageJsonChangeKind(oldContent: string | undefined, newContent: string | undefined): "metadata" | "data" | "behavioral" {
+  const { kind } = packageJsonChange(oldContent, newContent);
+  return kind === "dependencies" ? "behavioral" : kind;
 }
 
 /** Reads a file's content at a specific commit via `git show <sha>:<path>`, without touching the
@@ -488,15 +561,47 @@ export async function analyzeGitDelta(
     // hasRelevantPackageJsonChange()'s own doc comment) and only ever narrows true -> false.
     const narrowed = new Set<ChangedFile>();
     const referenceResolvedPaths: string[] = [];
-    if (analysis.dependencyManifestChanged) {
-      const changedPackageJson = filesWithBinary.find((f) => f.path === "package.json" && f.changeType === "modified");
-      if (changedPackageJson) {
-        const oldContent = readFileAtSha(baseSha, "package.json", repoPath);
-        const newContent = readFileAtSha(headSha, "package.json", repoPath);
-        const kind = packageJsonChangeKind(oldContent, newContent);
-        analysis.dependencyManifestChanged = kind === "behavioral";
-        if (kind !== "behavioral") narrowed.add(changedPackageJson);
-        if (kind === "data") referenceResolvedPaths.push("package.json");
+    const changedPackageJson = filesWithBinary.find((f) => f.path === "package.json" && f.changeType === "modified");
+    const oldPackageJson = readFileAtSha(baseSha, "package.json", repoPath);
+    const newPackageJson = readFileAtSha(headSha, "package.json", repoPath);
+    const packageChange = changedPackageJson ? packageJsonChange(oldPackageJson, newPackageJson) : undefined;
+    if (analysis.dependencyManifestChanged && changedPackageJson && packageChange) {
+      analysis.dependencyManifestChanged = packageChange.kind === "behavioral" || packageChange.kind === "dependencies";
+      if (packageChange.kind === "metadata" || packageChange.kind === "data") narrowed.add(changedPackageJson);
+      if (packageChange.kind === "data") referenceResolvedPaths.push("package.json");
+      if (packageChange.kind === "data" && packageChange.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange.testScriptAddedPaths;
+    }
+    // 2026-10-28: a dependency change is narrowed to the direct dependencies whose installed tree the
+    // npm lockfile shows changed (src/repo/npm-lockfile.ts); ImpactAnalyzer selects the tests that
+    // import them, or falls back. Both files must agree: a manifest dependency change without a
+    // matching lockfile change stays global.
+    const changedLockfile = filesWithBinary.find((f) => f.path === "package-lock.json" && f.changeType === "modified");
+    const dependencyEdit = packageChange?.kind === "dependencies" || (!changedPackageJson && analysis.lockfileChanged);
+    const onlyNpmLock = (analysis.signalPaths?.lockfile ?? []).every((p) => p === "package-lock.json");
+    if (dependencyEdit && changedLockfile && onlyNpmLock) {
+      const manifests = [oldPackageJson, newPackageJson].map((content) => { try { return JSON.parse(content ?? "") as Record<string, unknown>; } catch { return undefined; } });
+      const direct = new Set<string>();
+      let modelled = manifests.every((manifest) => manifest && manifest.workspaces === undefined);
+      for (const manifest of manifests) {
+        for (const field of ["dependencies", "devDependencies", "optionalDependencies"]) {
+          const record = scriptRecord(manifest?.[field]);
+          if (!record) { modelled = false; continue; }
+          for (const name of Object.keys(record)) direct.add(name);
+        }
+      }
+      const affected = modelled
+        ? npmLockAffectedDependencies(readFileAtSha(baseSha, "package-lock.json", repoPath), readFileAtSha(headSha, "package-lock.json", repoPath), [...direct])
+        : undefined;
+      if (affected && (packageChange?.changedDependencies ?? []).every((name) => affected.includes(name))) {
+        analysis.dependencyManifestChanged = false;
+        analysis.lockfileChanged = false;
+        analysis.changedDependencies = affected;
+        narrowed.add(changedLockfile);
+        if (changedPackageJson) {
+          narrowed.add(changedPackageJson);
+          referenceResolvedPaths.push("package.json");
+          if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+        }
       }
     }
     // 2026-10-21: a workflow that cannot run tests (deploy, publish, scan) cannot change a test
@@ -522,7 +627,8 @@ export async function analyzeGitDelta(
       analysis.configChanged = remaining.configChanged;
       analysis.workflowChanged = remaining.workflowChanged;
       analysis.signalPaths = { ...analysis.signalPaths, config: remaining.signalPaths?.config, workflow: remaining.signalPaths?.workflow,
-        ...(analysis.dependencyManifestChanged ? {} : { dependencyManifest: [] }) };
+        ...(analysis.dependencyManifestChanged ? {} : { dependencyManifest: [] }),
+        ...(analysis.lockfileChanged ? {} : { lockfile: [] }) };
     }
     if (referenceResolvedPaths.length > 0) analysis.referenceResolvedPaths = referenceResolvedPaths.sort();
 

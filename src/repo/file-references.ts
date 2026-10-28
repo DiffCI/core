@@ -33,6 +33,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
+import { matchesGlob } from "./test-discovery.js";
 
 const MAX_READ_BYTES = 1_048_576;
 
@@ -141,6 +142,13 @@ export interface ReferenceResolutionInput {
   /** Changed files whose content analyzeGitDelta proved cannot change how tests run
    * (GitDeltaAnalysis.referenceResolvedPaths); a workflow reading them does not block. */
   contentCleared?: ReadonlySet<string>;
+  /** Treat a reader that tooling loads implicitly (wrangler config, Dockerfile, `*.config.*`) as
+   * unresolvable. Used for code: such a reader can run the file without anything naming it. */
+  implicitReadersUnresolvable?: boolean;
+  /** Resolve a file the root test script runs directly (`node scripts/test-security.js`) to that phase
+   * of the script instead of failing closed (ReferenceResolution.phases). Off by default: a caller
+   * that does not run the returned phases must keep the fallback. */
+  testPhases?: boolean;
 }
 
 export interface ReferenceResolution {
@@ -152,6 +160,9 @@ export interface ReferenceResolution {
   unresolvable: string[];
   /** Every reader found, for evidence. */
   readers: Array<{ path: string; kind: ReaderKind; via: string }>;
+  /** Phases of the root test script, verbatim, that run a reader directly; the caller must run them.
+   * Only produced with `testPhases`. */
+  phases: string[];
 }
 
 const MAX_DEPTH = 5;
@@ -180,20 +191,163 @@ export function testScriptClosure(scripts: Readonly<Record<string, string>>): Se
   return closure;
 }
 
-function packageJsonNames(content: string, pattern: RegExp): "yes" | "no" | "unparseable" {
+const GLOB_CHARS = /[*?[\]{}]/;
+const PATH_WORD = /^[A-Za-z0-9._\-/@+~*?[\]{}!,]+$/;
+
+/**
+ * Whether a script body names `target`, judged word by word (2026-10-28). The reference pattern alone
+ * matched a test script that lists `ops/cloudflare/src/a.test.mjs` as naming every file under
+ * `ops/cloudflare/`, because the directory is a prefix of the listed file - in one dogfood repository, whose
+ * `test` script lists ~60 files, that made every data file under `scripts/` and `ops/` unresolvable.
+ * A word that is a different concrete path names that file, not its directories. Anything the check
+ * cannot read as a plain path or glob (inline code, variables, quotes inside a word) still counts as
+ * naming the target whenever the reference pattern matches it.
+ */
+export function scriptNamesPath(body: string, target: string, pattern: RegExp, { ancestors = true, cwd = "" }: { ancestors?: boolean; cwd?: string } = {}): boolean {
+  if (!pattern.test(body)) return false;
+  const targetBase = posix.basename(target);
+  const dirs: string[] = [];
+  for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
+  for (const raw of body.split(/\s+/)) {
+    const word = raw.replace(/^["']+|["']+$/g, "");
+    if (!word) continue;
+    for (const candidate of word.includes("=") ? [word, word.slice(word.indexOf("=") + 1)] : [word]) {
+      if (!candidate) continue;
+      if (!PATH_WORD.test(candidate)) {
+        if (pattern.test(candidate) || pattern.test(raw)) return true;
+        continue;
+      }
+      if (candidate.startsWith("../") || candidate.startsWith("/") || candidate.startsWith("~")) {
+        if (posix.basename(candidate) === targetBase || pattern.test(` ${candidate} `)) return true;
+        continue;
+      }
+      const resolved = posix.normalize(posix.join(cwd || ".", candidate)).replace(/\/+$/, "");
+      if (GLOB_CHARS.test(candidate)) {
+        // Character classes are widened to any character, so an unsupported class syntax can only
+        // over-match. A glob naming a directory (`ops/*`) reaches the files inside it.
+        const widened = resolved.replace(/\[[^\]]*\]/g, "?");
+        if ([target, ...dirs].some((path) => matchesGlob(path, widened))) return true;
+        continue;
+      }
+      if (resolved === target || dirs.includes(resolved)) return true;
+      if (!candidate.includes("/") && (candidate === targetBase || dirs.some((dir) => posix.basename(dir) === candidate))) return true;
+    }
+  }
+  return false;
+}
+
+const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
+
+/**
+ * Whether `content`, read from `readerPath`, names `target` (or, with `ancestors`, one of its
+ * directories), once each matching word is read as a whole path (2026-10-28). The reference pattern
+ * matches on the basename, so every `wrangler.jsonc` with `"main": "./src/index.js"` named every
+ * `src/index.js` in the repository, and `ops/cloudflare/src/a.js` named `ops/cloudflare/src/b.json` by
+ * sharing its directory. A word that resolves - from the reader's directory or the repository root - to
+ * a different file names that file. Bare names, globs and variables keep the conservative answer.
+ */
+export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean): boolean {
+  if (!pattern.test(content)) return false;
+  const dirs: string[] = [];
+  for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
+  const names = [target, ...dirs];
+  const readerDir = posix.dirname(readerPath);
+  for (const match of content.matchAll(CONTENT_PATH_WORD)) {
+    const word = match[0].replace(/[,.]+$/, "");
+    if (!pattern.test(`"${word}"`)) continue;
+    if (!word.includes("/") || /[*?{}[\]!$]/.test(word)) return true;
+    const trimmed = word.replace(/\/+$/, "");
+    const resolved = [posix.normalize(posix.join(readerDir, trimmed))];
+    if (!trimmed.startsWith("../")) resolved.push(posix.normalize(trimmed.replace(/^\/+/, "")));
+    if (resolved.some((path) => names.includes(path))) return true;
+    if (trimmed.startsWith(".")) continue;
+    // Relative to an unknown working directory, or an absolute path: any suffix relation counts.
+    if (names.some((name) => name === trimmed || name.endsWith(`/${trimmed}`) || trimmed.endsWith(`/${name}`))) return true;
+  }
+  return false;
+}
+
+/** Configs that tooling loads by their default name and that can run a repository file - a Worker
+ * entry point, a container command, a test setup file, a bundler plugin - without a test naming
+ * either. `tsconfig.json`, `.gitignore` and lint or style configs list paths but run nothing; a
+ * non-default `wrangler.validation.json` is used only when a command names it. */
+const RUNS_FILES_WITHOUT_NAMING = /^(?:wrangler\.(?:toml|json|jsonc)|dockerfile.*|docker-compose.*|compose\.ya?ml|procfile|makefile|justfile|taskfile\.ya?ml|(?:vitest|vite|jest|playwright|cypress|ava|babel|webpack|rollup|esbuild|vue|nuxt|svelte|astro|next)\.config\..+|\.mocharc.*|\.babelrc.*|\.c8rc.*|\.nycrc.*)$/i;
+
+function loadsWithoutNaming(path: string): boolean {
+  return RUNS_FILES_WITHOUT_NAMING.test(posix.basename(path));
+}
+
+const ENV_TEMPLATE = /^\.env(?:\.[^.]+)*\.(?:example|sample|template|dist)$|^env\.(?:example|sample|template)$/i;
+/** Packages that load `.env.example` without being told its name. */
+const IMPLICIT_ENV_TEMPLATE_LOADERS = /["'](?:dotenv-safe|dotenv-extended|dotenv-mono)["']/;
+
+/**
+ * Files whose only loader is outside the test process, so with no reader at all the suite cannot
+ * observe them (2026-10-28):
+ *   - a workflow analyzeGitDelta already showed runs no tests (contentCleared) - GitHub runs it, a test
+ *     only sees it by naming it;
+ *   - an environment template (`.env.example`) - a person copies it; dotenv loads `.env`, never the
+ *     template, unless the repository depends on a loader that reads the template by default.
+ * Every other file with no reader stays unknown: absence of a reference is not proof in general.
+ */
+function loadedOnlyOutsideTests(filePath: string, input: ReferenceResolutionInput, read: (path: string) => string | undefined): boolean {
+  if (/^\.github\/workflows\/[^/]+\.ya?ml$/.test(filePath)) return input.contentCleared?.has(filePath) === true;
+  if (!ENV_TEMPLATE.test(posix.basename(filePath))) return false;
+  const manifest = read("package.json");
+  return manifest !== undefined && !IMPLICIT_ENV_TEMPLATE_LOADERS.test(manifest);
+}
+
+const PHASE_INTERPRETERS = new Set(["node", "tsx"]);
+const PHASE_VALUE_FLAGS = new Set(["--conditions", "-C", "--import", "--require", "-r", "--loader", "--experimental-loader", "--env-file", "--tsconfig"]);
+
+/**
+ * The `&&` phases of the root test closure that run `target` directly with an interpreter
+ * (`node scripts/test-security.js`, `tsx --import ./setup.mjs scripts/x.ts`), when those phases
+ * are the only way the closure names it; undefined otherwise (2026-10-28). Such a phase is a test in
+ * all but name: one dogfood repository's `npm test` ends with two, one of which reads every file under `src/`
+ * and `scripts/`, and every data file there fell back to the full suite for it. Running the phase
+ * itself covers it.
+ */
+function directTestPhases(content: string, target: string, pattern: RegExp, ancestors: boolean): string[] | undefined {
+  let record: Record<string, string>;
+  try {
+    const scripts = (JSON.parse(content) as { scripts?: unknown }).scripts;
+    if (!scripts || typeof scripts !== "object") return undefined;
+    record = Object.fromEntries(Object.entries(scripts).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return undefined;
+  }
+  const found: string[] = [];
+  for (const name of testScriptClosure(record)) {
+    const rest: string[] = [];
+    for (const phase of (record[name] ?? "").split("&&").map((part) => part.trim())) {
+      const words = phase.split(/\s+/);
+      const runs = words.length >= 2 && PHASE_INTERPRETERS.has(words[0]!)
+        && posix.normalize(words[words.length - 1]!) === target
+        && words.slice(1, -1).every((word, index, middle) => word.startsWith("-") || PHASE_VALUE_FLAGS.has(middle[index - 1] ?? ""))
+        && !/[|;<>`$(]/.test(phase);
+      if (runs) found.push(phase); else rest.push(phase);
+    }
+    if (scriptNamesPath(rest.join(" && "), target, pattern, { ancestors })) return undefined;
+  }
+  return found.length > 0 ? found : undefined;
+}
+
+function packageJsonNames(content: string, pattern: RegExp, target: string, ancestors: boolean, cwd: string): "yes" | "no" | "unparseable" {
   let parsed: unknown;
   try { parsed = JSON.parse(content); } catch { return "unparseable"; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "unparseable";
   const scripts = (parsed as { scripts?: unknown }).scripts;
   if (!scripts || typeof scripts !== "object") return "no";
   const record = Object.fromEntries(Object.entries(scripts).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-  for (const name of testScriptClosure(record)) if (pattern.test(record[name] ?? "")) return "yes";
+  for (const name of testScriptClosure(record)) if (scriptNamesPath(record[name] ?? "", target, pattern, { ancestors, cwd })) return "yes";
   return "no";
 }
 
 /** Resolves who reads `filePath`. See the module comment for the rule and its limits. */
 export function resolveFileReferences(filePath: string, input: ReferenceResolutionInput): ReferenceResolution {
-  const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], readers: [] };
+  const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], readers: [], phases: [] };
+  const phases = new Set<string>();
   const tests = new Set<string>();
   const code = new Set<string>();
   const visited = new Set<string>([filePath]);
@@ -209,26 +363,32 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
       // directory. A reader reached through the changed file (a script, a manifest) matters only if
       // something runs or reads it by name; matching its directories as well made `"tests"` and
       // `"fixtures"` match nearly every file and no generic name (package.json) could resolve.
-      const pattern = referencePattern(referenceTokens(target.path, { ancestors: target.path === filePath }));
+      const ancestors = target.path === filePath;
+      const pattern = referencePattern(referenceTokens(target.path, { ancestors }));
       for (const candidate of input.files) {
         if (visited.has(candidate) || candidate === target.path || LOCKFILES.has(posix.basename(candidate))) continue;
         const base = posix.basename(candidate);
         if (base === "package.json") {
           const content = read(candidate);
           if (content === undefined) continue;
-          const named = packageJsonNames(content, pattern);
+          const named = packageJsonNames(content, pattern, target.path, ancestors, posix.dirname(candidate));
           if (named === "no") continue;
           visited.add(candidate);
           if (named === "unparseable") { resolution.unresolvable.push(`${candidate} could not be parsed`); continue; }
           resolution.readers.push({ path: candidate, kind: "package-script", via: target.path });
+          const direct = input.testPhases && candidate === "package.json" ? directTestPhases(content, target.path, pattern, ancestors) : undefined;
+          if (direct) { for (const phase of direct) phases.add(phase); continue; }
           resolution.unresolvable.push(`${candidate} runs ${target.path} as part of its test script`);
           continue;
         }
         if (input.isDocumentation(candidate)) continue;
         const content = read(candidate);
-        if (content === undefined || !pattern.test(content)) continue;
+        if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors)) continue;
         visited.add(candidate);
-        if (candidate.startsWith(".github/")) {
+        if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
+          resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
+          resolution.unresolvable.push(`${candidate} is loaded by tooling and names ${target.path}`);
+        } else if (candidate.startsWith(".github/")) {
           // A workflow step that comes before a test step in its job, or a composite action, may feed
           // the file to the suite's environment; issue templates and standalone CI checks do not.
           // A change content inspection already showed cannot alter how tests run (a version bump)
@@ -266,9 +426,10 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
   // script or test-feeding workflow step reaches: the suite cannot observe the file. Finding no such
   // reader at all is different - the file's reader is unknown, so it stays unknown.
   const executableReaders = resolution.readers.some((reader) => reader.kind === "transitive");
-  if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders) {
+  if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !loadedOnlyOutsideTests(filePath, input, read)) {
     resolution.unresolvable.push(`no test or source file names ${filePath}`);
   }
+  resolution.phases = resolution.unresolvable.length === 0 ? [...phases].sort() : [];
   resolution.tests = [...tests].sort();
   resolution.code = [...code].sort();
   return resolution;

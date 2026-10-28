@@ -279,8 +279,10 @@ describe("end to end on a temporary repository", () => {
     const dir = repo(base);
     try {
       const deploy = await analyze(dir, { ".github/workflows/deploy.yml": base[".github/workflows/deploy.yml"].replace("deploy\n", "deploy --env staging\n") });
-      // Nothing names the workflow, so it stays unknown rather than silently selecting nothing.
-      assert.deepEqual(deploy.fallbackReasons, ["Unknown changed file: .github/workflows/deploy.yml"]);
+      // A workflow that runs no tests is loaded only by GitHub; with nothing naming it, the suite
+      // cannot observe it (2026-10-28).
+      assert.deepEqual(deploy.fallbackReasons, []);
+      assert.deepEqual(deploy.affectedTests, []);
       const ci = await analyze(dir, { ".github/workflows/ci.yml": base[".github/workflows/ci.yml"].replace("npm test", "npm test -- --test-concurrency=1") });
       assert.ok(ci.fallbackReasons.includes("GitHub workflow definition(s) changed; full validation required: .github/workflows/ci.yml"));
       assert.ok(ci.fallbackReasons.includes("Configuration file(s) changed; full validation required: .github/workflows/ci.yml"));
@@ -294,6 +296,62 @@ describe("end to end on a temporary repository", () => {
       assert.deepEqual(docs.fallbackReasons, []);
       const definition = await analyze(dir, { "ops/cloudflare/wrangler.toml": "name = 'y'\n" });
       assert.deepEqual(definition.fallbackReasons, ["Infrastructure definition(s) changed; full validation required: ops/cloudflare/wrangler.toml"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("selects a test added to an explicit test list instead of falling back", async () => {
+    const listed = { ...base, "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", type: "module", scripts: { test: "node --test src/util.test.js tests/site.test.js" } }, null, 2) };
+    const dir = repo(listed);
+    try {
+      const impact = await analyze(dir, { "package.json": listed["package.json"].replace("src/util.test.js", "src/util.test.js tests/version.test.js") });
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(impact.affectedTests.some((t) => t.path === "tests/version.test.js"));
+      const flag = await analyze(dir, { "package.json": listed["package.json"].replace("node --test", "node --test --test-concurrency=1") });
+      assert.ok(flag.fallbackReasons.some((reason) => reason.startsWith("Dependency manifest changed")));
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("treats an unnamed .env.example as outside the suite, and selects tests that read it", async () => {
+    const dir = repo({ ...base, ".env.example": "A=1\n" });
+    try {
+      const unnamed = await analyze(dir, { ".env.example": "A=1\nB=2\n" });
+      assert.deepEqual(unnamed.fallbackReasons, []);
+      assert.deepEqual(unnamed.affectedTests, []);
+      const named = await analyze(dir, {
+        "tests/env.test.js": `import { readFileSync } from "node:fs";\nimport test from "node:test";\ntest("env", () => readFileSync(".env.example", "utf8"));\n`,
+        ".env.example": "A=1\nB=3\n",
+      });
+      assert.deepEqual(named.fallbackReasons, []);
+      assert.deepEqual(named.affectedTests.map((t) => t.path), ["tests/env.test.js"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("keeps .env.example unknown when a loader reads it by default", async () => {
+    const dir = repo({ ...base, ".env.example": "A=1\n", "package.json": base["package.json"].replace('"type"', '"dependencies": { "dotenv-safe": "9.1.0" }, "type"') });
+    try {
+      const impact = await analyze(dir, { ".env.example": "A=1\nB=2\n" });
+      assert.deepEqual(impact.fallbackReasons, ["Unknown changed file: .env.example"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("resolves infrastructure code outside the graph through the tests that read it", async () => {
+    const files = {
+      ...base,
+      "ops/cloudflare/src/index.js": "export default { fetch() { return new Response('ok'); } };\n",
+      "ops/cloudflare/src/index.test.mjs": `import { readFileSync } from "node:fs";\nimport test from "node:test";\ntest("entry", () => readFileSync(new URL("./index.js", import.meta.url), "utf8"));\n`,
+      // Another Worker's config names its own ./src/index.js; that is a different file.
+      "ops/builder/wrangler.jsonc": `{ "main": "./src/index.js" }\n`,
+    };
+    const dir = repo(files);
+    try {
+      const impact = await analyze(dir, { "ops/cloudflare/src/index.js": "export default { fetch() { return new Response('ok2'); } };\n" });
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.deepEqual(impact.affectedTests.map((t) => t.path), ["ops/cloudflare/src/index.test.mjs"]);
+      // A default-named wrangler config that runs the file keeps it global: `wrangler dev` names neither.
+      write(dir, { "ops/cloudflare/wrangler.toml": `main = "src/index.js"\n` });
+      execSync("git add -A && git commit --quiet -m config", { cwd: dir });
+      const deployed = await analyze(dir, { "ops/cloudflare/src/index.js": "export default { fetch() { return new Response('ok3'); } };\n" });
+      assert.ok(deployed.fallbackReasons.some((reason) => reason.startsWith("Infrastructure code ops/cloudflare/src/index.js is outside the dependency graph")));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

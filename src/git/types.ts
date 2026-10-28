@@ -44,6 +44,13 @@ export interface GitDeltaAnalysis {
    * did not set a global flag above. Tests may still read them, so ImpactAnalyzer resolves their
    * readers by reference and falls back to full validation when it cannot (2026-10-21). */
   referenceResolvedPaths?: string[];
+  /** Test files a package.json test-list edit added to the test script (2026-10-28). They are part of
+   * the suite from this change on, so ImpactAnalyzer selects them. */
+  testScriptAddedPaths?: string[];
+  /** Direct dependencies whose installed tree changed, when a package.json/package-lock.json change was
+   * narrowed to them (src/repo/npm-lockfile.ts, 2026-10-28). ImpactAnalyzer selects the tests that
+   * import each one, and falls back when it cannot. Absent when no such narrowing happened. */
+  changedDependencies?: string[];
   /** The changed paths behind each flag above, so a fallback reason can name its files (2026-10-21:
    * "Configuration file(s) changed" was the most frequent reason in both telemetry cohorts and never
    * said which file). Absent on analyses produced before this field existed. */
