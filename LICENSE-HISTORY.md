@@ -14,7 +14,7 @@ for all past and future versions in
 
 | Contributor | Pull requests | Consent |
 | --- | --- | --- |
-| @FredApps | #32, #33, #34, #35, #36 | pending |
+| @FredApps | #32, #33, #34, #35, #36 | [consented](https://github.com/DiffCI/core/issues/43#issuecomment-6414291007) |
 | @varshith84 | #16 | pending |
 
 <!-- Replace "pending" with a link to each contributor's consent comment before merging. -->
