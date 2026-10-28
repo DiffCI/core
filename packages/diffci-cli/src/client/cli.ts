@@ -39,6 +39,7 @@ import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { githubDeliveryWarning } from "./delivery-warning.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
+import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
@@ -976,7 +977,16 @@ either way. Plain http is refused; the token is never printed.
 diffci telemetry --mode anonymous saves consent; --mode installations also shares a random local installation ID.
 --mode off disables saved consent and deletes the ID. --internal-usage labels tests/internal activity.
 No repository, commit, test, report, paths, or machine details are sent. --no-send or DIFFCI_NO_SEND=1 disables it.
+Interactive check and observe runs print feedback links to stderr at most weekly; they send nothing.
+CI, MCP, --json and --quiet never show them; DIFFCI_NO_FEEDBACK_PROMPT=1 hides them.
 `;
+
+function maybeShowFeedbackPrompt(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): void {
+  if (!shouldShowFeedbackPrompt(flags, env, process.stderr.isTTY === true)) return;
+  // stderr keeps piped stdout unchanged.
+  console.error(formatFeedbackPrompt(readTelemetryPreference(env).mode));
+  markFeedbackPromptShown(env);
+}
 
 async function main(): Promise<void> {
   const { command, flags } = parseArgs(process.argv);
@@ -1008,6 +1018,7 @@ async function main(): Promise<void> {
       return;
     case "check":
       process.exitCode = await runCheck(flags, env);
+      maybeShowFeedbackPrompt(flags, env);
       return;
     case "pilot":
       process.exitCode = await runPilot(flags, env);
@@ -1017,6 +1028,7 @@ async function main(): Promise<void> {
       return;
     case "observe":
       process.exitCode = await runObserve(flags, env);
+      maybeShowFeedbackPrompt(flags, env);
       return;
     case "verify-savings":
       process.exitCode = runVerifySavingsCommand(flags, env);
