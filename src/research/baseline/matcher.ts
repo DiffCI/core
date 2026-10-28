@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 function expandBraces(pattern: string): string[] {
   const match = /\{([^{}]*)\}/.exec(pattern);
   if (!match) return [pattern];

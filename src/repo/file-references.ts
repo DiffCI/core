@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Who reads this file? (2026-10-21, telemetry from two dogfood repositories.)
  *

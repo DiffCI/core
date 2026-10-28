@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Job semantics — what each workflow job is FOR, and a planner that resolves a path to an outcome.
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * WHY an outcome depends on an operation — not merely that one step follows another.
  *

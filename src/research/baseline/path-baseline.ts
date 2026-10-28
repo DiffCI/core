@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 import type { TaskRegistry } from "../../planner/task-registry.js";
 import { matchesAny } from "./matcher.js";
 import type { ChangedFile } from "../../git/types.js";

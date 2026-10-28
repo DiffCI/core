@@ -20,7 +20,7 @@
     "affected-tests",
     "github-actions"
   ],
-  "license": "AGPL-3.0-only",
+  "license": "MIT",
   "mcpName": "io.github.DiffCI/diffci",
   "repository": {
     "type": "git",

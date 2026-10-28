@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 import { strict as assert } from "node:assert";
 import { createHash } from "node:crypto";
 import { describe, it, beforeEach, afterEach } from "node:test";

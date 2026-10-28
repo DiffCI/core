@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 
 export type ReleaseSurface = "npm" | "github-release" | "tags" | "mcp-registry" | "hosted-mcp";
 

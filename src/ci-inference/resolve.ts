@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Reference resolution — follows what a step depends on, and says plainly what it could not follow.
  *

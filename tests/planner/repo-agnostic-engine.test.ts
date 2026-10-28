@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Phase 01's exit criterion includes "zero per-repo code". This makes that enforceable instead of
  * aspirational: it reads the engine's own source and fails if any particular repository has been

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import YAML from "yaml";

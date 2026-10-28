@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Inference — turns observed facts into an execution graph, citing what each conclusion came from.
  *

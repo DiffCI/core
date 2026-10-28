@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Which discovered test files does `npm test` actually run? (2026-10-21, dogfood telemetry.)
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 // Uses Muse itself to verify (or regenerate) the package-tree digest required by its marketplace.
 // Usage: MUSE_BIN=/path/to/muse node scripts/check-muse-plugin-integrity.mjs [--write]
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 export { analyzeGitDelta, EMPTY_TREE_SHA } from "./git/git-diff.js";
 export { analyzeRepository } from "./repo/analyzer.js";
 export { buildDependencyGraph, graphToJson } from "./repo/graph.js";

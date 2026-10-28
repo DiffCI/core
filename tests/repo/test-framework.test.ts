@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Phase 01 (2026-08-26): the engine must recognise a repository's tests when that repository relies
  * on its test runner's own defaults, and must refuse to propose a selection when it cannot.

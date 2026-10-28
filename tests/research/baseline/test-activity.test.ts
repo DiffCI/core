@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * Stage 2C Part 4 - regression tests written BEFORE the production fix (src/research/baseline/test-
  * activity.ts), reproducing the exact Stage 2B failure mode: a job named "check" running a compound

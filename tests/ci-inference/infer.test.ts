@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: MIT
 /**
  * ACTION_INPUT_MODELING_01, prerequisite fix. `declaredPrerequisites`'s `carriesCommand` regex
  * (`infer.ts`) contained two literal U+0008 backspace BYTES where `\b` word-boundary escapes belonged —

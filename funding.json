@@ -6,7 +6,7 @@
     "role": "owner",
     "name": "DiffCI",
     "email": "aditya@diffci.com",
-    "description": "DiffCI develops open-source infrastructure for understanding software changes and reducing unnecessary CI work. DiffCI Core is an AGPL-3.0-only engine that analyzes repository changes, dependency impact and CI structure to produce conservative CI execution plans with full-run fallbacks when evidence is insufficient.",
+    "description": "DiffCI develops open-source infrastructure for understanding software changes and reducing unnecessary CI work. DiffCI Core is an MIT-licensed engine that analyzes repository changes, dependency impact and CI structure to produce conservative CI execution plans with full-run fallbacks when evidence is insufficient.",
     "webpageUrl": {
       "url": "https://github.com/DiffCI"
     }
@@ -23,7 +23,7 @@
         "url": "https://github.com/DiffCI/core"
       },
       "licenses": [
-        "spdx:AGPL-3.0-only"
+        "spdx:MIT"
       ],
       "tags": [
         "developer-tools",
