@@ -203,6 +203,12 @@
     "packages/diffci-cli/tests/client/enforce-misses.test.ts",
     "packages/diffci-cli/tests/client/enforce-policy.test.ts",
     "packages/diffci-cli/tests/client/telemetry.test.ts",
-    "packages/diffci-cli/tests/client/feedback-prompt.test.ts"
+    "packages/diffci-cli/tests/client/feedback-prompt.test.ts",
+    "src/repo/npm-lockfile.ts",
+    "tests/repo/fallback-narrowing.test.ts",
+    "packages/diffci-cli/src/client/hook.ts",
+    "packages/diffci-cli/tests/client/agent-default-path.test.ts",
+    "docs/design/affected-checks.md",
+    "docs/research/2026-10-28-seeded-regression-plan.md"
   ]
 }

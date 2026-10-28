@@ -26,6 +26,8 @@ export function agentChangedFiles(repoInput: string) {
   };
 }
 
+export type AgentSelectionPlan = Awaited<ReturnType<typeof agentSelection>>;
+
 /** Analyze the live snapshot using the same engine as verification. Never executes tests. */
 export async function agentSelection(repoInput: string) {
   const repoPath = resolve(repoInput);
@@ -69,4 +71,21 @@ export async function agentSelection(repoInput: string) {
     risk_signals: result?.riskSignals ?? [],
     required_ci_authoritative: true,
   };
+}
+
+/**
+ * One plain sentence ahead of the JSON, naming the exact command to run (2026-10-28). Agents given only
+ * the JSON plan mostly went on to pick their own test files or run the whole suite; the first line is
+ * what they act on, so it says what to run and nothing else.
+ */
+export function selectionInstruction(plan: AgentSelectionPlan): string {
+  if (plan.status === "blocked") return `DiffCI could not plan this change: ${plan.reason}. Run the repository's normal verification and report this.`;
+  if (plan.selection === "none") return `Nothing to verify: ${plan.reason}.`;
+  const scope = plan.selection === "selected"
+    ? `DiffCI selected ${plan.tests_selected} of ${plan.tests_available} test files`
+    : `DiffCI requires the full suite (${plan.reason})`;
+  const run = plan.commands && plan.commands.length > 1
+    ? `Run these commands in order, exactly as given:\n${plan.commands.join("\n")}`
+    : `Run exactly:\n${plan.command}`;
+  return `${scope}. ${run}\nDo not substitute your own test files or the full suite.`;
 }

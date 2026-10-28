@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { agentChangedFiles, agentSelection } from "./agent-selection.js";
+import { agentChangedFiles, agentSelection, selectionInstruction } from "./agent-selection.js";
 import { requireDiffciPackageIdentity } from "./package-identity.js";
 
 type JsonRpcId = string | number | null;
@@ -92,6 +92,7 @@ const tools = [
         repo: { type: "string", description: "Repository path. Defaults to the MCP server working directory." },
         workflow: { type: "boolean", description: "Also add the non-blocking GitHub Actions observer workflow." },
         verificationWorkflow: { type: "boolean", description: "Also add the blocking GitHub Actions verification workflow." },
+        hook: { type: "boolean", description: "Also install a Git pre-push hook that verifies the commits being pushed." },
         force: { type: "boolean", description: "Overwrite existing instruction files." },
       },
       additionalProperties: false,
@@ -164,6 +165,7 @@ function commandForTool(name: string, args: Record<string, unknown>): string[] {
       if (repo) command.push("--repo", resolve(repo));
       if (booleanArg(args, "workflow")) command.push("--workflow");
       if (booleanArg(args, "verificationWorkflow")) command.push("--verification-workflow");
+      if (booleanArg(args, "hook")) command.push("--hook");
       if (booleanArg(args, "force")) command.push("--force");
       return command;
     }
@@ -245,8 +247,13 @@ async function handle(request: JsonRpcRequest): Promise<void> {
       }
       if (["diffci_changed_files", "diffci_select_tests", "diffci_explain_selection"].includes(params.name)) {
         const repo = stringArg(args, "repo") ?? process.cwd();
-        const plan = params.name === "diffci_changed_files" ? agentChangedFiles(repo) : await agentSelection(repo);
-        success(id, { content: [{ type: "text", text: JSON.stringify(plan) }], structuredContent: plan, isError: plan.status === "blocked" });
+        if (params.name === "diffci_changed_files") {
+          const changes = agentChangedFiles(repo);
+          success(id, { content: [{ type: "text", text: JSON.stringify(changes) }], structuredContent: changes, isError: changes.status === "blocked" });
+          return;
+        }
+        const plan = await agentSelection(repo);
+        success(id, { content: [{ type: "text", text: `${selectionInstruction(plan)}\n\n${JSON.stringify(plan)}` }], structuredContent: plan, isError: plan.status === "blocked" });
         return;
       }
       const run = await runCli(commandForTool(params.name, args));

@@ -35,6 +35,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { observe, isInsideRepository } from "./observe.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
+import { hookCommand, installPrePushHook } from "./hook.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { githubDeliveryWarning } from "./delivery-warning.js";
@@ -109,6 +110,12 @@ Default command:
 ${command}
 \`\`\`
 
+Use it instead of choosing test files yourself and instead of re-running the full suite:
+
+- Run it once after each change and before every commit. Do not pick individual test files to run instead; a hand-picked set misses tests that depend on your change through imports, fixtures and scripts.
+- Do not run the full test suite to be safe. DiffCI already falls back to the full suite when it cannot prove a smaller set is enough, and says why in \`reason\`.
+- When the MCP server is available, \`diffci_select_tests\` returns the one exact \`command\` to run; run that command as given.
+
 What this does:
 
 - snapshots staged, unstaged, and non-ignored untracked changes;
@@ -117,6 +124,7 @@ What this does:
 - emits a versioned machine-readable receipt and sends nothing.
 
 If verification changes generated files, review those changes and rerun DiffCI so the new snapshot is verified.
+If the repository has the DiffCI pre-push hook (\`diffci init --hook\`), a push verifies the pushed commits again; do not bypass it with \`--no-verify\` unless the user asks.
 Use \`observe --no-send\` when analysis without test execution is needed.
 
 Do not propose, commit, push, or deploy when \`safe_to_continue\` is false. If DiffCI is blocked, run the repository's normal required verification and report the blocker; required project CI remains authoritative.
@@ -285,11 +293,13 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   if (includeVerificationWorkflow) {
     writes.push(writeInitFile(repoPath, ".github/workflows/diffci-verify.yml", diffciVerificationWorkflow(identity.version), force));
   }
+  if (flags.hook === true) writes.push(installPrePushHook(repoPath, hookCommand(manager, identity.version), force));
 
   console.log(`DiffCI initialized for AI coding agents in ${repoPath}`);
   for (const write of writes) console.log(`  ${write}`);
   if (installed) console.log(`  ${installed}`);
   else console.log("  skipped package installation (pass --install to add an exact dev dependency)");
+  if (flags.hook !== true) console.log("  skipped the pre-push hook (pass --hook to verify pushed commits before every push)");
   if (!includeWorkflow) console.log("  skipped .github/workflows/diffci.yml (pass --workflow to add it)");
   if (!includeVerificationWorkflow) console.log("  skipped .github/workflows/diffci-verify.yml (pass --verification-workflow to add it)");
   console.log(`\nDefault agent command: ${agentCommand}`);
@@ -924,7 +934,7 @@ Open-source engine: https://github.com/DiffCI/core
 Pilot a repository: https://diffci.com/#pilot
 
 Usage:
-  diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--force]
+  diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--hook] [--force]
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--share-usage] [--no-send]
@@ -953,6 +963,8 @@ init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci
 or Bun, installs this DiffCI version as an exact dev dependency, updates the manager's lockfile,
 and adds diffci:verify, diffci:check, and diffci:observe package scripts without replacing existing scripts.
 --verification-workflow adds a blocking GitHub check that uploads a commit-bound verification receipt.
+--hook installs a Git pre-push hook that runs diffci verify on the commits being pushed and blocks the push
+when verification fails (git push --no-verify skips it; DIFFCI_HOOK_STRICT=1 also blocks when it cannot verify).
 mcp runs the stdio MCP server for native agent integrations.
 verify --changed snapshots staged, unstaged, and non-ignored untracked changes, runs the minimum
 executable verification (or full fallback), and exits zero only when that exact snapshot passes.
