@@ -3,7 +3,7 @@
   "name": "io.github.DiffCI/diffci",
   "title": "DiffCI",
   "description": "Fail-closed, change-aware verification for AI coding agents with affected-test guidance.",
-  "version": "0.3.14",
+  "version": "0.3.15",
   "websiteUrl": "https://diffci.com/mcp-server",
   "repository": {
     "url": "https://github.com/DiffCI/core",
@@ -22,7 +22,7 @@
     {
       "registryType": "npm",
       "identifier": "@diffci.com/diffci",
-      "version": "0.3.14",
+      "version": "0.3.15",
       "transport": {
         "type": "stdio"
       },
