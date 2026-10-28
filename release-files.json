@@ -199,8 +199,10 @@
     "packages/diffci-cli/src/client/enforce-misses.ts",
     "packages/diffci-cli/src/client/enforce-policy.ts",
     "packages/diffci-cli/src/client/telemetry.ts",
+    "packages/diffci-cli/src/client/feedback-prompt.ts",
     "packages/diffci-cli/tests/client/enforce-misses.test.ts",
     "packages/diffci-cli/tests/client/enforce-policy.test.ts",
-    "packages/diffci-cli/tests/client/telemetry.test.ts"
+    "packages/diffci-cli/tests/client/telemetry.test.ts",
+    "packages/diffci-cli/tests/client/feedback-prompt.test.ts"
   ]
 }
