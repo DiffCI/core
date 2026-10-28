@@ -90,35 +90,51 @@ test("root Go module metadata selects transitive owners and excludes unrelated p
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-for (const unresolved of [false, true]) {
-  test(`Vue transitive selection ${unresolved ? "falls back on unresolved imports" : "excludes unrelated tests with complete evidence"}`, async () => {
-    const root = fixture({
-      "package.json": JSON.stringify({ devDependencies: { vitest: "1" } }),
-      "src/value.js": "export const value = 1;",
-      "src/derived.js": 'export { value } from "./value.js";',
-      "src/App.vue": `<script setup>import { value } from "./derived.js";${unresolved ? 'import "./missing.js";' : ""}</script><template>{{ value }}</template>`,
-      "src/unrelated.js": "export const unrelated = 2;",
-      "tests/app.test.js": 'import App from "../src/App.vue"; export const app = App;',
-      "tests/unrelated.test.js": 'import { unrelated } from "../src/unrelated.js"; export const result = unrelated;',
-    });
-    try {
-      const graph = await buildDependencyGraph({ repoPath: root });
-      const impact = new ImpactAnalyzer().analyze(delta("src/value.js"), graph, graph.profile);
-      assert.equal(impact.fallbackRequired, unresolved);
-      assert.deepEqual(impact.affectedTests.map((item) => item.path), ["tests/app.test.js"]);
-      const plan = new DefaultCIPlanner(createTaskRegistry([])).plan({ delta: delta("src/value.js"), impact, profile: graph.profile });
-      assert.equal(plan.mode, unresolved ? "FULL" : "SELECTIVE");
-      assert.deepEqual(plan.selectedTests, unresolved
-        ? ["tests/app.test.js", "tests/unrelated.test.js"]
-        : ["tests/app.test.js"]);
-      assert.deepEqual(plan.skippedTests, unresolved ? [] : ["tests/unrelated.test.js"]);
-      if (!unresolved) assert.deepEqual(graph.adapterBlockers, []);
-      else assert.ok(impact.fallbackReasons.length > 0);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+// A barrel module sits between the changed source and the Vue component, and an unrelated
+// source/test pair checks that selection narrows only when the import evidence is complete.
+function vueChainFixture(componentExtraImport = ""): Record<string, string> {
+  return {
+    "package.json": JSON.stringify({ name: "vue-chain", devDependencies: { vitest: "1" } }),
+    "src/format/price.js": "export function price(cents) { return `$${cents / 100}`; }",
+    "src/format/index.js": 'export * from "./price.js";',
+    "src/components/PriceTag.vue": `<script setup>${componentExtraImport}import { price } from "../format/index.js";</script><template><span>{{ price(250) }}</span></template>`,
+    "src/clock.js": "export function now() { return 0; }",
+    "tests/price-tag.test.js": 'import PriceTag from "../src/components/PriceTag.vue"; export default PriceTag;',
+    "tests/clock.test.js": 'import { now } from "../src/clock.js"; export default now;',
+  };
 }
+
+async function planVueChain(files: Record<string, string>) {
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const change = delta("src/format/price.js");
+    const impact = new ImpactAnalyzer().analyze(change, graph, graph.profile);
+    const plan = new DefaultCIPlanner(createTaskRegistry([])).plan({ delta: change, impact, profile: graph.profile });
+    return { graph, impact, plan };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("Vue barrel chain selects only the component's test when evidence is complete", async () => {
+  const { graph, impact, plan } = await planVueChain(vueChainFixture());
+  assert.deepEqual(graph.adapterBlockers, []);
+  assert.equal(impact.fallbackRequired, false);
+  assert.deepEqual(impact.affectedTests.map((item) => item.path), ["tests/price-tag.test.js"]);
+  assert.equal(plan.mode, "SELECTIVE");
+  assert.deepEqual(plan.selectedTests, ["tests/price-tag.test.js"]);
+  assert.deepEqual(plan.skippedTests, ["tests/clock.test.js"]);
+});
+
+test("Vue barrel chain with an unresolvable component import runs every test", async () => {
+  const { impact, plan } = await planVueChain(vueChainFixture('import "./does-not-exist.js";'));
+  assert.equal(impact.fallbackRequired, true);
+  assert.notEqual(impact.fallbackReasons.length, 0);
+  assert.equal(plan.mode, "FULL");
+  assert.deepEqual([...plan.selectedTests].sort(), ["tests/clock.test.js", "tests/price-tag.test.js"]);
+  assert.deepEqual(plan.skippedTests, []);
+});
 
 test("Maven multi-module source change reaches downstream module tests", async () => {
   const root = fixture({
