@@ -33,7 +33,10 @@ They picked their own test files 928 times and ran the full suite 282 times, and
    `--force`. Failing verification blocks the push. If DiffCI cannot verify, for
    example with uncommitted changes, it explains and lets the push through, because
    required CI still runs. `DIFFCI_HOOK_STRICT=1` blocks in that case too, and
-   `git push --no-verify` skips the hook once.
+   `git push --no-verify` skips the hook once. If your CI cannot run DiffCI (for example when GitHub
+   Actions minutes run out and builds move elsewhere), set `DIFFCI_API_URL` and `DIFFCI_TOKEN` in the
+   environment you push from: the hook then also sends the observation report for each pushed range.
+   Sending never blocks the push.
 
 2. **One exact command from the MCP server.** `diffci_select_tests` now starts with a
    plain line such as `DiffCI selected 3 of 580 test files. Run exactly: <command>`

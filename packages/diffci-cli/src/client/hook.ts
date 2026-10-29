@@ -15,6 +15,11 @@ import { dirname, isAbsolute, join, relative } from "node:path";
  * remote's default branch). Failing verification (exit 1) blocks the push. When DiffCI cannot verify
  * (exit 2: dirty checkout, unknown base, analysis refused) it says why and lets the push through,
  * because required CI still runs; `DIFFCI_HOOK_STRICT=1` blocks instead. `git push --no-verify` skips it.
+ *
+ * REPORTING (2026-10-29). When DIFFCI_API_URL and DIFFCI_TOKEN are set, the hook also sends an
+ * observation report for the pushed range, the same report the GitHub Action sends. A dogfood repository
+ * whose GitHub Actions minutes ran out sent nothing for two weeks while its builds moved to another CI;
+ * reporting from the push keeps that data. It runs after verification and can never block the push.
  */
 export const HOOK_MARKER = "# diffci:managed pre-push hook";
 
@@ -54,6 +59,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     else
       echo "diffci: could not verify (exit $code); pushing anyway, required CI still runs" >&2
     fi
+  fi
+  # Optional report for teams whose CI cannot run DiffCI. It never affects the push.
+  if [ -n "$DIFFCI_API_URL" ] && [ -n "$DIFFCI_TOKEN" ]; then
+    ${command} observe --base "$base" --head "$local_sha" --quiet </dev/null >&2 || true
   fi
 done
 exit $status

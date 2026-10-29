@@ -46,17 +46,21 @@ test("blocks a push when verification fails, and lets it through when DiffCI can
     writeFileSync(hook, prePushHook(`node ${JSON.stringify(fake).replace(/\\\\/g, "/")}`));
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
     const base = execFileSync("git", ["rev-parse", "HEAD^"], { cwd: dir, encoding: "utf8" }).trim();
-    const push = (code: number, strict = false) => spawnSync("sh", [hook, "origin", "url"], {
+    const push = (code: number, strict = false, report: Record<string, string> = {}) => spawnSync("sh", [hook, "origin", "url"], {
       cwd: dir, encoding: "utf8", input: `refs/heads/main ${head} refs/heads/main ${base}\n`,
-      env: { ...process.env, FAKE_CODE: String(code), DIFFCI_HOOK_STRICT: strict ? "1" : "" },
+      env: { ...process.env, FAKE_CODE: String(code), DIFFCI_HOOK_STRICT: strict ? "1" : "", DIFFCI_API_URL: "", DIFFCI_TOKEN: "", ...report },
     });
     assert.equal(push(0).status, 0);
-    assert.equal(readFileSync(log, "utf8").trim().split("\n")[0], `verify --base ${base} --head ${head}`);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [`verify --base ${base} --head ${head}`]);
     const failed = push(1);
     assert.equal(failed.status, 1);
     assert.match(failed.stderr, /push blocked/);
     assert.equal(push(2).status, 0);
     assert.equal(push(2, true).status, 1);
+    // With a report destination, the pushed range is also observed and sent; a failed send never blocks.
+    writeFileSync(log, "");
+    assert.equal(push(0, false, { DIFFCI_API_URL: "https://example.invalid/v1", DIFFCI_TOKEN: "t" }).status, 0);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [`verify --base ${base} --head ${head}`, `observe --base ${base} --head ${head} --quiet`]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
