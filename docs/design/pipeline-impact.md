@@ -133,6 +133,12 @@ Slices, in order:
    960 check runs (15% skipped); the `5e13bcd2` architecture check still runs. The replay used the
    current scripts, not each commit's.
 4. Skip typecheck and build when no changed file is in the program or the build closure.
+   **Typecheck implemented 2026-10-29** (`src/planner/type-program.ts`): a plain `tsc` project check,
+   and lint whose only cross-file rules are type-aware, are skipped when no changed file is a root of
+   the tsconfig, a file a root's text names in an import, a tsconfig, `package.json`, a lockfile or a
+   `.d.ts`. On the last 60 DentalPresence commits both are skipped on 7 (script, SQL and Worker `.mjs`
+   changes); all checks together keep 802 of 960 runs. Build is not a gate check yet; it moves to the
+   CI and deploy phases with the build closure.
 
 Measure: replay DentalPresence's 104 gate failures; the failing step must be in the selected set
 in 104 of 104 cases, with median selected-step time under the 88-second full `check`.

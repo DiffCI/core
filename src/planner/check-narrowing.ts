@@ -15,7 +15,9 @@
  *   - ESLint rules that read other files make lint whole-program: type-aware parsing (`project`,
  *     `projectService`, `*TypeChecked` configs), import-plugin rules, boundary plugins, and any nested
  *     ESLint configuration (only the root one is read). Whole-program lint runs as written whenever a code
- *     file changed and is skipped only when none did.
+ *     file changed and is skipped only when none did. Lint that is only type-aware is skipped when no
+ *     changed file is in the TypeScript program or the lint target (type-program.ts, slice 4).
+ *   - `tsc` runs as written unless no changed file is in the project it checks (slice 4).
  *   - A deleted code file can break an import in a file that remains: ESLint then runs as written.
  *   - `--max-warnings` with a narrowed file list could fail on "file ignored" warnings for files the full
  *     run never lints, so it is never narrowed; it can still be skipped.
@@ -28,6 +30,7 @@
 import { posix } from "node:path";
 import type { GateCheck } from "./pipeline-steps.js";
 import { decideScriptCheck } from "./script-reads.js";
+import { programMembership, tscProject, type RootTextCache } from "./type-program.js";
 
 export interface ChangedPath {
   path: string;
@@ -55,8 +58,10 @@ const ESLINT_CONFIG = /^(?:eslint\.config\.[cm]?[jt]s|\.eslintrc(?:\.(?:js|cjs|j
 const PRETTIER_CONFIG = /^(?:\.prettierrc(?:\.(?:json5?|ya?ml|toml|[cm]?[jt]s))?|prettier\.config\.[cm]?[jt]s|\.prettierignore|\.editorconfig)$/;
 const ESLINT_EXTENSIONS = ["js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts"];
 const PRETTIER_EXTENSIONS = [...ESLINT_EXTENSIONS, "json", "json5", "css", "scss", "less", "md", "mdx", "yaml", "yml", "html", "vue", "graphql", "gql", "hbs", "handlebars"];
-/** Configuration text that turns on rules reading files other than the one being linted. */
-const CROSS_FILE = /\bproject(?:Service)?\s*:|TypeChecked|type-checked|\bimport(?:-x)?\/|eslint-plugin-import|import-x|plugin:import|airbnb|boundaries|no-cycle/;
+/** Configuration text that turns on rules reading files other than the one being linted: type-aware
+ * parsing reads the TypeScript program; import and boundary rules read whatever is imported. */
+const TYPE_AWARE = /\bproject(?:Service)?\s*:|TypeChecked|type-checked/;
+const IMPORT_RULES = /\bimport(?:-x)?\/|eslint-plugin-import|import-x|plugin:import|airbnb|boundaries|no-cycle/;
 
 interface Tool {
   name: "eslint" | "prettier";
@@ -183,10 +188,23 @@ function configReferences(tool: Tool, input: NarrowingInput, explicit: string | 
   return { texts, referenced };
 }
 
-function decide(check: GateCheck, input: NarrowingInput): GateCheck {
+function hasHooks(check: GateCheck, input: NarrowingInput): boolean {
+  return check.runsScript && input.lifecycleHooks !== false
+    && (input.scripts[`pre${check.script}`] !== undefined || input.scripts[`post${check.script}`] !== undefined);
+}
+
+/** `tsc` checks a whole program: it runs as written unless no changed file is in that program. */
+function decideTypecheck(check: GateCheck, input: NarrowingInput, cache: RootTextCache): GateCheck {
+  if (!input.files || hasHooks(check, input)) return check;
+  const project = tscProject(check.command);
+  if (!project) return check;
+  const membership = programMembership(project, input, cache);
+  return { ...check, decision: membership.inProgram ? "RUN" : "SKIP", reason: membership.reason };
+}
+
+function decide(check: GateCheck, input: NarrowingInput, cache: RootTextCache): GateCheck {
   if (check.kind !== "lint" && check.kind !== "format") return check;
-  const hooks = input.lifecycleHooks !== false;
-  if (check.runsScript && hooks && (input.scripts[`pre${check.script}`] !== undefined || input.scripts[`post${check.script}`] !== undefined)) return check;
+  if (hasHooks(check, input)) return check;
   const parsed = parseCommand(check.command);
   if (!parsed) return check;
   const { tool, prefix, targets, values } = parsed;
@@ -209,7 +227,18 @@ function decide(check: GateCheck, input: NarrowingInput): GateCheck {
     : tool.extensions;
   if (tool.name === "eslint") {
     const nested = input.files?.find((path) => path.includes("/") && ESLINT_CONFIG.test(posix.basename(path)) && !posix.basename(path).endsWith("ignore"));
-    const crossFile = nested !== undefined || texts.length === 0 || texts.some((text) => CROSS_FILE.test(text));
+    const importRules = texts.some((text) => IMPORT_RULES.test(text));
+    const typeAware = texts.some((text) => TYPE_AWARE.test(text));
+    if (!nested && texts.length > 0 && !importRules && typeAware && input.files) {
+      // Type-aware rules read the TypeScript program (slice 4): outside it, and outside the lint target,
+      // a change cannot alter the result. `project: "x.json"` names the program; otherwise the root one.
+      const named = [...new Set(texts.flatMap((text) => [...text.matchAll(/\bproject\s*:\s*["']([^"']+\.json)["']/g)].map((m) => posix.normalize(m[1]!))))];
+      const membership = named.length > 1 ? undefined : programMembership(named[0] ?? "tsconfig.json", input, cache);
+      const linted = input.changes.find(({ path, status }) => status !== "deleted" && targets.some((target) => covers(target, path, extensions)));
+      if (membership && !membership.inProgram && !linted) return skip(`type-aware ESLint rules, but ${membership.reason}`);
+      return run(`type-aware ESLint rules lint the whole target: ${membership?.reason ?? "several projects are named"}`);
+    }
+    const crossFile = nested !== undefined || texts.length === 0 || importRules || typeAware;
     if (crossFile) {
       const why = nested ? `nested ESLint config ${nested}` : texts.length === 0 ? "no root ESLint config found" : "type-aware or cross-file ESLint rules";
       const code = input.changes.find(({ path }) => CODE.test(path));
@@ -233,5 +262,8 @@ function decide(check: GateCheck, input: NarrowingInput): GateCheck {
 export function narrowGateChecks(checks: readonly GateCheck[], input: NarrowingInput): GateCheck[] {
   // A whole-script leaf's command is the script body, so the same parse applies; a RUN keeps running the
   // script as written.
-  return checks.map((check) => (check.kind === "script" ? decideScriptCheck(check, input) : decide(check, input)));
+  const cache: RootTextCache = new Map();
+  return checks.map((check) => check.kind === "script" ? decideScriptCheck(check, input)
+    : check.kind === "typecheck" ? decideTypecheck(check, input, cache)
+      : decide(check, input, cache));
 }
