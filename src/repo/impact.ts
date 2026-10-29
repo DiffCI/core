@@ -8,7 +8,7 @@ import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { infrastructureRole, isImplicitlyLoadedFile, resolveFileReferences, testScriptClosure } from "./file-references.js";
+import { infrastructureRole, isImplicitlyLoadedFile, isWorkerConfig, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -257,6 +257,17 @@ export class ImpactAnalyzer {
   private goEmbedPaths = new Set<string>();
   private selectTestPhases = false;
   private testPhases = new Set<string>();
+  private workersOutsideSuite: boolean | undefined;
+
+  /** True when nothing in the repository runs a Worker (file-references.ts, suiteMayRunWorkers); false,
+   * which keeps wrangler configs global, whenever repository contents are unavailable. */
+  private workerConfigsOutsideSuite(): boolean {
+    if (this.workersOutsideSuite === undefined) {
+      this.workersOutsideSuite = Boolean(this.repositoryFiles && this.readRepositoryFile)
+        && !suiteMayRunWorkers(this.sortedRepositoryFiles, this.readRepositoryFile!, isSourceFilePath);
+    }
+    return this.workersOutsideSuite;
+  }
   constructor(alwaysRunChecks: AlwaysRunCheck[] = DEFAULT_ALWAYS_RUN_CHECKS) { this.alwaysRunChecks = alwaysRunChecks; }
 
   analyze(delta: GitDelta, graphResult: DependencyGraphResult, profile: RepositoryProfile, options: ImpactAnalyzeOptions = {}): ImpactResult {
@@ -267,6 +278,7 @@ export class ImpactAnalyzer {
     this.repositoryFiles = options.repositoryFiles;
     this.selectTestPhases = options.selectTestPhases === true;
     this.testPhases = new Set();
+    this.workersOutsideSuite = undefined;
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
     this.compiledProjectCache = undefined;
     // One read per file per analysis, however many changed files ask who reads them.
@@ -432,7 +444,13 @@ export class ImpactAnalyzer {
       if (rule.check(delta.analysis)) {
         // The stable sentence stays a prefix, so consumers that categorise by it keep working; the
         // files that triggered it follow (2026-10-21).
-        const paths = delta.analysis.signalPaths?.[rule.signal] ?? [];
+        let paths = delta.analysis.signalPaths?.[rule.signal] ?? [];
+        if (rule.signal === "infrastructure" && paths.length > 0 && this.workerConfigsOutsideSuite()) {
+          // A wrangler config cannot reach a suite that never runs a Worker; processChangedPath resolves
+          // its readers instead (2026-10-29).
+          paths = paths.filter((path) => !isWorkerConfig(path));
+          if (paths.length === 0) continue;
+        }
         const message = paths.length === 0 ? rule.message
           : `${rule.message}: ${paths.slice(0, 5).join(", ")}${paths.length > 5 ? ` (+${paths.length - 5} more)` : ""}`;
         riskSignals.push({ level: "critical", reason: rule.reason, message, ...(paths.length ? { paths: [...paths] } : {}) });
@@ -596,6 +614,14 @@ export class ImpactAnalyzer {
       this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
       return;
     }
+    if (category === "infrastructure" && isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite()) {
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      const message = `Unknown changed file: ${changedPath}`;
+      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
+      riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+      return;
+    }
     if (category === "config" || category === "workflow" || category === "infrastructure" || category === "database") {
       evidence.push(makeEvidence("CONFIG_GLOBAL", changedPath, `Global ${category} change at ${changedPath}`));
       return;
@@ -675,7 +701,8 @@ export class ImpactAnalyzer {
     evidence: ImpactEvidence[],
     { implicitReadersUnresolvable = false }: { implicitReadersUnresolvable?: boolean } = {},
   ): boolean {
-    if (!this.repositoryFiles || !this.readRepositoryFile || isImplicitlyLoadedFile(changedPath)) return false;
+    if (!this.repositoryFiles || !this.readRepositoryFile) return false;
+    if (isImplicitlyLoadedFile(changedPath) && !(isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite())) return false;
     const layout = this.layout;
     const scripts = profile.packageJson.scripts;
     const resolution = resolveFileReferences(changedPath, {
@@ -689,6 +716,7 @@ export class ImpactAnalyzer {
       contentCleared: this.contentCleared,
       implicitReadersUnresolvable,
       testPhases: this.selectTestPhases,
+      workerConfigsOutsideSuite: this.workerConfigsOutsideSuite(),
     });
     if (resolution.unresolvable.length > 0) {
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, `References to ${changedPath} could not be resolved: ${resolution.unresolvable[0]}`));

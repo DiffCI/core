@@ -189,6 +189,12 @@ describe("workflowMayRunTests", () => {
   it("is false only for recognised non-test steps", () => {
     assert.equal(workflowMayRunTests(wf("      - uses: actions/checkout@v4\n      - uses: github/codeql-action/analyze@v3\n      - run: gh release create v1\n")), false);
     assert.equal(workflowMayRunTests(wf("      - run: npx wrangler deploy --config wrangler.site.jsonc\n")), false);
+    // DiffCI's own observer runs no tests; its Action only observes (2026-10-29).
+    assert.equal(workflowMayRunTests(wf("      - uses: DiffCI/core@v1\n")), false);
+    assert.equal(workflowMayRunTests(wf("      - run: npx --yes --package \"@diffci.com/diffci@0.3.16\" diffci observe --no-send\n")), false);
+    assert.equal(workflowMayRunTests(wf("      - run: |\n          \"${RUNNER_TEMP}/diffci/node_modules/.bin/diffci\" observe\n")), false);
+    // A job disabled with a literal false never runs.
+    assert.equal(workflowMayRunTests("on: push\njobs:\n  old:\n    if: ${{ false }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n"), false);
   });
   it("is true for test runners, test scripts, repository files and unknown actions", () => {
     assert.equal(workflowMayRunTests(wf("      - run: npm test\n")), true);
@@ -196,10 +202,11 @@ describe("workflowMayRunTests", () => {
     assert.equal(workflowMayRunTests(wf("      - run: npm run build\n"), { build: "tsc" }), false);
     assert.equal(workflowMayRunTests(wf("      - run: node scripts/deploy.mjs\n")), true);
     assert.equal(workflowMayRunTests(wf("      - uses: ./.github/actions/setup\n")), true);
-    assert.equal(workflowMayRunTests(wf("      - uses: DiffCI/core@v1\n")), true);
     assert.equal(workflowMayRunTests("jobs:\n  call:\n    uses: ./.github/workflows/ci.yml\n"), true);
     assert.equal(workflowMayRunTests("not: [valid"), true);
     assert.equal(workflowMayRunTests(wf("      - run: npx diffci verify --json\n")), true);
+    assert.equal(workflowMayRunTests(wf("      - run: npx diffci check\n")), true);
+    assert.equal(workflowMayRunTests("on: push\njobs:\n  ci:\n    if: github.event_name == 'push'\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n"), true);
   });
 });
 
@@ -294,8 +301,20 @@ describe("end to end on a temporary repository", () => {
     try {
       const docs = await analyze(dir, { "ops/cloudflare/README.md": "# ops 2\n" });
       assert.deepEqual(docs.fallbackReasons, []);
-      const definition = await analyze(dir, { "ops/cloudflare/wrangler.toml": "name = 'y'\n" });
-      assert.deepEqual(definition.fallbackReasons, ["Infrastructure definition(s) changed; full validation required: ops/cloudflare/wrangler.toml"]);
+      // Nothing in this repository runs a Worker, so a wrangler config no test reads is outside the
+      // suite (2026-10-29).
+      const unread = await analyze(dir, { "ops/cloudflare/wrangler.toml": "name = 'y'\n" });
+      assert.deepEqual(unread.fallbackReasons, []);
+      assert.deepEqual(unread.affectedTests, []);
+      // Once a test runs a Worker through Miniflare, the config is global again.
+      const workers = await analyze(dir, {
+        "tests/worker.test.js": `import test from "node:test";\nimport { Miniflare } from "miniflare";\ntest("w", () => new Miniflare({}));\n`,
+        "ops/cloudflare/wrangler.toml": "name = 'z'\n",
+      });
+      assert.ok(workers.fallbackReasons.includes("Infrastructure definition(s) changed; full validation required: ops/cloudflare/wrangler.toml"));
+      // Other deployment definitions stay global regardless.
+      const docker = await analyze(dir, { "ops/cloudflare/Dockerfile": "FROM node:24\n" });
+      assert.ok(docker.fallbackReasons.some((reason) => reason.startsWith("Infrastructure definition(s) changed")));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

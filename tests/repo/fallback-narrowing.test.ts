@@ -168,4 +168,24 @@ describe("dependency bumps end to end", () => {
       assert.ok(unlocked.impact.fallbackReasons.some((reason) => reason.startsWith("Dependency manifest changed")));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it("does not fall back when a release bumps only the version in package.json and the lockfile", async () => {
+    const dir = join(tmpdir(), `diffci-version-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const versioned = (version: string) => ({
+      "package.json": JSON.stringify({ ...JSON.parse(manifest("^1")), version }, null, 2),
+      "package-lock.json": JSON.stringify({ ...JSON.parse(lock({ left: "1.0.0", right: "1.0.0", tooling: "1.0.0" })), version,
+        packages: { ...JSON.parse(lock({ left: "1.0.0", right: "1.0.0", tooling: "1.0.0" })).packages, "": { version, dependencies: { left: "^1", right: "^1" }, devDependencies: { tooling: "^1" } } } }, null, 2),
+    });
+    try {
+      execSync("git init --quiet && git config user.email t@diffci.local && git config user.name t && git config core.autocrlf false", { cwd: dir });
+      write(dir, { ...files, ...versioned("1.0.0") });
+      execSync("git add -A && git commit --quiet -m base", { cwd: dir });
+      const release = await analyze(dir, versioned("1.0.1"));
+      assert.deepEqual(release.delta.analysis.changedDependencies, []);
+      assert.equal(release.delta.analysis.lockfileChanged, false);
+      assert.deepEqual(release.impact.fallbackReasons, []);
+      assert.deepEqual(release.impact.affectedTests.map((t) => t.path), ["tests/manifest.test.js"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });

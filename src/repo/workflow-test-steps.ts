@@ -26,7 +26,19 @@ const NON_TEST_ACTIONS = [
   "pnpm/action-setup", "oven-sh/setup-bun", "softprops/action-gh-release", "peter-evans/create-pull-request",
   "peter-evans/create-or-update-comment", "aws-actions/configure-aws-credentials", "google-github-actions/auth",
   "google-github-actions/setup-gcloud", "azure/login", "dependabot/fetch-metadata", "cloudflare/wrangler-action",
+  // DiffCI's own observer Action only analyses; it runs no repository command (action.yml).
+  "diffci/core",
 ];
+/** DiffCI subcommands that run no tests. `verify`, `check`, `pilot` and `enforce-misses` do, so `diffci`
+ * followed by anything else stays a test runner (2026-10-29: DiffCI's own observation workflows were
+ * 60 of 65 workflow-triggered fallbacks in one dogfood repository's telemetry). */
+const DIFFCI_NON_TEST_COMMAND = /\bdiffci["']?(?:\s+--?[\w-]+(?:=\S+)?)*\s+(?:observe|init|version|telemetry|pilot-packet|verify-workflow|validate-specs|mcp)\b/g;
+
+/** A job whose `if` is the literal false never runs (a retired workflow kept for its history). */
+function jobDisabled(job: object): boolean {
+  const condition = (job as { if?: unknown }).if;
+  return condition === false || (typeof condition === "string" && /^\s*(?:\$\{\{\s*)?false(?:\s*\}\})?\s*$/.test(condition));
+}
 const TEST_RUNNERS = /(?:^|[\s/"'`(;&|])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine|pytest|tox|nox|phpunit|rspec|diffci|ctest)(?=$|[\s"'`);&|])|(?:node|tsx|bun|deno)(?:\s+--?[\w-]+(?:=\S+)?)*\s+--?test\b|\b(?:go|cargo|dotnet|swift|mix|zig)\s+test\b|\b(?:mvn|mvnw|gradle|gradlew|sbt|bazel|make|just)\b/;
 const PACKAGE_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:(?:run|run-script|-w\s+\S+|--workspace[= ]\S+|--prefix[= ]\S+|--if-present|-r|--recursive|--silent|-s)\s+)*([\w:.-]+)/g;
 const INTERPRETER_FILE = /\b(?:node|tsx|ts-node|bash|sh|zsh|pwsh|powershell|python3?|ruby|perl|deno\s+run|bun(?:\s+run)?|npx\s+(?:--\S+\s+)*tsx)\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*\.{0,2}\/?[\w./-]+\.(?:m?[jt]s|c[jt]s|sh|ps1|py|rb|pl)\b|(?:^|[\s;&|])\.{1,2}\/[\w./-]+/;
@@ -35,6 +47,7 @@ const PACKAGE_MANAGER_BUILTINS = new Set(["ci", "install", "i", "add", "remove",
 /** `strict` asks only whether the command runs a test runner or the test script; otherwise running any
  * repository file also counts, because that file may run tests itself. */
 function commandRunsTests(text: string, scripts: Readonly<Record<string, string>>, seen: Set<string> = new Set(), strict = false): boolean {
+  text = text.replace(DIFFCI_NON_TEST_COMMAND, " ");
   if (TEST_RUNNERS.test(text) || (!strict && INTERPRETER_FILE.test(text))) return true;
   for (const match of text.matchAll(PACKAGE_SCRIPT)) {
     const name = match[1] ?? "";
@@ -78,6 +91,7 @@ export function workflowFeedsTests(workflowText: string, names: RegExp, scripts:
   };
   for (const job of Object.values(jobs as Record<string, unknown>)) {
     if (!job || typeof job !== "object") return true;
+    if (jobDisabled(job)) continue;
     const { steps, uses, ...configuration } = job as { steps?: unknown; uses?: unknown };
     if (uses !== undefined) { if (names.test(JSON.stringify(job))) return true; continue; }
     if (!Array.isArray(steps)) return true;
@@ -99,6 +113,7 @@ export function workflowMayRunTests(workflowText: string | undefined, scripts: R
   if (!jobs || typeof jobs !== "object") return true;
   for (const job of Object.values(jobs as Record<string, unknown>)) {
     if (!job || typeof job !== "object") return true;
+    if (jobDisabled(job)) continue;
     const record = job as { uses?: unknown; steps?: unknown; container?: unknown; services?: unknown };
     if (record.uses !== undefined) return true;
     if (!Array.isArray(record.steps)) return true;

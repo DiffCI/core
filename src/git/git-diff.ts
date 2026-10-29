@@ -576,7 +576,10 @@ export async function analyzeGitDelta(
     // import them, or falls back. Both files must agree: a manifest dependency change without a
     // matching lockfile change stays global.
     const changedLockfile = filesWithBinary.find((f) => f.path === "package-lock.json" && f.changeType === "modified");
-    const dependencyEdit = packageChange?.kind === "dependencies" || (!changedPackageJson && analysis.lockfileChanged);
+    // A lockfile change is attributed the same way whether the manifest changed dependencies, only data
+    // such as `version` (the root entry mirrors it; 2026-10-29: every release sync fell back on it), or
+    // nothing at all. A behavioral manifest change stays global.
+    const dependencyEdit = analysis.lockfileChanged && (!packageChange || packageChange.kind !== "behavioral");
     const onlyNpmLock = (analysis.signalPaths?.lockfile ?? []).every((p) => p === "package-lock.json");
     if (dependencyEdit && changedLockfile && onlyNpmLock) {
       const manifests = [oldPackageJson, newPackageJson].map((content) => { try { return JSON.parse(content ?? "") as Record<string, unknown>; } catch { return undefined; } });
@@ -599,7 +602,7 @@ export async function analyzeGitDelta(
         narrowed.add(changedLockfile);
         if (changedPackageJson) {
           narrowed.add(changedPackageJson);
-          referenceResolvedPaths.push("package.json");
+          if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
           if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
         }
       }

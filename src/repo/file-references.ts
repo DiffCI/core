@@ -142,6 +142,9 @@ export interface ReferenceResolutionInput {
   /** Changed files whose content analyzeGitDelta proved cannot change how tests run
    * (GitDeltaAnalysis.referenceResolvedPaths); a workflow reading them does not block. */
   contentCleared?: ReadonlySet<string>;
+  /** No code in the repository runs a Worker (suiteMayRunWorkers is false), so a wrangler config with
+   * no reader is outside the suite. */
+  workerConfigsOutsideSuite?: boolean;
   /** Treat a reader that tooling loads implicitly (wrangler config, Dockerfile, `*.config.*`) as
    * unresolvable. Used for code: such a reader can run the file without anything naming it. */
   implicitReadersUnresolvable?: boolean;
@@ -277,7 +280,41 @@ function loadsWithoutNaming(path: string): boolean {
   return RUNS_FILES_WITHOUT_NAMING.test(posix.basename(path));
 }
 
-const ENV_TEMPLATE = /^\.env(?:\.[^.]+)*\.(?:example|sample|template|dist)$|^env\.(?:example|sample|template)$/i;
+/** A Cloudflare Workers deployment config (`wrangler.toml`, `wrangler.product.jsonc`). */
+export function isWorkerConfig(filePath: string): boolean {
+  return /^wrangler(?:\.[^./]+)?\.(?:toml|json|jsonc)$/i.test(posix.basename(filePath));
+}
+
+const RUNS_WORKER = /unstable_dev|unstable_startWorker|\bminiflare\b|getPlatformProxy|vitest-pool-workers|\b(?:spawn|exec|execFile|execa|fork)(?:Sync)?\([^)]{0,80}["'`](?:npx\s+)?wrangler\b|["'`]wrangler["'`]\s*,\s*\[/i;
+
+/**
+ * Whether anything in the repository may run a Worker during tests (2026-10-29). Tooling loads a
+ * wrangler config without code naming it, but only when wrangler, Miniflare or the Workers test pool
+ * runs. If no code file and no test-closure script does, a test can only observe the config by reading
+ * it by name - which the reference resolver handles - so the config need not force full validation.
+ * Deliberately repository-wide rather than limited to tests' imports: a test helper may spawn wrangler.
+ * Missing contents or an unparseable manifest answer true.
+ */
+export function suiteMayRunWorkers(files: readonly string[], read: (path: string) => string | undefined, isCodeFile: (path: string) => boolean): boolean {
+  const manifest = read("package.json");
+  if (manifest === undefined) return true;
+  let scripts: Record<string, string>;
+  try {
+    const parsed = (JSON.parse(manifest) as { scripts?: unknown }).scripts ?? {};
+    if (!parsed || typeof parsed !== "object") return true;
+    scripts = Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  } catch {
+    return true;
+  }
+  if ([...testScriptClosure(scripts)].some((name) => /\b(?:wrangler|miniflare)\b/i.test(scripts[name] ?? ""))) return true;
+  return files.some((path) => {
+    if (!isCodeFile(path) && !/\.config\.[cm]?[jt]s$/.test(path)) return false;
+    const content = read(path);
+    return content === undefined || RUNS_WORKER.test(content);
+  });
+}
+
+const ENV_TEMPLATE =/^\.env(?:\.[^.]+)*\.(?:example|sample|template|dist)$|^env\.(?:example|sample|template)$/i;
 /** Packages that load `.env.example` without being told its name. */
 const IMPLICIT_ENV_TEMPLATE_LOADERS = /["'](?:dotenv-safe|dotenv-extended|dotenv-mono)["']/;
 
@@ -292,6 +329,7 @@ const IMPLICIT_ENV_TEMPLATE_LOADERS = /["'](?:dotenv-safe|dotenv-extended|dotenv
  */
 function loadedOnlyOutsideTests(filePath: string, input: ReferenceResolutionInput, read: (path: string) => string | undefined): boolean {
   if (/^\.github\/workflows\/[^/]+\.ya?ml$/.test(filePath)) return input.contentCleared?.has(filePath) === true;
+  if (isWorkerConfig(filePath)) return input.workerConfigsOutsideSuite === true;
   if (!ENV_TEMPLATE.test(posix.basename(filePath))) return false;
   const manifest = read("package.json");
   return manifest !== undefined && !IMPLICIT_ENV_TEMPLATE_LOADERS.test(manifest);
