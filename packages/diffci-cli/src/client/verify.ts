@@ -6,6 +6,7 @@ import { batchCommand, measureCommands } from "./command-batches.js";
 import { compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
+import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
 import type { CommandMeasurement } from "./verify-savings.js";
@@ -38,6 +39,9 @@ export interface VerificationReport {
   /** The parts `command` was run as, when one invocation would exceed the shell's command-line limit. */
   commands?: string[];
   execution?: CommandMeasurement;
+  /** The rest of the repository's gate (lint, typecheck, check scripts), run before the tests. When one
+   * fails, the tests do not run and `execution` is that check's run (2026-10-29). */
+  checks?: CheckResult[];
   commit_range?: {
     base_sha: string;
     head_sha: string;
@@ -80,6 +84,8 @@ interface VerifyOptions {
   redactPaths?: boolean;
   /** Rerun a failed verification at the base commit to tell new failures from existing ones. */
   baselineOnFailure?: boolean;
+  /** Run only the tests, not the gate's other checks (`--no-checks`). */
+  skipChecks?: boolean;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -228,7 +234,14 @@ async function executeWithPolicy(
     return blocked(before, scope, `no executable verification command is available: ${inferred.reason}`, analysis, counts, boundRange);
   }
 
-  const execution = measureCommands(commands, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
+  // The gate's other checks run first and stop at the first failure, as `npm run check && npm test` would:
+  // these are the failures agents met only after push (docs/design/pipeline-impact.md).
+  const checkRun = options.skipChecks ? undefined : runChecks(plannedChecks(options.repoPath), { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
+  const checks = checkRun?.results.length ? checkRun.results : undefined;
+  const failedCheck = checkRun?.failure?.check;
+  const execution = checkRun?.failure
+    ? checkRun.failure.measurement
+    : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes });
   let after: WorkingTreeSnapshot;
   try {
     after = captureWorkingTreeSnapshot(options.repoPath);
@@ -240,21 +253,24 @@ async function executeWithPolicy(
       command,
       ...(commands.length > 1 ? { commands } : {}),
       execution,
+      ...(checks ? { checks } : {}),
     };
   }
 
   const unchanged = before.baseSha === after.baseSha && before.treeSha === after.treeSha;
-  const succeeded = execution.exitCode === 0 && !execution.timedOut;
+  const succeeded = !failedCheck && execution.exitCode === 0 && !execution.timedOut;
   const verification: VerificationStatus = !unchanged ? "blocked" : succeeded ? "passed" : "failed";
   const finalReason = !unchanged
     ? "the working tree changed while verification was running; rerun DiffCI for the new snapshot"
     : succeeded
-      ? reason
+      ? checks ? `${reason}; ran ${checks.length} gate check(s) first` : reason
+      : failedCheck
+        ? `gate check ${failedCheck.id} ${failedCheck.status === "timed_out" ? "timed out" : `failed with exit code ${String(failedCheck.exit_code)}`}; tests were not run (${failedCheck.command})`
       : execution.timedOut
         ? `verification timed out after ${options.timeoutMs}ms`
         : `verification command failed with exit code ${String(execution.exitCode)}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
-  const failureBaseline = verification === "failed" && !execution.timedOut && options.baselineOnFailure && baselineSha
+  const failureBaseline = verification === "failed" && !failedCheck && !execution.timedOut && options.baselineOnFailure && baselineSha
     ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
     : undefined;
   const baselineNote = failureBaseline && failureBaseline.status !== "unknown"
@@ -275,6 +291,7 @@ async function executeWithPolicy(
     command,
     ...(commands.length > 1 ? { commands } : {}),
     execution,
+    ...(checks ? { checks } : {}),
     snapshot: {
       ...baseReport(before, scope, boundRange).snapshot,
       after_base_sha: after.baseSha,
@@ -405,6 +422,7 @@ export function formatVerificationSummary(report: VerificationReport): string {
     `  snapshot: ${report.snapshot.before_tree_sha.slice(0, 12)} (${report.snapshot.unchanged ? "unchanged" : "not confirmed"})`,
   ];
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
+  if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}`).join(", ")}`);
   if (report.command) lines.push(`  command: ${report.command}`);
   if (report.enforcement) {
     const fired = report.enforcement.fired_fallback;

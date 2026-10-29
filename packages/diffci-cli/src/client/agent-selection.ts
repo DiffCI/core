@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { observe } from "./observe.js";
+import { plannedChecks } from "./gate-checks.js";
 import { executableSelection } from "./verify.js";
 import { captureWorkingTreeSnapshot, type WorkingTreeSnapshot } from "./working-tree.js";
 
@@ -54,6 +55,7 @@ export async function agentSelection(repoInput: string) {
     }
   }
   const ready = unchanged && (!before.changed || Boolean(command));
+  const checks = ready && before.changed ? plannedChecks(repoPath) : [];
   return {
     schema: "diffci.agent-selection.v1", scope: "working-tree",
     status: ready ? "planned" : "blocked", tests_executed: false,
@@ -65,6 +67,8 @@ export async function agentSelection(repoInput: string) {
     command: ready ? command : undefined,
     // Run these one after another when present: the joined command exceeds the shell's limit.
     ...(ready && commands.length > 1 ? { commands } : {}),
+    // The rest of the repository's gate (lint, typecheck, check scripts), to run before the tests.
+    checks,
     reason: unchanged ? reason : "working tree changed during analysis; reanalyze",
     fallback_reasons: result?.fallbackReasons ?? [],
     analysis_status: observation?.status ?? "not_needed",
@@ -86,8 +90,11 @@ export function selectionInstruction(plan: AgentSelectionPlan): string {
   const scope = plan.selection === "selected"
     ? `DiffCI selected ${plan.tests_selected} of ${plan.tests_available} test files`
     : `DiffCI requires the full suite (${plan.reason})`;
-  const run = plan.commands && plan.commands.length > 1
-    ? `Run these commands in order, exactly as given:\n${plan.commands.join("\n")}`
-    : `Run exactly:\n${plan.command}`;
-  return `${scope}. ${run}\nDo not substitute your own test files or the full suite.`;
+  const testCommands = plan.commands && plan.commands.length > 1 ? plan.commands : [plan.command];
+  const all = [...plan.checks.map((check) => check.command), ...testCommands];
+  const gate = plan.checks.length ? ` The repository's gate also runs ${plan.checks.length} check(s) (${plan.checks.map((check) => check.id).join(", ")}); run them first.` : "";
+  const run = all.length > 1
+    ? `Run these commands in order, exactly as given:\n${all.join("\n")}`
+    : `Run exactly:\n${all[0]}`;
+  return `${scope}.${gate} ${run}\nDo not substitute your own test files, checks or the full suite.`;
 }

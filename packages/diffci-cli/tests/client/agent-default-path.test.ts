@@ -63,9 +63,9 @@ test("blocks a push when verification fails, and lets it through when DiffCI can
 test("the MCP selection leads with the one exact command to run", () => {
   const plan = {
     status: "planned", selection: "selected", tests_selected: 3, tests_available: 580,
-    command: "npx tsx --test src/a.test.ts", reason: "dependency impact",
+    command: "npx tsx --test src/a.test.ts", reason: "dependency impact", checks: [],
   } as unknown as AgentSelectionPlan;
-  assert.equal(selectionInstruction(plan), "DiffCI selected 3 of 580 test files. Run exactly:\nnpx tsx --test src/a.test.ts\nDo not substitute your own test files or the full suite.");
+  assert.equal(selectionInstruction(plan), "DiffCI selected 3 of 580 test files. Run exactly:\nnpx tsx --test src/a.test.ts\nDo not substitute your own test files, checks or the full suite.");
   const full = { ...plan, selection: "full", command: "npm test", reason: "full verification required: Lockfile changed" } as unknown as AgentSelectionPlan;
   assert.match(selectionInstruction(full), /^DiffCI requires the full suite \(full verification required: Lockfile changed\)\. Run exactly:\nnpm test/);
   const blocked = { ...plan, status: "blocked", reason: "working tree changed during analysis; reanalyze" } as unknown as AgentSelectionPlan;

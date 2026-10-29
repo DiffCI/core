@@ -351,6 +351,8 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     tailBytes: numberFlag(flags, "tail-bytes") ?? 12_000,
     redactPaths: flags["redact-paths"] === true,
     baselineOnFailure: flags["baseline-on-failure"] === true || env.DIFFCI_BASELINE_ON_FAILURE === "1",
+    // Gate checks are for before push; in CI the repository's own check jobs already run them.
+    skipChecks: flags["no-checks"] === true || env.DIFFCI_CHECKS === "0" || (Boolean(env.CI) && env.CI !== "false" && flags.checks !== true),
   };
   const report = changed
     ? await verifyChanged(common)
@@ -937,7 +939,8 @@ Usage:
   diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--hook] [--force]
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
-                [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--share-usage] [--no-send]
+                [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
+                [--share-usage] [--no-send]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -968,6 +971,8 @@ when verification fails (git push --no-verify skips it; DIFFCI_HOOK_STRICT=1 als
 mcp runs the stdio MCP server for native agent integrations.
 verify --changed snapshots staged, unstaged, and non-ignored untracked changes, runs the minimum
 executable verification (or full fallback), and exits zero only when that exact snapshot passes.
+verify first runs the rest of the repository's gate (the check script's lint, typecheck and check-script
+leaves) and stops at the first failure; --no-checks skips them, and they are skipped in CI unless --checks.
 verify without --changed resolves the CI event range (or HEAD^..HEAD locally), requires a clean checkout,
 and exits zero only when the analyzed head is the commit that actually passed verification.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
