@@ -1,6 +1,6 @@
 {
   "name": "@diffci.com/diffci",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "description": "Fail-closed, change-aware verification for AI coding agents with conservative affected-test selection",
   "keywords": [
     "ci",
@@ -59,7 +59,7 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#909d79d40e0c3d813c80dcad21b8cefcc2c55674",
+    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#6c386206479ebe1b22f5b698a0e2c9cea8df4d51",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
