@@ -141,6 +141,7 @@
     "src/repo/impact-types.ts",
     "src/repo/impact.ts",
     "src/repo/layout.ts",
+    "src/repo/lockfiles.ts",
     "src/repo/repo-config.ts",
     "src/repo/runner-universe.ts",
     "src/repo/script-universe.ts",

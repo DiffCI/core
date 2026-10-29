@@ -28,6 +28,7 @@
  */
 
 import { posix } from "node:path";
+import { LOCKFILE } from "../repo/lockfiles.js";
 import type { GateCheck } from "./pipeline-steps.js";
 import { decideScriptCheck } from "./script-reads.js";
 import { programMembership, tscProject, type RootTextCache } from "./type-program.js";
@@ -52,7 +53,6 @@ const MAX_FILES = 100;
 const MAX_COMMAND = 6000;
 const SAFE_PATH = /^[\w./@+-]+$/;
 const CODE = /\.(?:[cm]?[jt]sx?|vue|svelte|astro|json5?|d\.ts)$/;
-const LOCKFILE = /^(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
 
 const ESLINT_CONFIG = /^(?:eslint\.config\.[cm]?[jt]s|\.eslintrc(?:\.(?:js|cjs|json|ya?ml))?|\.eslintignore)$/;
 const PRETTIER_CONFIG = /^(?:\.prettierrc(?:\.(?:json5?|ya?ml|toml|[cm]?[jt]s))?|prettier\.config\.[cm]?[jt]s|\.prettierignore|\.editorconfig)$/;
