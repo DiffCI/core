@@ -236,7 +236,10 @@ async function executeWithPolicy(
 
   // The gate's other checks run first and stop at the first failure, as `npm run check && npm test` would:
   // these are the failures agents met only after push (docs/design/pipeline-impact.md).
-  const checkRun = options.skipChecks ? undefined : runChecks(plannedChecks(options.repoPath), { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
+  const checkBase = scope === "commit-range" ? range?.baseSha : before.baseSha;
+  const checkHead = scope === "commit-range" ? range?.headSha : before.commitSha;
+  const planned = options.skipChecks ? [] : plannedChecks(options.repoPath, checkBase && checkHead ? { baseSha: checkBase, headSha: checkHead } : undefined);
+  const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
   const checks = checkRun?.results.length ? checkRun.results : undefined;
   const failedCheck = checkRun?.failure?.check;
   const execution = checkRun?.failure
@@ -263,7 +266,7 @@ async function executeWithPolicy(
   const finalReason = !unchanged
     ? "the working tree changed while verification was running; rerun DiffCI for the new snapshot"
     : succeeded
-      ? checks ? `${reason}; ran ${checks.length} gate check(s) first` : reason
+      ? checks ? `${reason}; ${checkSummary(checks)}` : reason
       : failedCheck
         ? `gate check ${failedCheck.id} ${failedCheck.status === "timed_out" ? "timed out" : `failed with exit code ${String(failedCheck.exit_code)}`}; tests were not run (${failedCheck.command})`
       : execution.timedOut
@@ -404,6 +407,13 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+function checkSummary(checks: readonly CheckResult[]): string {
+  const ran = checks.filter((check) => check.status === "passed").length;
+  const narrowed = checks.filter((check) => check.status === "passed" && check.decision === "NARROWED").length;
+  const skipped = checks.length - ran;
+  return `ran ${ran} gate check(s) first${narrowed ? ` (${narrowed} narrowed to changed files)` : ""}${skipped ? `, skipped ${skipped} the change does not affect` : ""}`;
 }
 
 export function verificationExitCode(report: VerificationReport): number {

@@ -55,7 +55,8 @@ export async function agentSelection(repoInput: string) {
     }
   }
   const ready = unchanged && (!before.changed || Boolean(command));
-  const checks = ready && before.changed ? plannedChecks(repoPath) : [];
+  const planned = ready && before.changed ? plannedChecks(repoPath, { baseSha: before.baseSha, headSha: before.commitSha }) : [];
+  const checks = planned.filter((check) => check.decision !== "SKIP");
   return {
     schema: "diffci.agent-selection.v1", scope: "working-tree",
     status: ready ? "planned" : "blocked", tests_executed: false,
@@ -69,6 +70,7 @@ export async function agentSelection(repoInput: string) {
     ...(ready && commands.length > 1 ? { commands } : {}),
     // The rest of the repository's gate (lint, typecheck, check scripts), to run before the tests.
     checks,
+    skipped_checks: planned.filter((check) => check.decision === "SKIP").map(({ id, reason }) => ({ id, reason })),
     reason: unchanged ? reason : "working tree changed during analysis; reanalyze",
     fallback_reasons: result?.fallbackReasons ?? [],
     analysis_status: observation?.status ?? "not_needed",
@@ -92,7 +94,8 @@ export function selectionInstruction(plan: AgentSelectionPlan): string {
     : `DiffCI requires the full suite (${plan.reason})`;
   const testCommands = plan.commands && plan.commands.length > 1 ? plan.commands : [plan.command];
   const all = [...plan.checks.map((check) => check.command), ...testCommands];
-  const gate = plan.checks.length ? ` The repository's gate also runs ${plan.checks.length} check(s) (${plan.checks.map((check) => check.id).join(", ")}); run them first.` : "";
+  const skipped = plan.skipped_checks?.length ? ` ${plan.skipped_checks.length} other gate check(s) are not affected by this change.` : "";
+  const gate = plan.checks.length ? ` The repository's gate also runs ${plan.checks.length} check(s) (${plan.checks.map((check) => check.id).join(", ")}); run them first.${skipped}` : skipped;
   const run = all.length > 1
     ? `Run these commands in order, exactly as given:\n${all.join("\n")}`
     : `Run exactly:\n${all[0]}`;
