@@ -39,13 +39,17 @@ const MAX_READ_BYTES = 1_048_576;
 
 /** Reads repo-relative text files from a checkout at HEAD, the same tree the dependency graph reads.
  * Binary content (a NUL byte in the first 8 KiB) and files over 1 MiB are unreadable. */
+const TEXT_EXTENSIONS = /\.(?:[cm]?[jt]sx?|vue|go|java|kt|py|rb|sh|json|jsonc|ya?ml|toml|md|mdx|html?|css|sql|txt)$/i;
+
 export function repositoryFileReader(repoPath: string): (path: string) => string | undefined {
   return (path) => {
     try {
       const full = join(repoPath, path);
       if (statSync(full).size > MAX_READ_BYTES) return undefined;
       const bytes = readFileSync(full);
-      if (bytes.subarray(0, 8192).includes(0)) return undefined;
+      // Source and text files are text even when they contain a stray NUL (a separator literal): treating
+      // one as binary hid it as a reader and made suiteMayRunWorkers fail closed (2026-10-29).
+      if (!TEXT_EXTENSIONS.test(path) && bytes.subarray(0, 8192).includes(0)) return undefined;
       return bytes.toString("utf8");
     } catch {
       return undefined;

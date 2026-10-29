@@ -193,6 +193,8 @@ describe("workflowMayRunTests", () => {
     assert.equal(workflowMayRunTests(wf("      - uses: DiffCI/core@v1\n")), false);
     assert.equal(workflowMayRunTests(wf("      - run: npx --yes --package \"@diffci.com/diffci@0.3.16\" diffci observe --no-send\n")), false);
     assert.equal(workflowMayRunTests(wf("      - run: |\n          \"${RUNNER_TEMP}/diffci/node_modules/.bin/diffci\" observe\n")), false);
+    // A directory named diffci is not an invocation.
+    assert.equal(workflowMayRunTests(wf("      - run: |\n          npm install --prefix \"${RUNNER_TEMP}/diffci\" \\\n            --ignore-scripts --no-audit \"${RUNNER_TEMP}/diffci-package/diffci.com-diffci-1.0.0.tgz\"\n")), false);
     // A job disabled with a literal false never runs.
     assert.equal(workflowMayRunTests("on: push\njobs:\n  old:\n    if: ${{ false }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n"), false);
   });

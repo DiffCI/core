@@ -34,12 +34,15 @@ const NON_TEST_ACTIONS = [
  * 60 of 65 workflow-triggered fallbacks in one dogfood repository's telemetry). */
 const DIFFCI_NON_TEST_COMMAND = /\bdiffci["']?(?:\s+--?[\w-]+(?:=\S+)?)*\s+(?:observe|init|version|telemetry|pilot-packet|verify-workflow|validate-specs|mcp)\b/g;
 
+/** `diffci` invoked with a subcommand still present after removing the non-test ones. */
+const DIFFCI_COMMAND = /\bdiffci["']?(?:\s+--?[\w-]+(?:=\S+)?)*\s+[a-z][\w-]*/;
+
 /** A job whose `if` is the literal false never runs (a retired workflow kept for its history). */
 function jobDisabled(job: object): boolean {
   const condition = (job as { if?: unknown }).if;
   return condition === false || (typeof condition === "string" && /^\s*(?:\$\{\{\s*)?false(?:\s*\}\})?\s*$/.test(condition));
 }
-const TEST_RUNNERS = /(?:^|[\s/"'`(;&|])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine|pytest|tox|nox|phpunit|rspec|diffci|ctest)(?=$|[\s"'`);&|])|(?:node|tsx|bun|deno)(?:\s+--?[\w-]+(?:=\S+)?)*\s+--?test\b|\b(?:go|cargo|dotnet|swift|mix|zig)\s+test\b|\b(?:mvn|mvnw|gradle|gradlew|sbt|bazel|make|just)\b/;
+const TEST_RUNNERS = /(?:^|[\s/"'`(;&|])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine|pytest|tox|nox|phpunit|rspec|ctest)(?=$|[\s"'`);&|])|(?:node|tsx|bun|deno)(?:\s+--?[\w-]+(?:=\S+)?)*\s+--?test\b|\b(?:go|cargo|dotnet|swift|mix|zig)\s+test\b|\b(?:mvn|mvnw|gradle|gradlew|sbt|bazel|make|just)\b/;
 const PACKAGE_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:(?:run|run-script|-w\s+\S+|--workspace[= ]\S+|--prefix[= ]\S+|--if-present|-r|--recursive|--silent|-s)\s+)*([\w:.-]+)/g;
 const INTERPRETER_FILE = /\b(?:node|tsx|ts-node|bash|sh|zsh|pwsh|powershell|python3?|ruby|perl|deno\s+run|bun(?:\s+run)?|npx\s+(?:--\S+\s+)*tsx)\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*\.{0,2}\/?[\w./-]+\.(?:m?[jt]s|c[jt]s|sh|ps1|py|rb|pl)\b|(?:^|[\s;&|])\.{1,2}\/[\w./-]+/;
 const PACKAGE_MANAGER_BUILTINS = new Set(["ci", "install", "i", "add", "remove", "uninstall", "publish", "pack", "version", "view", "info", "whoami", "login", "config", "cache", "audit", "outdated", "ls", "list", "exec", "dlx", "init", "create", "link", "prune", "dedupe", "rebuild", "set-script", "pkg", "fund", "doctor", "help", "--version", "-v"]);
@@ -48,6 +51,9 @@ const PACKAGE_MANAGER_BUILTINS = new Set(["ci", "install", "i", "add", "remove",
  * repository file also counts, because that file may run tests itself. */
 function commandRunsTests(text: string, scripts: Readonly<Record<string, string>>, seen: Set<string> = new Set(), strict = false): boolean {
   text = text.replace(DIFFCI_NON_TEST_COMMAND, " ");
+  // `diffci` runs tests only as a command with a remaining subcommand (verify, check, pilot, ...); as a
+  // path segment (`--prefix "$RUNNER_TEMP/diffci"`) it runs nothing.
+  if (DIFFCI_COMMAND.test(text)) return true;
   if (TEST_RUNNERS.test(text) || (!strict && INTERPRETER_FILE.test(text))) return true;
   for (const match of text.matchAll(PACKAGE_SCRIPT)) {
     const name = match[1] ?? "";

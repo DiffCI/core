@@ -91,6 +91,20 @@ describe("word-level naming", () => {
   });
 });
 
+describe("repositoryFileReader", () => {
+  it("reads a source file that contains a NUL byte, but not a binary asset", () => {
+    const dir = join(tmpdir(), `diffci-nul-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      writeFileSync(join(dir, "split.ts"), "export const SEPARATOR = \"\0\";\n");
+      writeFileSync(join(dir, "image.png"), Buffer.from([0x89, 0x50, 0x00, 0x47]));
+      const read = repositoryFileReader(dir);
+      assert.equal(read("split.ts"), "export const SEPARATOR = \"\0\";\n");
+      assert.equal(read("image.png"), undefined);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe("test-script phases", () => {
   function input(files: Record<string, string>, testPhases: boolean): ReferenceResolutionInput {
     return {
