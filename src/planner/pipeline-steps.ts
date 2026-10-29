@@ -17,8 +17,8 @@
  *
  * FAILING CLOSED. A script whose body cannot be split safely (`||`, pipes, redirects, subshells, variables,
  * environment assignments, unknown arguments) stays one leaf, run as `npm run <script>`, so it runs exactly
- * as the gate would. Leaves that run a test runner are left to test selection. Every leaf is RUN: nothing is
- * narrowed or skipped yet (slices 2-4 in the design).
+ * as the gate would. Leaves that run a test runner are left to test selection. Every leaf discovered here is
+ * RUN; check-narrowing.ts narrows or skips some of them for a given change.
  */
 
 import { parse } from "yaml";
@@ -33,10 +33,12 @@ export interface GateCheck {
   /** True: run the whole script (`npm run <script>`, which also runs its hooks). False: `command` is one
    * part of the script's body, run on its own. */
   runsScript: boolean;
-  /** The leaf as written: the script body when `runsScript`, otherwise the part. */
+  /** The leaf as written: the script body when `runsScript`, otherwise the part. A NARROWED check's
+   * command is the narrowed one. */
   command: string;
   kind: GateCheckKind;
-  decision: "RUN";
+  /** RUN as written, NARROWED to the changed files (`command` rewritten), or SKIP for this change. */
+  decision: "RUN" | "NARROWED" | "SKIP";
   reason: string;
 }
 

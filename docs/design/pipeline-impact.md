@@ -117,7 +117,13 @@ Slices, in order:
    that a CI workflow runs: DentalPresence's architecture rule is in `validate:release`, which only
    the staging deploy workflow calls. `verify` runs the checks before the tests and stops at the first
    failure; `--no-checks` skips them, and so does CI unless `--checks` is passed.
-2. Narrow per-file lint to the changed files.
+2. Narrow per-file lint to the changed files. **Implemented 2026-10-29**
+   (`src/planner/check-narrowing.ts`): `eslint` and `prettier --check` leaves with only known flags run
+   on the changed files they cover, or are skipped when they cover none. Config, ignore-file,
+   config-referenced, `package.json` and lockfile changes run the whole check. Type-aware, import-plugin
+   or nested ESLint configs make lint whole-program: it runs whenever a code file changed. On the last
+   40 DentalPresence commits that is 39 runs and 1 skip, because its lint is type-aware; slice 4's
+   program membership is what would skip more there.
 3. Repository-script `reads` model (inverse of `file-references.ts`).
 4. Skip typecheck and build when no changed file is in the program or the build closure.
 
