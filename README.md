@@ -2,9 +2,24 @@
 
 [![DiffCI MCP server](https://mcprush.com/badge/diffci-mcp/card.svg)](https://mcprush.com/to/diffci-mcp?ref=badge)
 
-**Open-source test-impact analysis for faster CI.** For developers and maintainers evaluating which tests a change affects, with conservative full-run fallbacks. Licensed under the MIT License.
+**Affected checks before push, for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, so they run before the push instead of failing at the full CI gate afterwards. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
 
-## Coding-agent plugins
+```sh
+npx "@diffci.com/diffci@latest" check
+```
+
+Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/using-diffci.md).
+
+## Why
+
+Coding agents pass the narrow check they picked and miss wider breakage, then rerun the whole suite when they are unsure. We measured this on our own agent-built production app (about 1,100 commits in two months, most of them co-authored by Claude):
+
+- **104 pushes failed the full gates after push.** Each passed whatever the agent ran locally.
+- **Agents chose their own test files 928 times and ran the full suite 282 times**, but asked a tool which tests were affected only 24 times.
+- **When DiffCI could narrow the run, it selected 2.2% of test files**, cutting test time by 93%. None of those commits had a failing test, so this shows speed, not regression catching.
+- **DiffCI still fell back to the full suite on 58% of commits**, mostly because a config file or `package.json` changed. Narrowing those safely is the main open problem, and [a good place to contribute](#contributing).
+
+## Use it from your coding agent
 
 The public [`integrations/agent-plugin`](integrations/agent-plugin) package
 makes the published DiffCI CLI available as a checkout-aware local MCP plugin.
@@ -41,13 +56,7 @@ The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/4c76be14c
 remains publicly available at tagged Core commit `4c76be14` (`cli-v0.3.10-source`)
 while distribution migrates to the Core-native CLI package.
 
-Try the published CLI in an existing Git checkout with Git and Node.js 22.5+:
-
-```sh
-npx "@diffci.com/diffci@latest" check
-```
-
-It compares full and selected runtime when safe to measure, writes reports outside the checkout, and sends nothing by default. Test commands can generate files; keep required CI authoritative.
+`diffci check` compares full and selected runtime when safe to measure, writes reports outside the checkout, and sends nothing by default. Test commands can generate files; keep required CI authoritative.
 
 **Measured example:** one controlled Cal.com sandbox replay measured **44.2% net reduction** in install + pretest + test runtime including analysis overhead. This is a job-equivalent comparison, not production savings or a forecast for your repository. [Method and limitations](https://diffci.com/case-studies/calcom).
 
@@ -153,7 +162,11 @@ Sponsors' bug reports are labelled [`sponsor`](https://github.com/DiffCI/core/la
 
 Only the explicitly extracted Core files and standalone tooling are in this repository. There is no private monorepo history, customer data, deployment configuration or Cloud implementation here. Core is usable independently; it is not a promise that the private product has already migrated to consume this package.
 
-## License and contributions
+## Contributing
+
+Most open work is teaching DiffCI to narrow changes it currently treats as "run everything": config files, `package.json` edits and lockfiles. Each case is small and comes with a synthetic fixture, so you don't need to learn the whole engine. Pick a [good first issue](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22) and see [CONTRIBUTING.md](CONTRIBUTING.md); a dev container is included.
+
+## License
 
 See [LICENSE](LICENSE), [NOTICE](NOTICE) and [CONTRIBUTING.md](CONTRIBUTING.md). Releases before the MIT switch were published under AGPL-3.0-only and are now also available under MIT; see [LICENSE-HISTORY.md](LICENSE-HISTORY.md). Grant eligibility depends on the particular grant agreement. No eligibility or legal separation is guaranteed by this repository layout.
 
