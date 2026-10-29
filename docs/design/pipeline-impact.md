@@ -124,7 +124,14 @@ Slices, in order:
    or nested ESLint configs make lint whole-program: it runs whenever a code file changed. On the last
    40 DentalPresence commits that is 39 runs and 1 skip, because its lint is type-aware; slice 4's
    program membership is what would skip more there.
-3. Repository-script `reads` model (inverse of `file-references.ts`).
+3. Repository-script `reads` model (inverse of `file-references.ts`). **Implemented 2026-10-29**
+   (`src/planner/script-reads.ts`): a `node`/`tsx`/`bun` check reads every tracked path its import
+   closure or command line names (string literals and template heads, read with the TypeScript
+   parser), and runs only when a changed file is in its closure, under a named path, or has a named
+   basename. Spawning programs, walking the root, root globs, environment paths, path aliases and
+   computed imports run it for any change. Replaying the last 60 DentalPresence commits keeps 814 of
+   960 check runs (15% skipped); the `5e13bcd2` architecture check still runs. The replay used the
+   current scripts, not each commit's.
 4. Skip typecheck and build when no changed file is in the program or the build closure.
 
 Measure: replay DentalPresence's 104 gate failures; the failing step must be in the selected set

@@ -27,6 +27,7 @@
 
 import { posix } from "node:path";
 import type { GateCheck } from "./pipeline-steps.js";
+import { decideScriptCheck } from "./script-reads.js";
 
 export interface ChangedPath {
   path: string;
@@ -227,9 +228,10 @@ function decide(check: GateCheck, input: NarrowingInput): GateCheck {
   return { ...check, runsScript: false, command, decision: "NARROWED", reason: `${files.length} changed file(s) in ${targets.join(" ")}` };
 }
 
-/** Narrows or skips each lint and format check for this change; other checks are returned unchanged. */
+/** Narrows or skips each lint and format check, and runs or skips each repository-script check
+ * (script-reads.ts), for this change; other checks are returned unchanged. */
 export function narrowGateChecks(checks: readonly GateCheck[], input: NarrowingInput): GateCheck[] {
   // A whole-script leaf's command is the script body, so the same parse applies; a RUN keeps running the
   // script as written.
-  return checks.map((check) => decide(check, input));
+  return checks.map((check) => (check.kind === "script" ? decideScriptCheck(check, input) : decide(check, input)));
 }
