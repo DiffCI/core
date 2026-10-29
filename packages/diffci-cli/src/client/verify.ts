@@ -339,6 +339,7 @@ async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<Ver
       headOverride: before.commitSha,
       redactPaths: options.redactPaths,
       reportPath: join(temporaryDirectory, "observation.json"),
+      selectTestPhases: true,
     });
     return await executeObservation({ ...options, repoPath }, "working-tree", before, observation);
   } finally {
@@ -380,6 +381,7 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
       headOverride: options.headOverride,
       redactPaths: options.redactPaths,
       reportPath: join(temporaryDirectory, "observation.json"),
+      selectTestPhases: true,
     });
     return await executeObservation({ ...options, repoPath }, "commit-range", before, observation);
   } finally {
@@ -423,9 +425,18 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
   let selection: "selected" | "full";
   let command: string | undefined;
   let reason: string;
+  let primaryPhases: string[] = [];
   if (result.mode === "SELECTIVE" && !result.commandRefusalReason && result.proposedCommands.length === 1) {
     const selected = inferSelectedCommand(repoPath, result.proposedCommands[0]!, result.selectedTests);
-    if (selected.command) {
+    const phases = result.testPhases ?? [];
+    if (selected.command && phases.length) {
+      // The selection covers some changed files only through these test-script phases, so they run
+      // after the selected files, as the test script would run them (2026-10-28).
+      selection = "selected";
+      primaryPhases = phases.map(phaseCommand);
+      command = selected.command;
+      reason = `dependency impact; also ran ${phases.length} test-script phase(s) that read changed files: ${phases.join("; ")}`;
+    } else if (selected.command) {
       selection = "selected";
       command = selected.command;
       reason = "dependency impact";
@@ -465,7 +476,14 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
   // Each part stays within the shell's command-line limit (cmd.exe stops at 8,191 characters).
   const commands = command ? [
     ...batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : []),
+    ...primaryPhases,
     ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : []),
   ] : [];
   return { selection, command: commands.length ? commands.join(" && ") : command, commands, reason, outsideSuite };
+}
+
+/** A test-script phase as a standalone command. `npm test` puts `node_modules/.bin` on PATH; outside
+ * it a repository-local runner such as tsx is reached the way selected TypeScript tests are. */
+export function phaseCommand(phase: string): string {
+  return /^node\s/.test(phase) ? phase : `npx --no-install ${phase}`;
 }

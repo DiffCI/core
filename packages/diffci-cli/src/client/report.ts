@@ -206,6 +206,11 @@ export interface ObservationResult {
    * subset of the full suite; verification runs them with `outsideSuiteCommands`. */
   testsOutsideFullSuite?: string[];
   outsideSuiteCommands?: string[];
+  /** Phases of the test script, verbatim (`node scripts/test-security.js`), that a selective run must
+   * also execute: the selection covers some changed files only through them. Present only when the
+   * observation was asked for them (ObserveOptions.selectTestPhases). Like `proposedCommands`, these
+   * are commands and are not redacted. */
+  testPhases?: string[];
   fallbackReasons: string[];
   /** The command DiffCI would have run. Present even in observe mode - it is the claim being tested. */
   proposedCommands: string[];

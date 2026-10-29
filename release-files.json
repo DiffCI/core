@@ -210,6 +210,7 @@
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",
     "docs/design/affected-checks.md",
     "docs/research/2026-10-28-seeded-regression-plan.md",
-    "docs/research/2026-10-28-fallback-replay.md"
+    "docs/research/2026-10-28-fallback-replay.md",
+    "packages/diffci-cli/tests/client/test-phases.test.ts"
   ]
 }

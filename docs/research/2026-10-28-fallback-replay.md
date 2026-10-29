@@ -29,8 +29,11 @@ The tests no longer selected were reached only through a basename collision: a t
 The workflow's actual readers are still selected.
 
 Without phases, nearly every remaining fallback in this repository ends at that one test-script
-phase, which is why the rate barely moves. The CLI must run `ImpactResult.testPhases` before it
-can turn `selectTestPhases` on.
+phase, which is why the rate barely moves. `diffci verify` and the MCP selection request phases and
+run them after the selected test files; `check`, `observe` and enforce do not request them and keep
+the fallback. Checked end to end on `43231ce1` with this branch's engine overlaid on the CLI: 45 of
+579 test files plus `node scripts/test-security.js`, where v0.3.15 ran the full suite. The CLI picks
+this up once its bundled `@diffci.com/core` is bumped to a commit containing the engine change.
 
 ## Fallback reasons, by commit
 

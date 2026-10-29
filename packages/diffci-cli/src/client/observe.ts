@@ -67,6 +67,10 @@ export interface ObserveOptions {
   forceAnalysis?: boolean;
   /** Optional cache outside the checkout; graph resolution and selection remain fresh. */
   vueAnalysisCacheDir?: string;
+  /** Let the engine cover a file the test script runs directly by naming that phase
+   * (`result.testPhases`) instead of falling back. Only for callers that execute the phases with the
+   * selection - verification does; check, observe and enforce do not, so they keep the fallback. */
+  selectTestPhases?: boolean;
 }
 
 export function makeGitRunner(repoPath: string): GitRunner {
@@ -250,10 +254,15 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
     }
     const profile = graphResult.profile;
 
-    const impact = new ImpactAnalyzer().analyze(delta, graphResult, profile, {
+    // `selectTestPhases` and `testPhases` are newer than some bundled engines; an engine without them
+    // ignores the option and never returns phases, so it keeps falling back.
+    const analyzeOptions: Parameters<InstanceType<typeof ImpactAnalyzer>["analyze"]>[3] & { selectTestPhases?: boolean } = {
       repositoryFiles: deltaResult.inventory?.files,
       readRepositoryFile: repositoryFileReader(repoPath),
-    });
+      selectTestPhases: options.selectTestPhases === true,
+    };
+    const impact: ReturnType<InstanceType<typeof ImpactAnalyzer>["analyze"]> & { testPhases?: string[] } =
+      new ImpactAnalyzer().analyze(delta, graphResult, profile, analyzeOptions);
 
     const baseline = runPathBaseline(profile.testFilePaths, delta.files, profile);
 
@@ -283,6 +292,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
         } : {}),
         fallbackReasons: impact.fallbackReasons,
         proposedCommands: (commandPlan?.commands ?? []).map(commandSpecToString),
+        ...(impact.testPhases?.length ? { testPhases: [...impact.testPhases] } : {}),
         workspaceCommands: Boolean(profile.workspaceTestPackages?.length),
         goScope: profile.diffciConfig?.go?.scope,
         vueScope: profile.vueScope ? { packageRoot: hashPath(profile.vueScope.packageRoot), testConfig: hashPath(profile.vueScope.testConfig) } : undefined,

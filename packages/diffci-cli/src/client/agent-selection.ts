@@ -36,6 +36,8 @@ export async function agentSelection(repoInput: string) {
   const observation = before.changed ? await observe({
     repoPath, env: process.env, version: "agent-selection-v1",
     baseOverride: before.baseSha, headOverride: before.commitSha,
+    // The returned commands include any test-script phases (executableSelection).
+    selectTestPhases: true,
   }) : undefined;
   const result = observation?.result;
   const after = captureWorkingTreeSnapshot(repoPath);
