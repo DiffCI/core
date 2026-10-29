@@ -251,6 +251,7 @@ export class ImpactAnalyzer {
   private layout: RepositoryLayout = UNKNOWN_REPOSITORY_LAYOUT;
   private repositoryFiles: ReadonlySet<string> | undefined;
   private contentCleared: ReadonlySet<string> = new Set();
+  private dependencyLockfile: string | undefined;
   private readRepositoryFile: ((path: string) => string | undefined) | undefined;
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
@@ -290,6 +291,7 @@ export class ImpactAnalyzer {
     });
     const referenceResolved = new Set(delta.analysis.referenceResolvedPaths ?? []);
     this.contentCleared = referenceResolved;
+    this.dependencyLockfile = delta.analysis.dependencyLockfile;
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
@@ -499,20 +501,33 @@ export class ImpactAnalyzer {
     const packages = delta.analysis.changedDependencies;
     if (!packages || packages.length === 0) return;
     const { graph } = graphResult;
+    const yarnCandidates = delta.analysis.dependencyLockfile === "yarn.lock";
+    const changedFile = delta.analysis.dependencyLockfile ?? "package.json";
+    const dependencyChange = (name: string) => yarnCandidates
+      ? `Dependency ${name} may be affected by the Yarn lockfile change` : `Dependency ${name} changed`;
     const fail = (message: string) => {
-      riskSignals.push({ level: "critical", reason: "DEPENDENCY_MANIFEST", message, paths: ["package.json"] });
+      riskSignals.push({ level: "critical", reason: "DEPENDENCY_MANIFEST", message, paths: [changedFile] });
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
     };
     // Typecheck and build tasks still see a dependency change (planner globalRiskTriggers).
-    riskSignals.push({ level: "info", reason: "DEPENDENCY_MANIFEST", message: `Dependencies changed: ${packages.join(", ")}`, paths: ["package.json"] });
+    riskSignals.push({ level: "info", reason: "DEPENDENCY_MANIFEST", message: yarnCandidates
+      ? `Dependencies potentially affected by Yarn lockfile change: ${packages.join(", ")}`
+      : `Dependencies changed: ${packages.join(", ")}`, paths: [changedFile] });
     if (!this.repositoryFiles || !this.readRepositoryFile) {
-      fail(`Dependency change (${packages.join(", ")}) cannot be traced without repository contents; full validation required`);
+      fail(`${yarnCandidates ? "Potential dependency impact" : "Dependency change"} (${packages.join(", ")}) cannot be traced without repository contents; full validation required`);
       return;
     }
     const packageRoot = (specifier: string) => {
       const parts = specifier.split("/");
       return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
     };
+    if (yarnCandidates) {
+      // Classic can hoist transitive packages that repository code imports without declaring them.
+      // All-root widening covers peers, but cannot attribute these additional importers to a root.
+      const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
+        .map((ref) => packageRoot(ref.specifier)).filter((name) => !packages.includes(name)))].sort();
+      if (undeclared.length) fail(`Yarn lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
+    }
     const scripts = profile.packageJson.scripts;
     const closureBodies = [...testScriptClosure(scripts)].map((name) => scripts[name] ?? "");
     for (const name of packages) {
@@ -520,30 +535,30 @@ export class ImpactAnalyzer {
         .filter((ref) => ref.resolution === "external-package" && packageRoot(ref.specifier) === name)
         .map((ref) => ref.importer))].sort();
       if (importers.length === 0) {
-        fail(`Dependency ${name} changed and no repository source imports it; full validation required`);
+        fail(`${dependencyChange(name)} and no repository source imports it; full validation required`);
         continue;
       }
       const quoted = new RegExp(`["'\`]${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:/[^"'\`]*)?["'\`]`);
       const bare = new RegExp(`(?:^|[\\s"'=])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s"'/@])`);
       if (closureBodies.some((body) => bare.test(body))) {
-        fail(`Dependency ${name} changed and the test script runs it; full validation required`);
+        fail(`${dependencyChange(name)} and the test script runs it; full validation required`);
         continue;
       }
       const toolingReader = this.sortedRepositoryFiles.find((path) => isImplicitlyLoadedFile(path) && !isLockfile(path) && quoted.test(this.readRepositoryFile!(path) ?? ""));
       if (toolingReader) {
-        fail(`Dependency ${name} changed and ${toolingReader} loads it; full validation required`);
+        fail(`${dependencyChange(name)} and ${toolingReader} loads it; full validation required`);
         continue;
       }
       for (const importer of importers) {
-        evidence.push(makeEvidence("DEPENDENCY", "package.json", `${importer} imports changed dependency ${name}`, importer));
-        if (this.isTestFile(importer)) this.addAffectedTest("package.json", importer, graph, affectedTests, "DEPENDENCY", evidence);
+        evidence.push(makeEvidence("DEPENDENCY", changedFile, `${importer} imports ${yarnCandidates ? "potentially affected" : "changed"} dependency ${name}`, importer));
+        if (this.isTestFile(importer)) this.addAffectedTest(changedFile, importer, graph, affectedTests, "DEPENDENCY", evidence);
         this.processSourceChange(importer, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
       }
       // Code outside the graph that loads the package reaches the suite only if something runs it.
       for (const path of this.sortedRepositoryFiles) {
         if (!isSourceFilePath(path) || hasNode(graph, path) || !quoted.test(this.readRepositoryFile(path) ?? "")) continue;
         if (!this.resolveByReference(path, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) {
-          fail(`Dependency ${name} changed and ${path}, which loads it, is outside the dependency graph; full validation required`);
+          fail(`${dependencyChange(name)} and ${path}, which loads it, is outside the dependency graph; full validation required`);
           break;
         }
       }
@@ -571,6 +586,15 @@ export class ImpactAnalyzer {
       return;
     }
     const category = changedImpact.category;
+    if (changedPath === this.dependencyLockfile) {
+      // Dependency selection does not cover a test that reads the lockfile's bytes. Unlike general
+      // data, no reader is acceptable here because the package-manager effect was modeled already.
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true, implicitReadersUnresolvable: true })) return;
+      const message = `Lockfile readers could not be resolved: ${changedPath}; full validation required`;
+      riskSignals.push({ level: "critical", reason: "LOCKFILE_GLOBAL", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+      return;
+    }
     if (category === "test-fixture") {
       // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
       // degrades to the unknown-file fallback below rather than being silently dropped.
@@ -699,7 +723,7 @@ export class ImpactAnalyzer {
     affectedTests: Map<string, TestImpact>,
     affectedScripts: Map<string, ImpactEvidence[]>,
     evidence: ImpactEvidence[],
-    { implicitReadersUnresolvable = false }: { implicitReadersUnresolvable?: boolean } = {},
+    { implicitReadersUnresolvable = false, allowNoReaders = false }: { implicitReadersUnresolvable?: boolean; allowNoReaders?: boolean } = {},
   ): boolean {
     if (!this.repositoryFiles || !this.readRepositoryFile) return false;
     if (isImplicitlyLoadedFile(changedPath) && !(isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite())) return false;
@@ -715,6 +739,7 @@ export class ImpactAnalyzer {
       workflowFeedsTests: (content, names) => workflowFeedsTests(content, names, scripts),
       contentCleared: this.contentCleared,
       implicitReadersUnresolvable,
+      allowNoReaders,
       testPhases: this.selectTestPhases,
       workerConfigsOutsideSuite: this.workerConfigsOutsideSuite(),
     });
