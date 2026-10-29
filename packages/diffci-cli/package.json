@@ -59,7 +59,7 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#8d832eb5a0a56bf57847e6425bc313ea9e575f59",
+    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#909d79d40e0c3d813c80dcad21b8cefcc2c55674",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
