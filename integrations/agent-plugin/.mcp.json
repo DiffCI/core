@@ -4,7 +4,7 @@
       "command": "node",
       "args": [
         "-e",
-        "const { spawn } = require('node:child_process'); const npxArgs = ['--yes', '--package', '@diffci.com/diffci@0.3.16', 'diffci-mcp']; const child = process.platform === 'win32' ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npx', ...npxArgs], { stdio: 'inherit' }); child.once('error', (error) => { console.error('Failed to launch DiffCI MCP:', error.message); process.exit(1); }); child.once('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));"
+        "const { spawn } = require('node:child_process'); const npxArgs = ['--yes', '--package', '@diffci.com/diffci@0.3.17', 'diffci-mcp']; const child = process.platform === 'win32' ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', 'npx', ...npxArgs], { stdio: 'inherit' }); child.once('error', (error) => { console.error('Failed to launch DiffCI MCP:', error.message); process.exit(1); }); child.once('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));"
       ]
     }
   }
