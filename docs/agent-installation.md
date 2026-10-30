@@ -97,7 +97,7 @@ configuration, so the Claude Code installation above is the preferred local
 path. A direct local MCP setup is also available:
 
 ```sh
-grok mcp add diffci -- npx --yes --package @diffci.com/diffci@0.3.20 diffci-mcp
+grok mcp add diffci -- npx --yes --package @diffci.com/diffci@0.3.21 diffci-mcp
 ```
 
 For Grok's cloud connector, add `https://diffci.com/mcp/v1` as a custom HTTP
@@ -128,7 +128,7 @@ launcher in `integrations/agent-plugin/mcp.json`):
 
 ```text
 command: npx
-args: ["--yes", "--package", "@diffci.com/diffci@0.3.20", "diffci-mcp"]
+args: ["--yes", "--package", "@diffci.com/diffci@0.3.21", "diffci-mcp"]
 ```
 
 For a remote-only client, configure a Streamable HTTP MCP server at

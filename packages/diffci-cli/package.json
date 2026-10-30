@@ -1,6 +1,6 @@
 {
   "name": "@diffci.com/diffci",
-  "version": "0.3.20",
+  "version": "0.3.21",
   "description": "Fail-closed, change-aware verification for AI coding agents with conservative affected-test selection",
   "keywords": [
     "ci",
