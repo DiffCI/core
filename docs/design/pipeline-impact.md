@@ -152,6 +152,11 @@ Where: the GitHub Action (`action.yml`) and a CLI command for other CI systems.
   `if:` and `run:`. `diffci verify-workflow` generates the wiring.
 - `diffci gate` runs the selected steps in one command, for builders that run a script instead of
   workflow jobs (the Cloudflare Sandbox runs `npm run check` and the full test suite on every build).
+  **Observe mode implemented 2026-10-30** (`packages/diffci-cli/src/client/gate.ts`): it runs every gate
+  leaf and the full test command (`--tests`) as the build would, exits with their result, and reports
+  DiffCI's decision per step, the would-have-saved time (estimated, or measured with
+  `--measure-selected`) and misses. Leaves run one after another, so `full_ms` can exceed a gate that
+  runs some of them in parallel. Enforce mode is not built yet.
 - Starts as observe: every job still runs, and the report records what DiffCI would have skipped and
   whether that job then failed. Enforce is opt-in per repository once the miss rate is measured.
 

@@ -68,9 +68,10 @@ function readRepositoryFile(repoPath: string, path: string): string | undefined 
  * Agents ran the tests DiffCI selected and then failed `npm run check` after push; these are the rest of
  * the gate. With a change, per-file lint and format checks are narrowed to its files or skipped
  * (check-narrowing.ts); if the change cannot be read, every check runs. No package.json, or one that
- * cannot be read, has none.
+ * cannot be read, has none. `extraRoots` replaces the scripts CI workflows add to the gate, for a caller
+ * that knows exactly which scripts its build runs (`diffci gate --script`).
  */
-export function plannedChecks(repoPath: string, change?: CheckChange): PlannedCheck[] {
+export function plannedChecks(repoPath: string, change?: CheckChange, options: { extraRoots?: readonly string[] } = {}): PlannedCheck[] {
   const path = join(repoPath, "package.json");
   if (!existsSync(path)) return [];
   let pkg: { scripts?: unknown; packageManager?: unknown };
@@ -80,7 +81,8 @@ export function plannedChecks(repoPath: string, change?: CheckChange): PlannedCh
   const scripts = Object.fromEntries(Object.entries(pkg.scripts).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
   const manager = packageManager(repoPath, pkg.packageManager);
   const lifecycleHooks = manager !== "pnpm";
-  let { checks } = discoverGateChecks(scripts, { lifecycleHooks, workflowScripts: workflowGateScripts(workflowTexts(repoPath), scripts) });
+  const workflowScripts = options.extraRoots ?? workflowGateScripts(workflowTexts(repoPath), scripts);
+  let { checks } = discoverGateChecks(scripts, { lifecycleHooks, workflowScripts });
   if (change) {
     try {
       const changes = changedPaths(repoPath, change);

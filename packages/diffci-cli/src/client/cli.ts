@@ -12,6 +12,7 @@
  *   init               seed a repository with AI-agent instructions for using DiffCI
  *   mcp                run the stdio MCP server
  *   verify             fail-closed verification of a working-tree snapshot or commit range
+ *   gate               run a build's whole gate and record what DiffCI would have skipped (observe)
  *   check              analysis plus automatic paired runtime measurement
  *   observe            analyse the checkout and write an observation report
  *   verify-savings     run a paired full-versus-selected timing check
@@ -43,6 +44,7 @@ import { configureTelemetry, readTelemetryPreference, recordUsage } from "./tele
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
+import { formatGateSummary, gateExitCode, runGate } from "./gate.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
@@ -375,6 +377,46 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     if (reportPath) console.log(`  receipt: ${reportPath}`);
   }
   return verificationExitCode(report);
+}
+
+async function runGateCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
+  const mode = stringFlag(flags, "mode") ?? "observe";
+  if (mode !== "observe") {
+    console.error(`diffci gate supports only --mode observe for now, got ${JSON.stringify(mode)}`);
+    return 2;
+  }
+  const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  const out = stringFlag(flags, "out");
+  const reportPath = out ? resolve(out) : undefined;
+  if (reportPath && (reportPath === repoPath || isInsideRepository(repoPath, reportPath))) {
+    console.error(`Refusing to write the gate report inside the repository: ${reportPath}. Use --out with a path outside the checkout.`);
+    return 2;
+  }
+  const identity = observerIdentity();
+  const scripts = stringFlag(flags, "script")?.split(",").map((name) => name.trim()).filter(Boolean);
+  const report = await runGate({
+    repoPath,
+    env: env as Record<string, string | undefined>,
+    version: identity.version,
+    engineSha: identity.sha,
+    baseOverride: stringFlag(flags, "base"),
+    headOverride: stringFlag(flags, "head"),
+    tests: stringFlag(flags, "tests"),
+    scripts,
+    measureSelected: flags["measure-selected"] === true,
+    timeoutMs: numberFlag(flags, "timeout-ms") ?? 60 * 60 * 1000,
+    tailBytes: numberFlag(flags, "tail-bytes") ?? 12_000,
+  });
+  if (reportPath) {
+    mkdirSync(dirname(reportPath), { recursive: true });
+    writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
+  if (flags.json === true) console.log(JSON.stringify(report, null, 2));
+  else {
+    console.log(formatGateSummary(report));
+    if (reportPath) console.log(`  report: ${reportPath}`);
+  }
+  return gateExitCode(report);
 }
 
 function formatFinding(finding: WorkflowFinding): string {
@@ -959,6 +1001,8 @@ Usage:
                          [--cache-prepare <command>] [--fixed-order]
   diffci validate-specs --file <json> [--json]
   diffci verify-workflow [--repo <path>]
+  diffci gate [--base <sha> --head <sha>] [--tests <command>] [--script <name,...>] [--measure-selected]
+              [--repo <path>] [--out <file>] [--json] [--timeout-ms <ms>]
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
   diffci version
@@ -985,6 +1029,12 @@ observe analyses the checkout and writes one JSON report. It runs nothing and ch
 verify-savings runs both commands and reports measured paired runtime; it is an opt-in pilot command.
 validate-specs checks an explicit list of specification IDs and logical targets and blocks duplicates.
 verify-workflow checks that the job running DiffCI cannot affect any other job, and exits 1 if it can.
+gate replaces a build's gate script (for example "npm run check && npm test"). In observe mode, the only
+mode so far, it runs every gate check and the full test command (--tests, default the repository's test
+script) exactly as the build would and exits with their result. It records what DiffCI would have run,
+narrowed or skipped for the range, the time that would have saved, and any miss: a failing step DiffCI
+would have skipped. Narrowed checks and selected tests run again only when their full step failed, unless
+--measure-selected. --script adds gate scripts beyond check (comma-separated). It sends nothing.
 enforce-misses classifies a full run's failures on main against the enforce dry-run receipts of the pull
 requests merged since the last recorded run, and exits 1 on a miss. It never edits configuration.
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.
@@ -1057,6 +1107,9 @@ async function main(): Promise<void> {
       return;
     case "verify-workflow":
       process.exitCode = runVerifyWorkflow(flags, env);
+      return;
+    case "gate":
+      process.exitCode = await runGateCommand(flags, env);
       return;
     case "enforce-misses":
       process.exitCode = runEnforceMisses(flags, env);
