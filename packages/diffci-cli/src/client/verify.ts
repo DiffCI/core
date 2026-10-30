@@ -10,7 +10,7 @@ import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
 import type { CommandMeasurement } from "./verify-savings.js";
-import { captureWorkingTreeSnapshot, type WorkingTreeSnapshot } from "./working-tree.js";
+import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
 
 export const VERIFICATION_SCHEMA = "diffci.verification.v1" as const;
 
@@ -53,7 +53,12 @@ export interface VerificationReport {
     before_tree_sha: string;
     after_base_sha?: string;
     after_tree_sha?: string;
+    /** The verified files were not changed. New files the run wrote (`written_during_verification`) don't count. */
     unchanged: boolean;
+    /** New, non-ignored files that appeared during the checks and tests, at most 20. */
+    written_during_verification?: string[];
+    /** Files that existed before the run and changed during it, at most 20. Their presence blocks the verdict. */
+    changed_during_verification?: SnapshotChange[];
   };
   analysis: {
     status: "not_needed" | ObservationReport["status"];
@@ -260,11 +265,23 @@ async function executeWithPolicy(
     };
   }
 
-  const unchanged = before.baseSha === after.baseSha && before.treeSha === after.treeSha;
+  // Tests often write fixtures, caches or generated files that .gitignore misses (2026-10-30: a quarter
+  // of DentalPresence replays were blocked by them). A new file doesn't change what was verified, so
+  // only a changed commit or a change to a file that existed before the run blocks the verdict.
+  let changes: SnapshotChange[] = [];
+  if (before.baseSha === after.baseSha) {
+    try { changes = snapshotChanges(options.repoPath, before.treeSha, after.treeSha); }
+    catch { changes = [{ path: "(snapshots could not be compared)", status: "modified" }]; }
+  }
+  const written = changes.filter((change) => change.status === "added").map((change) => change.path);
+  const altered = changes.filter((change) => change.status !== "added");
+  const unchanged = before.baseSha === after.baseSha && altered.length === 0;
   const succeeded = !failedCheck && execution.exitCode === 0 && !execution.timedOut;
   const verification: VerificationStatus = !unchanged ? "blocked" : succeeded ? "passed" : "failed";
   const finalReason = !unchanged
-    ? "the working tree changed while verification was running; rerun DiffCI for the new snapshot"
+    ? before.baseSha !== after.baseSha
+      ? "HEAD moved while verification was running; rerun DiffCI for the new snapshot"
+      : `the working tree changed while verification was running (${altered.slice(0, 5).map((change) => `${change.status} ${change.path}`).join(", ")}${altered.length > 5 ? `, ${altered.length - 5} more` : ""}); rerun DiffCI for the new snapshot`
     : succeeded
       ? checks ? `${reason}; ${checkSummary(checks)}` : reason
       : failedCheck
@@ -300,6 +317,8 @@ async function executeWithPolicy(
       after_base_sha: after.baseSha,
       after_tree_sha: after.treeSha,
       unchanged,
+      ...(written.length ? { written_during_verification: written.slice(0, 20) } : {}),
+      ...(altered.length ? { changed_during_verification: altered.slice(0, 20) } : {}),
     },
     analysis,
     required_actions: verification === "passed" ? [] : [finalReason + baselineNote],
@@ -432,6 +451,8 @@ export function formatVerificationSummary(report: VerificationReport): string {
     `  snapshot: ${report.snapshot.before_tree_sha.slice(0, 12)} (${report.snapshot.unchanged ? "unchanged" : "not confirmed"})`,
   ];
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
+  const written = report.snapshot.written_during_verification;
+  if (written?.length) lines.push(`  written by the run (not in .gitignore): ${written.slice(0, 5).join(", ")}${written.length > 5 ? ", ..." : ""}`);
   if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}`).join(", ")}`);
   if (report.command) lines.push(`  command: ${report.command}`);
   if (report.enforcement) {

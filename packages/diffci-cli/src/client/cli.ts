@@ -120,10 +120,12 @@ What this does:
 
 - snapshots staged, unstaged, and non-ignored untracked changes;
 - selects and runs the minimum executable test verification, broadening to the full test command when uncertain;
-- exits zero only when the exact snapshot passes and remains unchanged during verification;
+- exits zero only when the exact snapshot passes and its files remain unchanged during verification;
 - emits a versioned machine-readable receipt and sends nothing.
 
-If verification changes generated files, review those changes and rerun DiffCI so the new snapshot is verified.
+New files the run writes are listed in the receipt (snapshot.written_during_verification) and do not block it;
+consider adding them to .gitignore. If verification changes existing files, review those changes and rerun DiffCI
+so the new snapshot is verified.
 If the repository has the DiffCI pre-push hook (\`diffci init --hook\`), a push verifies the pushed commits again; do not bypass it with \`--no-verify\` unless the user asks.
 Use \`observe --no-send\` when analysis without test execution is needed.
 

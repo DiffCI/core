@@ -13,6 +13,12 @@ export interface WorkingTreeSnapshot {
   changed: boolean;
 }
 
+/** One path that differs between two snapshots. A rename is a deletion plus an addition. */
+export interface SnapshotChange {
+  path: string;
+  status: "added" | "modified" | "deleted";
+}
+
 interface GitResult {
   status: number | null;
   stdout: string;
@@ -86,6 +92,22 @@ export function captureWorkingTreeSnapshot(repoPathInput: string): WorkingTreeSn
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/** The paths that differ between two snapshot trees of the same repository. */
+export function snapshotChanges(repoPathInput: string, beforeTreeSha: string, afterTreeSha: string): SnapshotChange[] {
+  if (beforeTreeSha === afterTreeSha) return [];
+  const fields = requireGit(
+    resolve(repoPathInput),
+    ["diff-tree", "-r", "--no-renames", "--name-status", "-z", beforeTreeSha, afterTreeSha],
+    "could not compare verification snapshots",
+  ).split("\0").filter(Boolean);
+  const changes: SnapshotChange[] = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const status = fields[i]!;
+    changes.push({ path: fields[i + 1]!, status: status === "A" ? "added" : status === "D" ? "deleted" : "modified" });
+  }
+  return changes;
 }
 
 
