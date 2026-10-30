@@ -216,13 +216,16 @@
     "packages/diffci-cli/tests/client/telemetry.test.ts",
     "packages/diffci-cli/tests/client/feedback-prompt.test.ts",
     "src/repo/npm-lockfile.ts",
+    "src/repo/yarn-lockfile.ts",
     "tests/repo/fallback-narrowing.test.ts",
+    "tests/repo/yarn-lockfile.test.ts",
     "packages/diffci-cli/src/client/hook.ts",
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",
     "docs/design/affected-checks.md",
     "docs/design/pipeline-impact.md",
     "docs/research/2026-10-28-seeded-regression-plan.md",
     "docs/research/2026-10-28-fallback-replay.md",
-    "packages/diffci-cli/tests/client/test-phases.test.ts"
+    "packages/diffci-cli/tests/client/test-phases.test.ts",
+    "docs/research/2026-10-30-seeded-regression-pilot.md"
   ]
 }

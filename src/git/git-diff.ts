@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { dirname } from "node:path";
+import { dirname, posix } from "node:path";
 import {
   type ChangeType,
   type ChangedFile,
@@ -10,9 +10,10 @@ import {
   type GitDeltaSummary,
   type RepositoryInventory,
 } from "./types.js";
-import { infrastructureRole, testScriptClosure } from "../repo/file-references.js";
+import { infrastructureRole, isImplicitlyLoadedFile, testScriptClosure } from "../repo/file-references.js";
 import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
+import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
 import { LOCKFILE } from "../repo/lockfiles.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -316,6 +317,27 @@ export function testListEdit(oldBody: string, newBody: string): { added: string[
 
 const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
 
+/** Exact root requests for the supported Classic layout. Unlike scriptRecord, never discard an
+ * invalid dependency value: an omitted root would make the lockfile attribution incomplete. */
+function yarnDirectDependencies(content: string | undefined): Record<string, string> | undefined {
+  let manifest: Record<string, unknown>;
+  try { manifest = JSON.parse(content ?? "") as Record<string, unknown>; } catch { return undefined; }
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return undefined;
+  if (["workspaces", "resolutions", "flat", "installConfig", "peerDependencies", "bundledDependencies", "bundleDependencies"].some((field) => manifest[field] !== undefined)) return undefined;
+  if (manifest.packageManager !== undefined && (typeof manifest.packageManager !== "string" || !/^yarn@1\.\d+\.\d+$/.test(manifest.packageManager))) return undefined;
+  const direct: Record<string, string> = Object.create(null);
+  for (const field of DEPENDENCY_FIELDS) {
+    const record = manifest[field];
+    if (record === undefined) continue;
+    if (!record || typeof record !== "object" || Array.isArray(record)) return undefined;
+    for (const [name, request] of Object.entries(record)) {
+      if (typeof request !== "string" || (Object.hasOwn(direct, name) && direct[name] !== request)) return undefined;
+      direct[name] = request;
+    }
+  }
+  return direct;
+}
+
 export interface PackageJsonChange {
   kind: "metadata" | "data" | "dependencies" | "behavioral";
   /** Test files a test-list edit added to the test script; they are now part of the suite. */
@@ -601,6 +623,39 @@ export async function analyzeGitDelta(
         analysis.lockfileChanged = false;
         analysis.changedDependencies = affected;
         narrowed.add(changedLockfile);
+        if (changedPackageJson) {
+          narrowed.add(changedPackageJson);
+          if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
+          if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+        }
+      }
+    }
+    // Classic does not record peer relationships or the installed hoisting layout. Its helper
+    // validates exact manifest requests and widens meaningful changes to every direct dependency.
+    // Keep this separate from npm's installed-path model and resolve raw lockfile readers downstream.
+    const changedYarnLock = filesWithBinary.find((f) => f.path === "yarn.lock" && f.changeType === "modified");
+    // Path-level signals only cover some root configurations. Do not let narrowing this root lock
+    // hide a simultaneous nested manifest, lockfile or other configuration change.
+    const otherConfiguration = allPaths.some((path) => path !== "yarn.lock" && path !== "package.json" && (
+      LOCKFILE.test(posix.basename(path))
+      || CONFIG_PATTERNS.some((pattern) => pattern.test(path) || pattern.test(posix.basename(path)))
+      || isImplicitlyLoadedFile(path)));
+    if (dependencyEdit && changedYarnLock && !otherConfiguration && (!analysis.dependencyManifestChanged || changedPackageJson)) {
+      const beforeDirect = yarnDirectDependencies(oldPackageJson);
+      const afterDirect = yarnDirectDependencies(newPackageJson);
+      // A second package manager or alternate Yarn install layout is outside this model, even when
+      // its configuration did not change in this delta.
+      const unsupportedLayout = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", "bun.lockb", ".yarnrc", ".yarnrc.yml", ".pnp.js", ".pnp.cjs"]
+        .some((path) => [baseSha, headSha].some((sha) => readFileAtSha(sha, path, repoPath) !== undefined));
+      const affected = beforeDirect && afterDirect && !unsupportedLayout
+        ? yarnLockAffectedDependencies(readFileAtSha(baseSha, "yarn.lock", repoPath), readFileAtSha(headSha, "yarn.lock", repoPath), beforeDirect, afterDirect)
+        : undefined;
+      if (affected && (packageChange?.changedDependencies ?? []).every((name) => affected.includes(name))) {
+        analysis.dependencyManifestChanged = false;
+        analysis.lockfileChanged = false;
+        analysis.changedDependencies = affected;
+        analysis.dependencyLockfile = "yarn.lock";
+        narrowed.add(changedYarnLock);
         if (changedPackageJson) {
           narrowed.add(changedPackageJson);
           if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");

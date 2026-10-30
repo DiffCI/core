@@ -146,6 +146,10 @@ export interface ReferenceResolutionInput {
   /** Changed files whose content analyzeGitDelta proved cannot change how tests run
    * (GitDeltaAnalysis.referenceResolvedPaths); a workflow reading them does not block. */
   contentCleared?: ReadonlySet<string>;
+  /** The caller has independently modeled this file's implicit effects (e.g. lockfile dependencies).
+   * No explicit reader is then acceptable, but every potential reader must be readable and every
+   * reader found must still resolve. Defaults to false. */
+  allowNoReaders?: boolean;
   /** No code in the repository runs a Worker (suiteMayRunWorkers is false), so a wrangler config with
    * no reader is outside the suite. */
   workerConfigsOutsideSuite?: boolean;
@@ -412,7 +416,10 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         const base = posix.basename(candidate);
         if (base === "package.json") {
           const content = read(candidate);
-          if (content === undefined) continue;
+          if (content === undefined) {
+            if (input.allowNoReaders) resolution.unresolvable.push(`${candidate} could not be read`);
+            continue;
+          }
           const named = packageJsonNames(content, pattern, target.path, ancestors, posix.dirname(candidate));
           if (named === "no") continue;
           visited.add(candidate);
@@ -425,6 +432,10 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         }
         if (input.isDocumentation(candidate)) continue;
         const content = read(candidate);
+        if (content === undefined && input.allowNoReaders && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate) || isImplicitlyLoadedFile(candidate))) {
+          resolution.unresolvable.push(`${candidate} could not be read`);
+          continue;
+        }
         if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors)) continue;
         visited.add(candidate);
         if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
@@ -468,7 +479,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
   // script or test-feeding workflow step reaches: the suite cannot observe the file. Finding no such
   // reader at all is different - the file's reader is unknown, so it stays unknown.
   const executableReaders = resolution.readers.some((reader) => reader.kind === "transitive");
-  if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !loadedOnlyOutsideTests(filePath, input, read)) {
+  if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !input.allowNoReaders && !loadedOnlyOutsideTests(filePath, input, read)) {
     resolution.unresolvable.push(`no test or source file names ${filePath}`);
   }
   resolution.phases = resolution.unresolvable.length === 0 ? [...phases].sort() : [];
