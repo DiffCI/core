@@ -69,6 +69,11 @@ export interface GateReport {
   produced_at: string;
   diffci_version: string;
   mode: "observe";
+  /** Present when the build runs its checks and tests as separate stages (`--only`). */
+  only?: "checks" | "tests";
+  /** Present when a plan was supplied (`--plan`): whether it was used. Analysis time then belongs to the
+   * planning step, not this report. */
+  plan?: "supplied" | "unusable";
   range?: { base_sha: string; head_sha: string; source: string };
   analysis: { status: string; reason?: string; mode?: string; fallback_reasons: string[]; duration_ms?: number };
   gate: { status: "passed" | "failed"; wall_ms: number; reason: string };
@@ -99,8 +104,16 @@ export interface GateOptions {
   /** The build's gate scripts beyond `check`; replaces the scripts CI workflows add. */
   scripts?: readonly string[];
   measureSelected?: boolean;
+  /** Run one half of the gate, for builds that run checks and tests as separate stages (DentalPresence
+   * runs `npm run check` on the host and its tests in a container, because together they exhausted the
+   * builder's memory). */
+  only?: "checks" | "tests";
   timeoutMs: number;
   tailBytes: number;
+  /** A plan from `gate --plan-out`, used instead of analysing here (no git history needed). */
+  plan?: unknown;
+  /** The commit being gated; a plan for another commit is not used. */
+  expectHead?: string;
   /** Injected for tests. */
   run?: (command: string, options: { cwd: string; timeoutMs: number; tailBytes: number }) => CommandMeasurement;
   analyse?: (options: Parameters<typeof observe>[0]) => Promise<ObservationReport>;
@@ -111,14 +124,30 @@ function stepRun(measurement: CommandMeasurement): StepRun {
   return { status, wall_ms: measurement.wallMs, exit_code: measurement.exitCode };
 }
 
-export async function runGate(options: GateOptions): Promise<GateReport> {
-  const repoPath = resolve(options.repoPath);
-  const run = options.run ?? measureCommand;
-  const started = Date.now();
-  const remaining = () => Math.max(options.timeoutMs - (Date.now() - started), 0);
-  const execute = (command: string): CommandMeasurement => run(command, { cwd: repoPath, timeoutMs: remaining(), tailBytes: options.tailBytes });
+export const GATE_PLAN_SCHEMA = "diffci.gate-plan.v1" as const;
 
-  // 1. What DiffCI would do. Never fatal: the full gate runs whatever happens here.
+/**
+ * DiffCI's decisions for a range, without running anything. A build whose gate runs where there is no git
+ * history (DentalPresence's Sandbox receives a `git archive` of one commit) plans where the checkout is
+ * (`gate --plan-out`) and ships the plan to the stage that runs the gate (`gate --plan`).
+ */
+export interface GatePlan {
+  schema: typeof GATE_PLAN_SCHEMA;
+  diffci_version: string;
+  range?: { base_sha: string; head_sha: string; source: string };
+  analysis: GateReport["analysis"];
+  checks: PlannedCheck[];
+  tests: {
+    selection: "selected" | "full" | "unavailable";
+    reason: string;
+    tests_selected: number;
+    tests_available: number;
+    selected_commands?: string[];
+  };
+}
+
+export async function planGate(options: Omit<GateOptions, "plan" | "expectHead" | "run" | "timeoutMs" | "tailBytes" | "measureSelected" | "only" | "tests">): Promise<GatePlan> {
+  const repoPath = resolve(options.repoPath);
   const temporary = mkdtempSync(join(tmpdir(), "diffci-gate-"));
   let observation: ObservationReport | undefined;
   let analysisError: string | undefined;
@@ -135,40 +164,89 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   }
   const range = observation?.commitRange;
   const result = observation?.status === "OBSERVED" ? observation.result : undefined;
-  const analysisMs = observation?.timings?.totalMs ?? 0;
+  const unanalysed = analysisError ?? observation?.reason ?? "the change could not be analysed";
+  const checks = range ? plannedChecks(repoPath, { baseSha: range.baseSha, headSha: range.headSha }, { extraRoots: options.scripts ?? [] }) : [];
+  const selected = result ? executableSelection(repoPath, result) : undefined;
+  const selection = !selected || !selected.command ? "unavailable" : selected.selection;
+  return {
+    schema: GATE_PLAN_SCHEMA,
+    diffci_version: options.version,
+    ...(range ? { range: { base_sha: range.baseSha, head_sha: range.headSha, source: range.source } } : {}),
+    analysis: {
+      status: analysisError ? "ERROR" : observation?.status ?? "ERROR",
+      ...(analysisError ?? observation?.reason ? { reason: unanalysed } : {}),
+      ...(result?.mode ? { mode: result.mode } : {}),
+      fallback_reasons: result?.fallbackReasons ?? [],
+      ...(observation?.timings?.totalMs !== undefined ? { duration_ms: observation.timings.totalMs } : {}),
+    },
+    checks,
+    tests: {
+      selection,
+      reason: selected?.reason ?? unanalysed,
+      tests_selected: selection === "selected" ? result?.selectedTests.length ?? 0 : result?.totalTestCount ?? 0,
+      tests_available: result?.totalTestCount ?? 0,
+      ...(selection === "selected" ? { selected_commands: selected!.commands } : {}),
+    },
+  };
+}
 
-  const extraRoots = options.scripts ?? [];
-  const full = plannedChecks(repoPath, undefined, { extraRoots });
-  const decided = range ? plannedChecks(repoPath, { baseSha: range.baseSha, headSha: range.headSha }, { extraRoots }) : [];
-  const decisionOf = new Map(decided.map((check) => [check.id, check]));
+/** A plan that is not this version's, or not for the commit being gated, is not used. */
+function usablePlan(plan: unknown, expectHead: string | undefined): { plan?: GatePlan; reason?: string } {
+  const candidate = plan as Partial<GatePlan> | undefined;
+  if (!candidate || candidate.schema !== GATE_PLAN_SCHEMA || !Array.isArray(candidate.checks) || !candidate.tests || !candidate.analysis) {
+    return { reason: "the gate plan is missing or not a diffci.gate-plan.v1 document" };
+  }
+  if (expectHead && candidate.range?.head_sha !== expectHead) {
+    return { reason: `the gate plan is for ${candidate.range?.head_sha ?? "no commit"}, not ${expectHead}` };
+  }
+  return { plan: candidate as GatePlan };
+}
+
+export async function runGate(options: GateOptions): Promise<GateReport> {
+  const repoPath = resolve(options.repoPath);
+  const run = options.run ?? measureCommand;
+  const started = Date.now();
+  const remaining = () => Math.max(options.timeoutMs - (Date.now() - started), 0);
+  const execute = (command: string): CommandMeasurement => run(command, { cwd: repoPath, timeoutMs: remaining(), tailBytes: options.tailBytes });
+
+  // 1. What DiffCI would do: a plan made elsewhere, or an analysis here. Never fatal: the full gate runs
+  //    whatever happens here.
+  const supplied = options.plan !== undefined ? usablePlan(options.plan, options.expectHead) : undefined;
+  const plan = supplied ? supplied.plan : await planGate(options);
+  const analysis: GateReport["analysis"] = plan?.analysis ?? { status: "PLAN_UNUSABLE", reason: supplied?.reason, fallback_reasons: [] };
+  const unplanned = analysis.reason ?? "the change could not be analysed";
+  const analysisMs = supplied?.plan ? 0 : plan?.analysis.duration_ms ?? 0;
+
+  const runChecks = options.only !== "tests";
+  const full = runChecks ? plannedChecks(repoPath, undefined, { extraRoots: options.scripts ?? [] }) : [];
+  const decisionOf = new Map((plan?.checks ?? []).map((check) => [check.id, check]));
 
   // 2. The full gate, every leaf, continuing past failures so each one is attributed.
   const checks: GateCheckReport[] = full.map((check) => {
-    const plan = decisionOf.get(check.id);
+    const decided = decisionOf.get(check.id);
     const measured = stepRun(execute(check.command));
     return {
       id: check.id, kind: check.kind,
-      decision: plan?.decision ?? "UNPLANNED",
-      reason: plan?.reason ?? (analysisError ?? observation?.reason ?? "the change could not be analysed"),
+      decision: decided?.decision ?? "UNPLANNED",
+      reason: decided?.reason ?? unplanned,
       command: check.command,
-      ...(plan?.decision === "NARROWED" ? { narrowed_command: plan.command } : {}),
+      ...(decided?.decision === "NARROWED" ? { narrowed_command: decided.command } : {}),
       full: measured,
     };
   });
 
-  const testCommand = options.tests ?? inferFullCommand(repoPath).command;
+  const testCommand = options.only === "checks" ? undefined : options.tests ?? inferFullCommand(repoPath).command;
   let tests: GateTestReport | undefined;
   if (testCommand) {
     const measurement = execute(testCommand);
     const fullRun = { ...stepRun(measurement), ...(measurement.failingTests?.length ? { failing_tests: measurement.failingTests } : {}) };
-    const plan = result ? executableSelection(repoPath, result) : undefined;
-    const selection = !plan || !plan.command ? "unavailable" : plan.selection;
     tests = {
-      command: testCommand, full: fullRun, selection,
-      reason: plan?.reason ?? (analysisError ?? observation?.reason ?? "the change could not be analysed"),
-      tests_selected: selection === "selected" ? result?.selectedTests.length ?? 0 : result?.totalTestCount ?? 0,
-      tests_available: result?.totalTestCount ?? 0,
-      ...(selection === "selected" ? { selected_commands: plan!.commands } : {}),
+      command: testCommand, full: fullRun,
+      selection: plan?.tests.selection ?? "unavailable",
+      reason: plan?.tests.reason ?? unplanned,
+      tests_selected: plan?.tests.tests_selected ?? 0,
+      tests_available: plan?.tests.tests_available ?? 0,
+      ...(plan?.tests.selected_commands ? { selected_commands: plan.tests.selected_commands } : {}),
     };
   }
 
@@ -213,18 +291,17 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
 
   return {
     schema: GATE_SCHEMA, schema_version: "1", produced_at: new Date().toISOString(), diffci_version: options.version, mode: "observe",
-    ...(range ? { range: { base_sha: range.baseSha, head_sha: range.headSha, source: range.source } } : {}),
-    analysis: {
-      status: analysisError ? "ERROR" : observation?.status ?? "ERROR",
-      ...(analysisError ?? observation?.reason ? { reason: analysisError ?? observation?.reason } : {}),
-      ...(result?.mode ? { mode: result.mode } : {}),
-      fallback_reasons: result?.fallbackReasons ?? [],
-      ...(observation?.timings?.totalMs !== undefined ? { duration_ms: observation.timings.totalMs } : {}),
-    },
+    ...(options.only ? { only: options.only } : {}),
+    ...(plan?.range ? { range: plan.range } : {}),
+    ...(supplied ? { plan: supplied.plan ? "supplied" as const : "unusable" as const } : {}),
+    analysis,
     gate: {
       status: failedSteps.length ? "failed" : "passed",
       wall_ms: Date.now() - started,
-      reason: failedSteps.length ? `failed: ${failedSteps.join(", ")}` : testCommand ? "every gate step passed" : "every gate check passed; no test command was found",
+      reason: failedSteps.length ? `failed: ${failedSteps.join(", ")}`
+        : options.only === "checks" ? "every gate check passed"
+          : options.only === "tests" ? (testCommand ? "the tests passed" : "no test command was found")
+            : testCommand ? "every gate step passed" : "every gate check passed; no test command was found",
     },
     checks,
     ...(tests ? { tests } : {}),

@@ -44,7 +44,7 @@ import { configureTelemetry, readTelemetryPreference, recordUsage } from "./tele
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
-import { formatGateSummary, gateExitCode, runGate } from "./gate.js";
+import { formatGateSummary, gateExitCode, planGate, runGate } from "./gate.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
@@ -385,6 +385,11 @@ async function runGateCommand(flags: Record<string, string | boolean>, env: Node
     console.error(`diffci gate supports only --mode observe for now, got ${JSON.stringify(mode)}`);
     return 2;
   }
+  const only = stringFlag(flags, "only");
+  if (only !== undefined && only !== "checks" && only !== "tests") {
+    console.error(`diffci gate --only accepts "checks" or "tests", got ${JSON.stringify(only)}`);
+    return 2;
+  }
   const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
   const out = stringFlag(flags, "out");
   const reportPath = out ? resolve(out) : undefined;
@@ -394,16 +399,45 @@ async function runGateCommand(flags: Record<string, string | boolean>, env: Node
   }
   const identity = observerIdentity();
   const scripts = stringFlag(flags, "script")?.split(",").map((name) => name.trim()).filter(Boolean);
-  const report = await runGate({
+  const common = {
     repoPath,
     env: env as Record<string, string | undefined>,
     version: identity.version,
     engineSha: identity.sha,
     baseOverride: stringFlag(flags, "base"),
     headOverride: stringFlag(flags, "head"),
-    tests: stringFlag(flags, "tests"),
     scripts,
+  };
+
+  // Plan only: where the checkout has history, for a gate that runs where it does not. Never fails, so a
+  // build that plans first is not stopped by DiffCI; an unusable plan makes the gate run unplanned.
+  const planOut = stringFlag(flags, "plan-out");
+  if (planOut) {
+    const planPath = resolve(planOut);
+    if (planPath === repoPath || isInsideRepository(repoPath, planPath)) {
+      console.error(`Refusing to write the gate plan inside the repository: ${planPath}. Use a path outside the checkout.`);
+      return 2;
+    }
+    const plan = await planGate(common);
+    mkdirSync(dirname(planPath), { recursive: true });
+    writeFileSync(planPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+    console.log(`DiffCI gate plan: ${plan.analysis.status}${plan.range ? ` ${plan.range.base_sha.slice(0, 12)}..${plan.range.head_sha.slice(0, 12)}` : ""}${plan.analysis.reason ? ` - ${plan.analysis.reason}` : ""}`);
+    console.log(`  ${plan.checks.filter((check) => check.decision === "SKIP").length} of ${plan.checks.length} checks would be skipped; tests: ${plan.tests.selection} (${plan.tests.tests_selected}/${plan.tests.tests_available})`);
+    console.log(`  plan: ${planPath}`);
+    return 0;
+  }
+  const planFile = stringFlag(flags, "plan");
+  let plan: unknown;
+  if (planFile) {
+    try { plan = JSON.parse(readFileSync(resolve(planFile), "utf8")); } catch { plan = null; }
+  }
+
+  const report = await runGate({
+    ...common,
+    tests: stringFlag(flags, "tests"),
     measureSelected: flags["measure-selected"] === true,
+    only: only as "checks" | "tests" | undefined,
+    ...(planFile ? { plan, expectHead: stringFlag(flags, "expect-head") } : {}),
     timeoutMs: numberFlag(flags, "timeout-ms") ?? 60 * 60 * 1000,
     tailBytes: numberFlag(flags, "tail-bytes") ?? 12_000,
   });
@@ -1002,7 +1036,9 @@ Usage:
   diffci validate-specs --file <json> [--json]
   diffci verify-workflow [--repo <path>]
   diffci gate [--base <sha> --head <sha>] [--tests <command>] [--script <name,...>] [--measure-selected]
-              [--repo <path>] [--out <file>] [--json] [--timeout-ms <ms>]
+              [--only checks|tests] [--plan <file> [--expect-head <sha>]] [--repo <path>] [--out <file>]
+              [--json] [--timeout-ms <ms>]
+  diffci gate --plan-out <file> [--base <sha> --head <sha>] [--script <name,...>] [--repo <path>]
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
   diffci version
@@ -1034,7 +1070,10 @@ mode so far, it runs every gate check and the full test command (--tests, defaul
 script) exactly as the build would and exits with their result. It records what DiffCI would have run,
 narrowed or skipped for the range, the time that would have saved, and any miss: a failing step DiffCI
 would have skipped. Narrowed checks and selected tests run again only when their full step failed, unless
---measure-selected. --script adds gate scripts beyond check (comma-separated). It sends nothing.
+--measure-selected. --script adds gate scripts beyond check (comma-separated). --only checks or --only tests
+runs one half, for builds that run checks and tests as separate stages. --plan-out only analyses the range
+and writes DiffCI's decisions, for a gate that runs without git history; --plan uses that file instead of
+analysing, and --expect-head ignores a plan made for another commit. It sends nothing.
 enforce-misses classifies a full run's failures on main against the enforce dry-run receipts of the pull
 requests merged since the last recorded run, and exits 1 on a miss. It never edits configuration.
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.

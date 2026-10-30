@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { formatGateSummary, gateExitCode, runGate, type GateOptions } from "../../src/client/gate.js";
+import { formatGateSummary, gateExitCode, planGate, runGate, type GateOptions } from "../../src/client/gate.js";
 import type { ObservationReport } from "../../src/client/report.js";
 import type { CommandMeasurement } from "../../src/client/verify-savings.js";
 
@@ -100,6 +100,53 @@ test("a test failure the selection also catches is not a miss", async () => {
     assert.equal(report.tests?.selected?.status, "failed");
     assert.equal(report.tests?.missed, false);
     assert.deepEqual(report.summary.misses, []);
+  } finally { rmSync(repo.dir, { recursive: true, force: true }); }
+});
+
+test("--only runs one half of the gate, for builds with separate check and test stages", async () => {
+  const repo = fixture();
+  try {
+    const checksOnly = options(repo, () => false, { only: "checks" });
+    const checks = await runGate(checksOnly.opts);
+    assert.deepEqual(checksOnly.ran, ["npm run lint", "node scripts/docs.mjs"]);
+    assert.equal(checks.tests, undefined);
+    assert.equal(checks.only, "checks");
+    assert.equal(checks.summary.full_ms, 6000);
+
+    const testsOnly = options(repo, (command) => command === "npm test", { only: "tests", tests: "npm test" });
+    const tests = await runGate(testsOnly.opts);
+    assert.deepEqual(testsOnly.ran, ["npm test", "node --test src/a.test.js"]);
+    assert.deepEqual(tests.checks, []);
+    assert.equal(tests.gate.reason, "failed: tests");
+    assert.equal(gateExitCode(tests), 1);
+  } finally { rmSync(repo.dir, { recursive: true, force: true }); }
+});
+
+test("a plan made where git history exists drives a gate that runs without it", async () => {
+  const repo = fixture();
+  try {
+    const planning = options(repo, () => false);
+    const plan = await planGate(planning.opts);
+    assert.equal(planning.ran.length, 0, "planning runs nothing");
+    assert.equal(plan.range?.head_sha, repo.head);
+    assert.deepEqual(plan.checks.map((c) => [c.id, c.decision]), [["lint", "NARROWED"], ["check[2]", "SKIP"]]);
+
+    // The gating stage gets no analysis at all: only the plan.
+    const noAnalysis = async () => { throw new Error("must not analyse when a plan is supplied"); };
+    const gating = options(repo, () => false, { only: "checks", plan: JSON.parse(JSON.stringify(plan)), expectHead: repo.head, analyse: noAnalysis });
+    const report = await runGate(gating.opts);
+    assert.equal(report.plan, "supplied");
+    assert.deepEqual(report.checks.map((c) => c.decision), ["NARROWED", "SKIP"]);
+    assert.equal(report.summary.diffci_ms, 4000, "analysis time belongs to the planning step");
+
+    for (const [bad, why] of [[null, /missing/], [{ ...plan, schema: "x" }, /missing/], [plan, /not 0{40}/]] as const) {
+      const unusable = options(repo, () => false, { only: "checks", plan: bad, expectHead: why.source.includes("0{40}") ? "0".repeat(40) : repo.head, analyse: noAnalysis });
+      const result = await runGate(unusable.opts);
+      assert.equal(result.plan, "unusable");
+      assert.equal(result.analysis.status, "PLAN_UNUSABLE");
+      assert.match(result.analysis.reason ?? "", why);
+      assert.deepEqual(unusable.ran, ["npm run lint", "node scripts/docs.mjs"], "the full gate still runs");
+    }
   } finally { rmSync(repo.dir, { recursive: true, force: true }); }
 });
 
