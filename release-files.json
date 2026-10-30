@@ -229,6 +229,7 @@
     "docs/research/2026-10-28-fallback-replay.md",
     "packages/diffci-cli/tests/client/test-phases.test.ts",
     "docs/research/2026-10-30-seeded-regression-pilot.md",
-    "packages/diffci-cli/tests/client/verify-snapshot.test.ts"
+    "packages/diffci-cli/tests/client/verify-snapshot.test.ts",
+    "packages/diffci-cli/tests/client/verify-summary.test.ts"
   ]
 }

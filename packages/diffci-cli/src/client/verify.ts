@@ -455,6 +455,17 @@ export function formatVerificationSummary(report: VerificationReport): string {
   if (written?.length) lines.push(`  written by the run (not in .gitignore): ${written.slice(0, 5).join(", ")}${written.length > 5 ? ", ..." : ""}`);
   if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}`).join(", ")}`);
   if (report.command) lines.push(`  command: ${report.command}`);
+  // A blocked push has to say what broke, not only that something did (2026-10-30 demo rehearsal: the
+  // summary said "exit code 1" and nothing else).
+  if (report.verification === "failed" && report.execution) {
+    const failing = report.execution.failingTests ?? [];
+    if (failing.length) lines.push(`  failing tests: ${failing.slice(0, 5).join(", ")}${failing.length > 5 ? `, ${failing.length - 5} more` : ""}`);
+    const output = (report.execution.stderrTail.trim() ? report.execution.stderrTail : report.execution.stdoutTail)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\x1b\[[0-9;]*m/g, "").trimEnd())
+      .filter((line) => line.trim() && !/^\s+at /.test(line) && !/^Node\.js v/.test(line) && !/^ℹ /.test(line));
+    if (output.length) lines.push("  output (last lines):", ...output.slice(-6).map((line) => `    ${line.slice(0, 200)}`));
+  }
   if (report.enforcement) {
     const fired = report.enforcement.fired_fallback;
     lines.push(`  enforce: ${report.enforcement.applied ? "applied" : fired ? `fell back to full (${fired}: ${report.enforcement.detail})` : "not applied"}`);
