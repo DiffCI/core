@@ -29,11 +29,11 @@
 
 import { posix } from "node:path";
 import ts from "typescript";
+import { LOCKFILE } from "../repo/lockfiles.js";
 import type { NarrowingInput } from "./check-narrowing.js";
 import type { GateCheck } from "./pipeline-steps.js";
 
 const MAX_CLOSURE = 400;
-const LOCKFILE = /^(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
 const SCRIPT_FILE = /\.(?:[cm]?js|[cm]?ts|tsx|jsx)$/;
 const RESOLVE_EXTENSIONS = ["", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx", "/index.js", "/index.mjs", "/index.ts", "/index.tsx"];
 const VALUE_FLAGS = new Set(["--import", "-r", "--require", "--loader", "--experimental-loader", "--conditions", "-C", "--env-file", "--tsconfig"]);

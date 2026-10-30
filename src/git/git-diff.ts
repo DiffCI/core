@@ -14,6 +14,7 @@ import { infrastructureRole, isImplicitlyLoadedFile, testScriptClosure } from ".
 import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
+import { LOCKFILE } from "../repo/lockfiles.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 export const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -421,7 +422,7 @@ export function computeAnalysis(files: ChangedFile[]): GitDeltaAnalysis {
   const signalPaths: NonNullable<GitDeltaAnalysis["signalPaths"]> = {
     config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p))),
     dependencyManifest: matching((p) => p === "package.json"),
-    lockfile: matching((p) => /^(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb)$/.test(p)),
+    lockfile: matching((p) => LOCKFILE.test(p)),
     workflow: matching((p) => p.startsWith(".github/workflows/")),
     infrastructure: matching((p) => infrastructureRole(p) === "definition"),
     database: matching((p) => p.startsWith("database/")),
@@ -636,7 +637,7 @@ export async function analyzeGitDelta(
     // Path-level signals only cover some root configurations. Do not let narrowing this root lock
     // hide a simultaneous nested manifest, lockfile or other configuration change.
     const otherConfiguration = allPaths.some((path) => path !== "yarn.lock" && path !== "package.json" && (
-      /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(path)
+      LOCKFILE.test(posix.basename(path))
       || CONFIG_PATTERNS.some((pattern) => pattern.test(path) || pattern.test(posix.basename(path)))
       || isImplicitlyLoadedFile(path)));
     if (dependencyEdit && changedYarnLock && !otherConfiguration && (!analysis.dependencyManifestChanged || changedPackageJson)) {

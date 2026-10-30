@@ -25,6 +25,18 @@ describe("computeAnalysis", () => {
     assert.strictEqual(analysis.configChanged, true);
   });
 
+  it("flags the bun.lock text lockfile", () => {
+    const analysis = computeAnalysis([{ path: "bun.lock", changeType: "modified" }]);
+    assert.strictEqual(analysis.lockfileChanged, true);
+    assert.deepStrictEqual(analysis.signalPaths?.lockfile, ["bun.lock"]);
+  });
+
+  it("flags npm-shrinkwrap.json as a lockfile", () => {
+    const analysis = computeAnalysis([{ path: "npm-shrinkwrap.json", changeType: "modified" }]);
+    assert.strictEqual(analysis.lockfileChanged, true);
+    assert.deepStrictEqual(analysis.signalPaths?.lockfile, ["npm-shrinkwrap.json"]);
+  });
+
   it("flags dependency manifest changes", () => {
     const files: ChangedFile[] = [
       { path: "package.json", changeType: "modified" },

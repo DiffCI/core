@@ -22,10 +22,10 @@
 
 import { posix } from "node:path";
 import { projectRoots } from "../repo/compiled-projects.js";
+import { LOCKFILE } from "../repo/lockfiles.js";
 import type { NarrowingInput } from "./check-narrowing.js";
 
 const CONFIG = /(?:^|\/)(?:tsconfig|jsconfig)[^/]*\.json$/;
-const LOCKFILE = /^(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
 const LOADABLE = /\.(?:[cm]?tsx?|[cm]?jsx?|json)$/;
 const JAVASCRIPT = /\.[cm]?jsx?$/;
 
