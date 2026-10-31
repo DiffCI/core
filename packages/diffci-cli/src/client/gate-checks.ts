@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { narrowGateChecks, type ChangedPath } from "@diffci.com/core/planner/check-narrowing";
 import { discoverGateChecks, workflowGateScripts, type GateCheckKind } from "@diffci.com/core/planner/pipeline-steps";
+import type { CheckBaseline } from "./failure-baseline.js";
 import { measureCommand } from "./verify-savings.js";
 
 /** One leaf of the repository's gate (`npm run check`), as an agent or verify runs it. */
@@ -19,6 +20,8 @@ export interface CheckResult extends PlannedCheck {
   status: "passed" | "failed" | "timed_out" | "not_run" | "skipped";
   exit_code?: number | null;
   wall_ms?: number;
+  /** Present when a failed check was rerun at the base commit (`--baseline-on-failure`). */
+  baseline?: CheckBaseline;
 }
 
 /** The commits a change runs between; without one every check runs as written. */
@@ -102,10 +105,16 @@ export function plannedChecks(repoPath: string, change?: CheckChange, options: {
 }
 
 /** Runs checks in order and stops at the first failure, as the gate's `&&` chain would. SKIP checks
- * are recorded as skipped and not run. */
-export function runChecks(checks: readonly PlannedCheck[], options: { cwd: string; timeoutMs: number; tailBytes: number }) {
+ * are recorded as skipped and not run. `baseline` reruns a failed check at the base commit; one that
+ * fails there too is recorded in `preexisting` and the run goes on, so a check that was already red
+ * cannot hide what the change itself broke. */
+export function runChecks(
+  checks: readonly PlannedCheck[],
+  options: { cwd: string; timeoutMs: number; tailBytes: number; baseline?: (check: PlannedCheck, remainingMs: number) => CheckBaseline },
+) {
   const started = Date.now();
   const results: CheckResult[] = [];
+  const preexisting: CheckResult[] = [];
   let failure: { check: CheckResult; measurement: ReturnType<typeof measureCommand> } | undefined;
   for (const check of checks) {
     if (check.decision === "SKIP") {
@@ -121,8 +130,17 @@ export function runChecks(checks: readonly PlannedCheck[], options: { cwd: strin
     const status = measurement.timedOut ? "timed_out" : measurement.exitCode === 0 && measurement.signal === null ? "passed" : "failed";
     const result: CheckResult = { ...check, status, exit_code: measurement.exitCode, wall_ms: measurement.wallMs };
     results.push(result);
-    if (status !== "passed") failure = { check: result, measurement };
+    if (status === "passed") continue;
+    // Only a check run as written is comparable at the base: a NARROWED one names files the base may not have.
+    if (status === "failed" && check.decision === "RUN" && options.baseline) {
+      result.baseline = options.baseline(check, options.timeoutMs - (Date.now() - started));
+      if (result.baseline.status === "preexisting") {
+        preexisting.push(result);
+        continue;
+      }
+    }
+    failure = { check: result, measurement };
   }
   const outOfTime = !failure && results.some((result) => result.status === "not_run");
-  return { results, failure, outOfTime, wallMs: Date.now() - started };
+  return { results, failure, preexisting, outOfTime, wallMs: Date.now() - started };
 }

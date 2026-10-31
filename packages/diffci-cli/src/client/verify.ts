@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { batchCommand, measureCommands } from "./command-batches.js";
-import { compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
+import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
@@ -244,9 +244,18 @@ async function executeWithPolicy(
   const checkBase = scope === "commit-range" ? range?.baseSha : before.baseSha;
   const checkHead = scope === "commit-range" ? range?.headSha : before.commitSha;
   const planned = options.skipChecks ? [] : plannedChecks(options.repoPath, checkBase && checkHead ? { baseSha: checkBase, headSha: checkHead } : undefined);
-  const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes });
+  const checkBaseline = options.baselineOnFailure && checkBase && checkHead
+    ? (check: { command: string }, remainingMs: number) => checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: Math.max(remainingMs, 0) })
+    : undefined;
+  const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes, baseline: checkBaseline });
   const checks = checkRun?.results.length ? checkRun.results : undefined;
   const failedCheck = checkRun?.failure?.check;
+  // Checks that also fail at the base: still a failed verdict (required CI fails either way), but they
+  // no longer stop the run before the change's own failures.
+  const preexistingChecks = checkRun?.preexisting ?? [];
+  const preexistingNote = preexistingChecks.length
+    ? `; gate check(s) ${preexistingChecks.map((check) => check.id).join(", ")} also fail at the base commit (already broken before this change)`
+    : "";
   const execution = checkRun?.failure
     ? checkRun.failure.measurement
     : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes });
@@ -276,7 +285,8 @@ async function executeWithPolicy(
   const written = changes.filter((change) => change.status === "added").map((change) => change.path);
   const altered = changes.filter((change) => change.status !== "added");
   const unchanged = before.baseSha === after.baseSha && altered.length === 0;
-  const succeeded = !failedCheck && execution.exitCode === 0 && !execution.timedOut;
+  const testsPassed = !failedCheck && execution.exitCode === 0 && !execution.timedOut;
+  const succeeded = testsPassed && preexistingChecks.length === 0;
   const verification: VerificationStatus = !unchanged ? "blocked" : succeeded ? "passed" : "failed";
   const finalReason = !unchanged
     ? before.baseSha !== after.baseSha
@@ -287,8 +297,10 @@ async function executeWithPolicy(
       : failedCheck
         ? `gate check ${failedCheck.id} ${failedCheck.status === "timed_out" ? "timed out" : `failed with exit code ${String(failedCheck.exit_code)}`}; tests were not run (${failedCheck.command})`
       : execution.timedOut
-        ? `verification timed out after ${options.timeoutMs}ms`
-        : `verification command failed with exit code ${String(execution.exitCode)}`;
+        ? `verification timed out after ${options.timeoutMs}ms${preexistingNote}`
+        : testsPassed
+          ? `${preexistingChecks.length} gate check(s) failed that also fail at the base commit; nothing this change introduced failed (${preexistingChecks.map((check) => check.id).join(", ")})`
+          : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
   const failureBaseline = verification === "failed" && !failedCheck && !execution.timedOut && options.baselineOnFailure && baselineSha
     ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
@@ -453,7 +465,7 @@ export function formatVerificationSummary(report: VerificationReport): string {
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
   const written = report.snapshot.written_during_verification;
   if (written?.length) lines.push(`  written by the run (not in .gitignore): ${written.slice(0, 5).join(", ")}${written.length > 5 ? ", ..." : ""}`);
-  if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}`).join(", ")}`);
+  if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}${check.baseline?.status === "preexisting" ? " (also fails at base)" : ""}`).join(", ")}`);
   if (report.command) lines.push(`  command: ${report.command}`);
   // A blocked push has to say what broke, not only that something did (2026-10-30 demo rehearsal: the
   // summary said "exit code 1" and nothing else).
