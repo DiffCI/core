@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: MIT
 import { strict as assert } from "node:assert";
-import { execSync } from "node:child_process";
+import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { infrastructureRole, isImplicitlyLoadedFile, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests, workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
 import { analyzeGitDelta, packageJsonChangeKind } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import { repositoryFileReader } from "../../src/repo/file-references.js";
+import type { ExecutionPlan } from "../../src/planner/types.js";
 
 function input(files: Record<string, string>, graph: string[] = Object.keys(files).filter((p) => /\.[cm]?[jt]s$/.test(p))): ReferenceResolutionInput {
   return {
@@ -381,6 +383,72 @@ describe("end to end on a temporary repository", () => {
     try {
       const impact = await analyze(dir, { "orphan/notes.txt": "y\n" });
       assert.deepEqual(impact.fallbackReasons, ["Unknown changed file: orphan/notes.txt"]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("keeps ordinary data in the full CLI plan even alongside a modeled no-reader lockfile", () => {
+    const dir = repo({
+      "package.json": JSON.stringify({ name: "fixture", type: "module", scripts: { test: "node --test" } }),
+      "yarn.lock": "# yarn lockfile v1\n",
+      "data/input.csv": "ready\n",
+      "src/value.js": "export const value = 1;\n",
+      "tests/value.test.js": `import test from "node:test";\nimport assert from "node:assert/strict";\nimport { value } from "../src/value.js";\ntest("positive value", () => assert.ok(value > 0));\n`,
+      // The path comes from the test process's environment, so static references cannot find it.
+      "tests/runtime.test.js": `import test from "node:test";\nimport assert from "node:assert/strict";\nimport { readFileSync } from "node:fs";\ntest("runtime input remains ready", () => assert.equal(readFileSync(process.env.INPUT_FILE, "utf8"), "ready\\n"));\n`,
+    });
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const env: NodeJS.ProcessEnv = { ...process.env, INPUT_FILE: join(dir, "data/input.csv") };
+    // Node otherwise skips a child --test run because it inherits the current test-file marker.
+    delete env.NODE_TEST_CONTEXT;
+    const execute = (paths: string[] = []) => {
+      const result = spawnSync(process.execPath, ["--test", ...paths], { cwd: dir, env, encoding: "utf8" });
+      assert.equal(result.error, undefined);
+      return result;
+    };
+    const change = (files: Record<string, string>) => {
+      write(dir, files);
+      execFileSync("git", ["add", "-A"], { cwd: dir });
+      execFileSync("git", ["commit", "--quiet", "-m", "head"], { cwd: dir });
+      return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+    };
+    const plan = (base: string, head: string) => {
+      const result = spawnSync(process.execPath, ["--import", "tsx", fileURLToPath(new URL("../../src/cli.ts", import.meta.url)), "plan", "--repo", dir, "--base", base, "--head", head], { cwd: root, encoding: "utf8" });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      return (JSON.parse(result.stdout) as { plan: ExecutionPlan }).plan;
+    };
+    try {
+      const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+      const baseline = execute();
+      assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+      assert.match(baseline.stdout, /tests 2/);
+
+      const controlHead = change({ "src/value.js": "export const value = 2;\n", "yarn.lock": "# yarn lockfile v1\n# regenerated\n" });
+      const control = plan(base, controlHead);
+      assert.equal(control.mode, "SELECTIVE");
+      assert.deepEqual(control.fallbackReasons, []);
+      assert.deepEqual(control.selectedTests, ["tests/value.test.js"]);
+      const controlRun = execute(control.selectedTests);
+      assert.equal(controlRun.status, 0, controlRun.stdout + controlRun.stderr);
+      assert.match(controlRun.stdout, /tests 1/);
+
+      const brokenHead = change({ "data/input.csv": "changed\n" });
+      const dataOnly = plan(controlHead, brokenHead);
+      const withLockfile = plan(base, brokenHead);
+      for (const [name, result] of [["ordinary data", dataOnly], ["data with a modeled lockfile", withLockfile]] as const) {
+        assert.equal(result.mode, "FULL", name);
+        assert.equal(result.safety.fallbackRequired, true);
+        assert.deepEqual(result.fallbackReasons, ["Unknown changed file: data/input.csv"]);
+        assert.deepEqual(result.selectedTests, ["tests/runtime.test.js", "tests/value.test.js"]);
+        assert.deepEqual(result.skippedTests, []);
+      }
+      // Both plans include the runtime reader. The previously selected subset alone still passes.
+      assert.equal(execute(control.selectedTests).status, 0);
+      const caught = execute(withLockfile.selectedTests);
+      assert.equal(caught.status, 1, caught.stdout + caught.stderr);
+      assert.match(caught.stdout, /runtime input remains ready/);
+      assert.match(caught.stdout, /tests 2/);
+      assert.match(caught.stdout, /fail 1/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
