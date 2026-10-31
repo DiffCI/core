@@ -12,10 +12,11 @@ This is an evaluation roadmap, not a delivery guarantee. Existing support limits
 
 ## Language support
 
-JS/TS, Vue, Go and Maven are supported today. Python and Rust are next and open for contributors; each tracking issue lists small steps that are one PR each:
+JS/TS, Vue, Go and Maven are supported today. Python, Rust and Gradle are next and open for contributors; each tracking issue lists small steps that are one PR each:
 
 - [Python (pytest)](https://github.com/DiffCI/core/issues/61)
 - [Rust (Cargo)](https://github.com/DiffCI/core/issues/62)
+- [Gradle (Java/Kotlin)](https://github.com/DiffCI/core/issues/68)
 
 Want another language? 👍 an existing tracking issue or open one with the `adapter` label. Reactions decide what comes next.
 
