@@ -6,3 +6,15 @@ packages/diffci-cli/dist-client/
 .env.*
 coverage/
 benchmark-results.json
+
+# Logs and local tooling caches
+*.log
+.tmp/
+.wrangler/
+
+# Editor and OS
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+*.swp
