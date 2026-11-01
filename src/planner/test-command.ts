@@ -110,6 +110,37 @@ function configAllowsPath(config: TestRunnerConfig, path: string): boolean {
     && isUnderRoots(path, config.roots);
 }
 
+/**
+ * Test paths with pattern characters (2026-11-01).
+ *
+ * WHY. Next.js puts route tests under `[id]`, `[...slug]`, `[[...slug]]` and `(group)` directories.
+ * Most runners read a file argument as a pattern, not a path: `node --test` globs it, jest and
+ * playwright treat it as a regex, mocha, ava, jasmine, tap and cypress glob it. `[...path]` then
+ * becomes a character class that matches nothing, and when other selected files do run the command
+ * exits 0 having silently skipped the one that mattered (DentalPresence ebac4289f73a: a seeded bug in
+ * `src/app/ingest/[...path]/route.ts` went uncaught while 120 other tests passed).
+ *
+ * WHAT. `node --test` gets each metacharacter as a one-character class (`[` becomes `[[]`), the only
+ * escape its glob accepts: it sets `windowsPathsNoEscape` on every platform, so a backslash never
+ * escapes. Vitest and bun match file arguments as substrings, so their paths pass through unchanged.
+ * Other runners, and brace lists that no class can escape (brace expansion runs first), are refused,
+ * which leaves the caller to run the full suite.
+ */
+const PATTERN_CHARACTERS = /[[\]*?{}()+^$|]/;
+const LITERAL_PATH_FRAMEWORKS: ReadonlySet<KnownTestFramework> = new Set(["vitest", "bun:test"]);
+
+/** `path` as a `node --test` glob that matches only itself, or undefined when none can. */
+export function nodeTestGlobForPath(path: string): string | undefined {
+  if (/\{[^}]*(?:,|\.\.)[^}]*\}/.test(path)) return undefined;
+  return path.replace(/[[\]*?{}()]/g, (character) => `[${character}]`);
+}
+
+function unrunnablePaths(framework: KnownTestFramework, paths: readonly string[]): string[] {
+  if (LITERAL_PATH_FRAMEWORKS.has(framework)) return [];
+  if (framework === "node:test") return paths.filter((path) => nodeTestGlobForPath(path) === undefined);
+  return paths.filter((path) => PATTERN_CHARACTERS.test(path));
+}
+
 function buildCommand(
   framework: KnownTestFramework,
   packageManager: PackageManager,
@@ -119,7 +150,9 @@ function buildCommand(
   const invocation = RUNNER_INVOCATION[framework];
   const configArgs = configFile && invocation.configFlag ? [invocation.configFlag, configFile] : [];
   const pathArgs =
-    invocation.pathStyle === "comma-separated-spec-flag" ? ["--spec", paths.join(",")] : [...paths];
+    invocation.pathStyle === "comma-separated-spec-flag" ? ["--spec", paths.join(",")]
+    : framework === "node:test" ? paths.map((path) => nodeTestGlobForPath(path) ?? path)
+    : [...paths];
 
   if (isDirectlyInvoked(framework)) {
     return { executable: invocation.binary, args: [...invocation.leadingArgs, ...configArgs, ...pathArgs] };
@@ -263,6 +296,7 @@ export function planSelectiveTestCommands(
 
   const remaining = new Set(paths);
   const groups: SelectiveTestCommandGroup[] = [];
+  const routed: Array<{ framework: KnownTestFramework; paths: string[] }> = [];
 
   // A config with explicit include globs is the strongest statement a repository makes about which
   // command runs which files, so those claims are honoured first.
@@ -274,6 +308,7 @@ export function planSelectiveTestCommands(
     if (claimed.length === 0) continue;
     for (const p of claimed) remaining.delete(p);
     const framework = frameworkOfConfig(config);
+    routed.push({ framework, paths: claimed });
     groups.push({
       runnerId: `${framework}:${config.file}`,
       label: `${framework} (${config.file})`,
@@ -304,6 +339,7 @@ export function planSelectiveTestCommands(
       || config.authoritative && !config.includes.some(glob => matchesGlob(path, glob))))) {
       return { commands: [], groups: [], unroutedPaths: rest, refusalReason: "Selected tests are outside the default runner configuration" };
     }
+    routed.push({ framework: primary, paths: rest });
     groups.push({
       runnerId: primary,
       label: `${primary} (default configuration)`,
@@ -312,10 +348,18 @@ export function planSelectiveTestCommands(
     });
   }
 
+  const unrunnable = [...new Set(routed.flatMap(({ framework, paths }) => unrunnablePaths(framework, paths)))].sort();
+  if (unrunnable.length) {
+    return { commands: [], groups: [], unroutedPaths: unrunnable, refusalReason: `The runner reads test paths as patterns and cannot be given ${unrunnable[0]} literally` };
+  }
   return { commands: groups.map((g) => g.commandSpec), groups, unroutedPaths: [] };
 }
 
+/** Arguments with glob characters are double-quoted when that is safe: `sh` would otherwise expand
+ * `[[]` back into the bracketed path, and `cmd.exe` keeps backslashes, so a backslash-escaped
+ * `\[` reaches the runner on Windows. Inside double quotes both shells pass the brackets through. */
 function shellEscape(arg: string): string {
+  if (/[[\]*?{}]/.test(arg) && !/["$`\\%!\r\n]/.test(arg)) return `"${arg}"`;
   return arg.replace(/([\s'"\\$|&;<>(){}\[\]*?#~`])/g, "\\$1");
 }
 

@@ -9,6 +9,7 @@ import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
+import { unmatchedNodeTests } from "./selected-coverage.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
 
@@ -287,11 +288,17 @@ async function executeWithPolicy(
   const unchanged = before.baseSha === after.baseSha && altered.length === 0;
   const testsPassed = !failedCheck && execution.exitCode === 0 && !execution.timedOut;
   const succeeded = testsPassed && preexistingChecks.length === 0;
-  const verification: VerificationStatus = !unchanged ? "blocked" : succeeded ? "passed" : "failed";
+  // Every selected file contributes at least one test (node:test) or test file (vitest, jest) to the
+  // runner's summary; a smaller count means some selected tests never ran, which is not a pass.
+  const selectedCount = selection === "selected" && result ? result.selectedTests.length : 0;
+  const unexecuted = succeeded && execution.runnerTestCount !== undefined && execution.runnerTestCount < selectedCount;
+  const verification: VerificationStatus = !unchanged || unexecuted ? "blocked" : succeeded ? "passed" : "failed";
   const finalReason = !unchanged
     ? before.baseSha !== after.baseSha
       ? "HEAD moved while verification was running; rerun DiffCI for the new snapshot"
       : `the working tree changed while verification was running (${altered.slice(0, 5).map((change) => `${change.status} ${change.path}`).join(", ")}${altered.length > 5 ? `, ${altered.length - 5} more` : ""}); rerun DiffCI for the new snapshot`
+    : unexecuted
+      ? `the runner reported ${String(execution.runnerTestCount)} test(s) for ${selectedCount} selected test file(s), so some selected tests did not run; run the full test command instead`
     : succeeded
       ? checks ? `${reason}; ${checkSummary(checks)}` : reason
       : failedCheck
@@ -499,7 +506,12 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
   let reason: string;
   let primaryPhases: string[] = [];
   if (result.mode === "SELECTIVE" && !result.commandRefusalReason && result.proposedCommands.length === 1) {
-    const selected = inferSelectedCommand(repoPath, result.proposedCommands[0]!, result.selectedTests);
+    const inferred = inferSelectedCommand(repoPath, result.proposedCommands[0]!, result.selectedTests);
+    // A selected file the runner's glob would not match never runs, and the rest still pass (2026-11-01).
+    const unmatched = inferred.command ? unmatchedNodeTests(inferred.command, result.selectedTests) : [];
+    const selected = unmatched.length
+      ? { reason: `node --test would not match ${unmatched.length} selected test file(s), such as ${unmatched[0]}` }
+      : inferred;
     const phases = result.testPhases ?? [];
     if (selected.command && phases.length) {
       // The selection covers some changed files only through these test-script phases, so they run

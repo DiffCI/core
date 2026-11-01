@@ -7,6 +7,10 @@
  * DentalPresence's Next.js condition - for vitest and mocha suites alike.
  */
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import { commandSpecToString, planSelectiveTestCommands } from "../../src/planner/test-command.js";
@@ -214,5 +218,65 @@ describe("frameworks added 2026-08-26", () => {
   it("still uses an e2e runner when it is the only framework the repository declares", () => {
     const plan = planSelectiveTestCommands(profile(["playwright"]), ["e2e/a.spec.ts"]);
     assert.equal(commandSpecToString(plan.commands[0]!), "npx --no-install playwright test e2e/a.spec.ts");
+  });
+});
+
+describe("test paths with pattern characters (2026-11-01, DentalPresence ebac4289f73a)", () => {
+  const nextPaths = [
+    "src/app/[id]/page.test.ts",
+    "src/app/ingest/[...path]/route.test.ts",
+    "src/app/docs/[[...slug]]/route.test.ts",
+    "src/app/(marketing)/@modal/route.test.ts",
+  ];
+
+  it("escapes Next.js route directories in the form node --test's glob accepts", () => {
+    const plan = planSelectiveTestCommands(profileOf({ frameworks: ["node:test"] }), nextPaths);
+    assert.equal(plan.refusalReason, undefined);
+    assert.equal(
+      commandSpecToString(plan.commands[0]!),
+      'node --test "src/app/[(]marketing[)]/@modal/route.test.ts" "src/app/[[]id[]]/page.test.ts" '
+        + '"src/app/docs/[[][[]...slug[]][]]/route.test.ts" "src/app/ingest/[[]...path[]]/route.test.ts"',
+    );
+    assert.deepEqual(plan.groups[0]!.paths, [...nextPaths].sort());
+  });
+
+  it("runs every bracketed file it names, through the shell the CLI uses", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-brackets-"));
+    try {
+      for (const path of nextPaths) {
+        mkdirSync(join(dir, dirname(path)), { recursive: true });
+        writeFileSync(join(dir, path.replace(/\.ts$/, ".js")), `require("node:test")(${JSON.stringify(path)}, () => {});\n`);
+      }
+      const plan = planSelectiveTestCommands(profileOf({ frameworks: ["node:test"] }), nextPaths.map((path) => path.replace(/\.ts$/, ".js")));
+      const command = commandSpecToString(plan.commands[0]!);
+      const win = process.platform === "win32";
+      const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
+      const result = spawnSync(win ? "cmd.exe" : "sh", win ? ["/d", "/s", "/c", command] : ["-c", command], { cwd: dir, encoding: "utf8", env, windowsVerbatimArguments: win });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, new RegExp(`tests ${nextPaths.length}\\b`), result.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the paths through unchanged to runners that match them as substrings", () => {
+    const plan = planSelectiveTestCommands(profileOf({ frameworks: ["vitest"], packageManager: "pnpm" }), ["src/app/[id]/page.test.ts"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands[0]!.args, ["exec", "vitest", "run", "src/app/[id]/page.test.ts"]);
+  });
+
+  it("refuses runners that read a path as a regex or glob it cannot escape", () => {
+    for (const framework of ["jest", "mocha", "playwright"] as const) {
+      const plan = planSelectiveTestCommands(profileOf({ frameworks: [framework] }), ["src/a.test.ts", "src/app/[[...slug]]/route.test.ts"]);
+      assert.deepEqual(plan.commands, [], framework);
+      assert.deepEqual(plan.unroutedPaths, ["src/app/[[...slug]]/route.test.ts"], framework);
+      assert.match(plan.refusalReason ?? "", /patterns/, framework);
+    }
+  });
+
+  it("refuses a brace list node --test would expand before matching", () => {
+    const plan = planSelectiveTestCommands(profileOf({ frameworks: ["node:test"] }), ["test/{a,b}.test.js"]);
+    assert.deepEqual(plan.commands, []);
+    assert.deepEqual(plan.unroutedPaths, ["test/{a,b}.test.js"]);
   });
 });

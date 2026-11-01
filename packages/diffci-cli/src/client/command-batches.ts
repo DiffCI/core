@@ -1,3 +1,4 @@
+import { commandArguments } from "./selected-coverage.js";
 import { measureCommand, type CommandMeasurement } from "./verify-savings.js";
 
 /**
@@ -20,8 +21,11 @@ export function batchCommand(command: string, paths: readonly string[], limit = 
   if (command.length <= limit || paths.length === 0) return [command];
   const tokens = command.split(" ");
   const selected = new Set(paths);
+  // A `node --test` path with brackets arrives quoted and class-escaped: "src/app/[[]id[]]/x.test.ts".
+  const isSelected = (token: string) => selected.has(token)
+    || selected.has((commandArguments(token)[0] ?? "").replace(/\[(.)\]/g, "$1"));
   let start = tokens.length;
-  while (start > 0 && selected.has(tokens[start - 1]!)) start--;
+  while (start > 0 && isSelected(tokens[start - 1]!)) start--;
   const trailing = tokens.slice(start);
   if (trailing.length === 0 || new Set(trailing).size !== trailing.length) return [command];
   const prefix = tokens.slice(0, start).join(" ");
@@ -59,6 +63,7 @@ export function measureCommands(commands: readonly string[], options: { cwd: str
   const failed = parts.find((part) => part.exitCode !== 0 || part.signal !== null || part.timedOut);
   const ranAll = parts.length === commands.length;
   const failingTests = [...new Set(parts.flatMap((part) => part.failingTests ?? []))].sort();
+  const counted = ranAll && parts.every((part) => part.runnerTestCount !== undefined);
   const tail = (key: "stdoutTail" | "stderrTail") => parts.map((part) => part[key]).join("").slice(-Math.max(options.tailBytes, 0) || undefined);
   return {
     command: commands.join(" && "),
@@ -71,5 +76,6 @@ export function measureCommands(commands: readonly string[], options: { cwd: str
     stdoutTail: options.tailBytes > 0 ? tail("stdoutTail") : "",
     stderrTail: options.tailBytes > 0 ? tail("stderrTail") : "",
     ...(failingTests.length ? { failingTests } : {}),
+    ...(counted ? { runnerTestCount: parts.reduce((sum, part) => sum + part.runnerTestCount!, 0) } : {}),
   };
 }
