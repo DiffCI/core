@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { relative, resolve } from "node:path";
 
+import type { ObservationAgent } from "./agent-identity.js";
 import { economicsContext, evaluateEconomics, type EconomicsDecision } from "./economics.js";
 import {
   readCiEnvironment,
@@ -41,6 +42,8 @@ import {
   type ObservationStatus,
 } from "./report.js";
 import { auditWorkflows } from "./workflow-guard.js";
+import { deriveSharedGraphCacheKey } from "./shared-graph-cache.js";
+import type { DependencyGraphResult } from "@diffci.com/core/repo/types";
 
 /** Build output and dependencies are never sources of truth about a repository's own structure. */
 const EXCLUDE_DIRS = ["node_modules", ".next", "dist", "build"];
@@ -71,6 +74,16 @@ export interface ObserveOptions {
    * (`result.testPhases`) instead of falling back. Only for callers that execute the phases with the
    * selection - verification does; check, observe and enforce do not, so they keep the fallback. */
   selectTestPhases?: boolean;
+  /**
+   * Opt-in dependency-graph cache (local and/or DiffCI Cloud, src/client/shared-graph-cache.ts). Used only
+   * for a clean checkout; any failure is a miss, and a hit yields the same graph a build would.
+   */
+  graphCache?: {
+    load(key: string): Promise<{ result: DependencyGraphResult } | undefined>;
+    save(key: string, result: DependencyGraphResult): void;
+  };
+  /** Opt-in agent identity (src/client/agent-identity.ts); absent means the report carries none. */
+  agent?: ObservationAgent;
 }
 
 export function makeGitRunner(repoPath: string): GitRunner {
@@ -186,6 +199,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
       reason: extra.reason,
       result: extra.result,
       economics,
+      ...(options.agent ? { agent: options.agent } : {}),
       payload: {
         includesFilePaths: options.redactPaths !== true,
         includesFileContents: false,
@@ -221,7 +235,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
       if (economics.decision === "BYPASS_FULL") return finish("REFUSED", "eligibility", { reason: `ECONOMICS_FULL_BYPASS: ${economics.reason}. No selective command is authorized.` });
     }
 
-    const [{ analyzeGitDelta }, { classifyRepositoryProject, buildDependencyGraph }, { ImpactAnalyzer }, { runPathBaseline }, { commandSpecToString, planSelectiveTestCommands }, { repositoryFileReader }] = await Promise.all([
+    const [{ analyzeGitDelta }, { classifyRepositoryProject, buildDependencyGraph, hydrateDependencyGraph }, { ImpactAnalyzer }, { runPathBaseline }, { commandSpecToString, planSelectiveTestCommands }, { repositoryFileReader }] = await Promise.all([
       import("@diffci.com/core/git/git-diff"), import("@diffci.com/core/repo/graph"), import("@diffci.com/core/repo/impact"), import("@diffci.com/core/planner/path-baseline"), import("@diffci.com/core/planner/test-command"), import("@diffci.com/core/repo/file-references"),
     ]);
     markPhase("engineLoad");
@@ -243,8 +257,21 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
     const delta = deltaResult.delta;
     markPhase("delta");
 
-    const graphResult = await buildDependencyGraph({ repoPath, excludeDirs: EXCLUDE_DIRS, vueAnalysisCache: options.vueAnalysisCacheDir ? { directory: options.vueAnalysisCacheDir, version: `${options.version}:${options.engineSha ?? ""}` } : undefined });
-    markPhase("graph");
+    const graphCacheKey = options.graphCache
+      ? deriveSharedGraphCacheKey({ repoPath, git, version: options.version, engineSha: options.engineSha, excludeDirs: EXCLUDE_DIRS })
+      : undefined;
+    let cachedGraph: DependencyGraphResult | undefined;
+    if (options.graphCache && graphCacheKey) {
+      try {
+        const hit = await options.graphCache.load(graphCacheKey);
+        if (hit) cachedGraph = { ...hit.result, graph: hydrateDependencyGraph(hit.result.graph, repoPath, hit.result.profile?.testPatterns) };
+      } catch { cachedGraph = undefined; }
+    }
+    const graphResult = cachedGraph ?? await buildDependencyGraph({ repoPath, excludeDirs: EXCLUDE_DIRS, vueAnalysisCache: options.vueAnalysisCacheDir ? { directory: options.vueAnalysisCacheDir, version: `${options.version}:${options.engineSha ?? ""}` } : undefined });
+    if (!cachedGraph && options.graphCache && graphCacheKey) {
+      try { options.graphCache.save(graphCacheKey, graphResult); } catch { /* caching never fails an observation */ }
+    }
+    markPhase(cachedGraph ? "graphCached" : "graph");
     if (graphResult.graph.nodes.length === 0) {
       return finish("REFUSED", "graph", {
         reason:

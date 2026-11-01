@@ -9,10 +9,13 @@
   //
   // If a future edit makes this build fail with a missing @cloudflare/* type, the cause is an import
   // that pulled server code into the client path. Fix the import, not this file.
+  //
+  // Declarations are emitted so DiffCI.com can import the report schema, verification types and agent
+  // identity from the published package (`@diffci.com/diffci/report`) instead of keeping its own copy.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "./dist-client",
-    "declaration": false,
+    "declaration": true,
     "declarationMap": false,
     "sourceMap": false
   },

@@ -46,6 +46,8 @@ for (const required of [
   "LICENSE",
   "dist-client/src/client/cli.js",
   "dist-client/src/client/mcp.js",
+  "dist-client/src/client/report.d.ts",
+  "dist-client/src/client/agent-identity.d.ts",
   "dist-client/src/preflight/fingerprint.js",
   "dist-client/src/preflight/taxonomy.js",
   "node_modules/@diffci.com/core/dist/index.js",

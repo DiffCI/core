@@ -28,6 +28,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import YAML from "yaml";
 
+import { inferFullCommand } from "./full-command.js";
 import type { WorkflowFinding } from "./report.js";
 
 /** Steps a dedicated observation job may legitimately contain besides the DiffCI action itself. */
@@ -331,7 +332,282 @@ export function auditWorkflows(repoPath: string, options: WorkflowGuardOptions =
   return { observerJobs, findings, workflowsScanned };
 }
 
+/**
+ * Enforce mode audit (docs/enforce-mode-01-plan.md, step 4).
+ *
+ * The non-interference audit above proves an observer cannot change CI. Enforce mode deliberately does
+ * change it - pull requests stop running the full suite - so it needs the opposite guarantees:
+ *
+ *   1. There is an enforcing job, and it is a real gate (not continue-on-error, nothing like the dry run).
+ *   2. Its kill switch is wired to the repository variable. A hardcoded "on" would mean flipping the
+ *      variable no longer stops enforcement, and the plan's main rollback silently stops working.
+ *   3. The full suite still runs on every push to main. That run is the safety net and the ground truth
+ *      the miss detector reads; an installation without it skips tests with nothing checking the skips.
+ *
+ * "Cannot tell" is a finding, never a pass: an `if:` this module cannot evaluate, or a full command it
+ * cannot infer, is BLOCKING, because the whole point of the audit is to prove (3) rather than assume it.
+ */
+export interface EnforceAuditOptions {
+  /** The branch whose pushes must run the full suite. */
+  defaultBranch?: string;
+  /** Overrides the full command inferred from the repository (`npm test` and its equivalents). */
+  fullCommand?: string;
+}
+
+export interface EnforceAuditResult {
+  /** "<workflow file>#<job id>" for every job that enforces (runs `verify --policy enforce` as a gate). */
+  enforceJobs: string[];
+  /** "<workflow file>#<job id>" for every job that runs the full suite on push to the default branch. */
+  fullSuiteJobs: string[];
+  /** The command recognised as the full suite, or undefined when none could be inferred. */
+  fullCommand?: string;
+  findings: WorkflowFinding[];
+  workflowsScanned: string[];
+}
+
+/** Where repository-wide findings (no single workflow to blame) point. */
+const WORKFLOWS_DIR = join(".github", "workflows");
+const ENFORCE_VARIABLE_EXPRESSION =/^\$\{\{\s*vars\.DIFFCI_ENFORCE\s*\}\}$/;
+
+function runInvokesEnforcePolicy(run: string): boolean {
+  return runInvokesDiffCiVerification(run) && /--policy[=\s]+["']?enforce\b/.test(commandText(run));
+}
+
+/** `npm run test` and `npm test` are the same command; so are the pnpm/yarn/bun pairs. */
+function normalizeTestCommand(command: string): string {
+  return command.trim().replace(/\s+/g, " ").replace(/^(npm|pnpm|yarn|bun) run test$/, "$1 test");
+}
+
+function runInvokesFullCommand(run: string, fullCommand: string): boolean {
+  const target = normalizeTestCommand(fullCommand);
+  return commandText(run).split("\n").some((line) => normalizeTestCommand(line) === target);
+}
+
+function globToRegExp(glob: string): RegExp {
+  const pattern = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]")
+    .replace(/\u0000/g, ".*");
+  return new RegExp(`^${pattern}$`);
+}
+
+/**
+ * Does this workflow run on every push to `branch`? A `paths` or `paths-ignore` filter means some pushes
+ * do not trigger it, and those are exactly the pushes nothing would check, so it does not count.
+ */
+function triggersOnEveryPush(on: unknown, branch: string): { ok: boolean; reason?: string } {
+  if (on === "push") return { ok: true };
+  if (Array.isArray(on)) return { ok: on.includes("push") };
+  if (!isRecord(on) || !("push" in on)) return { ok: false };
+  const push = on.push;
+  if (push === null || push === undefined) return { ok: true };
+  if (!isRecord(push)) return { ok: false };
+  if (push.paths !== undefined || push["paths-ignore"] !== undefined) {
+    return { ok: false, reason: "its push trigger has a paths filter, so some pushes do not run it" };
+  }
+  const branches = asArray(push.branches).filter((value): value is string => typeof value === "string");
+  const ignored = asArray(push["branches-ignore"]).filter((value): value is string => typeof value === "string");
+  if (ignored.some((glob) => globToRegExp(glob).test(branch))) return { ok: false };
+  if (push.branches === undefined) {
+    // `tags:` alone restricts push to tags; branches are then not covered.
+    return { ok: push.tags === undefined && push["tags-ignore"] === undefined };
+  }
+  let included = false;
+  for (const glob of branches) {
+    if (glob.startsWith("!")) {
+      if (globToRegExp(glob.slice(1)).test(branch)) included = false;
+    } else if (globToRegExp(glob).test(branch)) {
+      included = true;
+    }
+  }
+  return { ok: included };
+}
+
+type Truth = "TRUE" | "FALSE" | "UNKNOWN";
+type Value = { known: true; value: string | boolean } | { known: false };
+
+/**
+ * Evaluates an `if:` for a push to `branch` with Kleene logic. `vars.*`, `inputs.*` and anything else
+ * not fixed by "this is a push to the default branch" are UNKNOWN, so a condition only counts as TRUE
+ * when it holds whatever those are. Unsupported syntax is UNKNOWN as well, never FALSE or TRUE.
+ */
+export function evaluatePushCondition(expression: string, branch: string): Truth {
+  const source = expression.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
+  const known: Record<string, string> = {
+    "github.event_name": "push",
+    "github.ref": `refs/heads/${branch}`,
+    "github.ref_name": branch,
+    "github.ref_type": "branch",
+  };
+  const tokens = source.match(/'(?:[^']|'')*'|"[^"]*"|&&|\|\||==|!=|!|\(|\)|[A-Za-z_][\w.-]*\(\)|[A-Za-z_][\w.-]*/g);
+  if (!tokens || tokens.join("").replace(/\s/g, "") !== source.replace(/\s/g, "")) return "UNKNOWN";
+  let index = 0;
+  const peek = (): string | undefined => tokens[index];
+  const truth = (value: Value): Truth => (!value.known ? "UNKNOWN" : value.value === false || value.value === "" ? "FALSE" : "TRUE");
+  const fromTruth = (value: Truth): Value => (value === "UNKNOWN" ? { known: false } : { known: true, value: value === "TRUE" });
+
+  const operand = (): Value => {
+    const token = tokens[index++];
+    if (token === undefined) return { known: false };
+    if (token === "(") {
+      const inner = or();
+      if (tokens[index++] !== ")") return { known: false };
+      return fromTruth(inner);
+    }
+    if (token.startsWith("'")) return { known: true, value: token.slice(1, -1).replace(/''/g, "'") };
+    if (token.startsWith('"')) return { known: true, value: token.slice(1, -1) };
+    if (token === "true" || token === "false") return { known: true, value: token === "true" };
+    if (token === "always()" || token === "success()") return { known: true, value: true };
+    if (token === "failure()" || token === "cancelled()") return { known: true, value: false };
+    if (token in known) return { known: true, value: known[token]! };
+    return { known: false };
+  };
+  const comparison = (): Truth => {
+    if (peek() === "!") {
+      index++;
+      const inner = comparison();
+      return inner === "UNKNOWN" ? "UNKNOWN" : inner === "TRUE" ? "FALSE" : "TRUE";
+    }
+    const left = operand();
+    const operator = peek();
+    if (operator !== "==" && operator !== "!=") return truth(left);
+    index++;
+    const right = operand();
+    if (!left.known || !right.known) return "UNKNOWN";
+    // GitHub compares strings case-insensitively.
+    const equal = String(left.value).toLowerCase() === String(right.value).toLowerCase();
+    return (operator === "==") === equal ? "TRUE" : "FALSE";
+  };
+  const and = (): Truth => {
+    let result = comparison();
+    while (peek() === "&&") {
+      index++;
+      const next = comparison();
+      result = result === "FALSE" || next === "FALSE" ? "FALSE" : result === "UNKNOWN" || next === "UNKNOWN" ? "UNKNOWN" : "TRUE";
+    }
+    return result;
+  };
+  function or(): Truth {
+    let result = and();
+    while (peek() === "||") {
+      index++;
+      const next = and();
+      result = result === "TRUE" || next === "TRUE" ? "TRUE" : result === "UNKNOWN" || next === "UNKNOWN" ? "UNKNOWN" : "FALSE";
+    }
+    return result;
+  }
+  const result = or();
+  return index === tokens.length ? result : "UNKNOWN";
+}
+
+function conditionHolds(condition: unknown, branch: string): Truth {
+  if (condition === undefined) return "TRUE";
+  if (typeof condition === "boolean") return condition ? "TRUE" : "FALSE";
+  if (typeof condition !== "string") return "UNKNOWN";
+  return evaluatePushCondition(condition, branch);
+}
+
+export function auditEnforceWorkflows(repoPath: string, options: EnforceAuditOptions = {}): EnforceAuditResult {
+  const branch = options.defaultBranch ?? "main";
+  const findings: WorkflowFinding[] = [];
+  const enforceJobs: string[] = [];
+  const fullSuiteJobs: string[] = [];
+  const workflowsScanned: string[] = [];
+  const unprovable: string[] = [];
+  const inferred = options.fullCommand ? { command: options.fullCommand, reason: "--full-command" } : inferFullCommand(repoPath);
+  const fullCommand = inferred.command;
+
+  if (!fullCommand) {
+    findings.push({
+      severity: "BLOCKING",
+      code: "FULL_COMMAND_UNKNOWN",
+      workflow: WORKFLOWS_DIR,
+      message: `could not infer the full test command (${inferred.reason}), so it cannot be shown that the full suite still runs on ${branch}. Pass --full-command.`,
+    });
+  }
+
+  for (const relativePath of listWorkflowFiles(repoPath)) {
+    let document: unknown;
+    try {
+      document = YAML.parse(readFileSync(join(repoPath, relativePath), "utf8"));
+    } catch {
+      // The non-interference audit reports unparseable workflows; here they simply prove nothing.
+      continue;
+    }
+    workflowsScanned.push(relativePath);
+    if (!isRecord(document)) continue;
+    const jobs = isRecord(document.jobs) ? document.jobs : {};
+    const workflowEnv = isRecord(document.env) ? document.env : {};
+    const trigger = triggersOnEveryPush(document.on, branch);
+
+    for (const [jobId, rawJob] of Object.entries(jobs)) {
+      if (!isRecord(rawJob)) continue;
+      const steps = asArray(rawJob.steps).filter(isRecord);
+      const where = `${relativePath}#${jobId}`;
+
+      // 1 + 2. Enforcing jobs. A continue-on-error job is a dry run whatever it calls itself.
+      const enforceSteps = steps.filter((step) => typeof step.run === "string" && runInvokesEnforcePolicy(step.run));
+      if (enforceSteps.length > 0 && rawJob["continue-on-error"] !== true) {
+        enforceJobs.push(where);
+        const jobEnv = isRecord(rawJob.env) ? rawJob.env : {};
+        for (const step of enforceSteps) {
+          const stepEnv = isRecord(step.env) ? step.env : {};
+          const value = stepEnv.DIFFCI_ENFORCE ?? jobEnv.DIFFCI_ENFORCE ?? workflowEnv.DIFFCI_ENFORCE;
+          if (typeof value !== "string" || !ENFORCE_VARIABLE_EXPRESSION.test(value.trim())) {
+            findings.push({
+              severity: "BLOCKING",
+              code: "ENFORCE_KILL_SWITCH_NOT_WIRED",
+              message: `job "${jobId}" runs verify --policy enforce with DIFFCI_ENFORCE ${value === undefined ? "unset" : `set to ${JSON.stringify(value)}`} - set it to \${{ vars.DIFFCI_ENFORCE }} so turning the repository variable off stops enforcement.`,
+              workflow: relativePath,
+              job: jobId,
+            });
+          }
+        }
+      }
+
+      // 3. The full suite on push to the default branch.
+      if (!fullCommand || !trigger.ok) continue;
+      const jobCondition = conditionHolds(rawJob.if, branch);
+      if (jobCondition === "FALSE") continue;
+      for (const step of steps) {
+        if (typeof step.run !== "string" || !runInvokesFullCommand(step.run, fullCommand)) continue;
+        if (step["working-directory"] !== undefined && step["working-directory"] !== ".") continue;
+        const stepCondition = conditionHolds(step.if, branch);
+        if (jobCondition === "TRUE" && stepCondition === "TRUE") {
+          fullSuiteJobs.push(where);
+          break;
+        }
+        if (stepCondition !== "FALSE") unprovable.push(where);
+      }
+    }
+  }
+
+  if (enforceJobs.length === 0) {
+    findings.push({
+      severity: "BLOCKING",
+      code: "ENFORCE_JOB_MISSING",
+      workflow: WORKFLOWS_DIR,
+      message: "no job runs `diffci verify --policy enforce` as a gate. A continue-on-error job is a dry run and does not count.",
+    });
+  }
+  if (fullCommand && fullSuiteJobs.length === 0) {
+    const detail = unprovable.length > 0
+      ? ` ${unprovable.join(", ")} might, but its if: could not be shown to hold for every push to ${branch}.`
+      : "";
+    findings.push({
+      severity: "BLOCKING",
+      code: "FULL_SUITE_NOT_ON_DEFAULT_BRANCH",
+      workflow: WORKFLOWS_DIR,
+      message: `no job provably runs "${fullCommand}" on every push to ${branch}.${detail} Enforce mode skips tests on pull requests; without that run nothing checks what was skipped.`,
+    });
+  }
+
+  return { enforceJobs, fullSuiteJobs, fullCommand, findings, workflowsScanned };
+}
+
 /** True when nothing found would let the observation change what the rest of CI does. */
-export function isNonInterfering(result: WorkflowGuardResult): boolean {
+export function isNonInterfering(result: Pick<WorkflowGuardResult, "findings">): boolean {
   return result.findings.every((finding) => finding.severity !== "BLOCKING");
 }

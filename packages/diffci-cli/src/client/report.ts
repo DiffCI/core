@@ -81,7 +81,8 @@ export interface ObservationPayloadDescription {
   includesFilePaths: boolean;
   /** Always false. No field in this schema carries file content, and none may be added. */
   includesFileContents: false;
-  /** Always false. The observer reads no process env beyond the CI variables recorded in `ci`. */
+  /** Always false. The observer reads no process env beyond the CI variables recorded in `ci` and, only
+   * with `--agent auto`, the presence of the agent markers named in agent-identity.ts (label, never value). */
   includesEnvironment: false;
   /** Always false. Nothing here is derived from a credential, and none is ever requested. */
   includesCredentials: false;
@@ -255,6 +256,8 @@ export interface ObservationReport {
   reason?: string;
   result?: ObservationResult;
   economics?: import("./economics.js").EconomicsDecision;
+  /** Opt-in (`--agent`): which AI coding agent the caller says produced this change. */
+  agent?: import("./agent-identity.js").ObservationAgent;
   payload: ObservationPayloadDescription;
   nonInterference: NonInterferenceEvidence;
   timings: { totalMs: number; preObserveMs?: number; phasesMs?: Record<string, number> };

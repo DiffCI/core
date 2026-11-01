@@ -34,11 +34,14 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { observe, isInsideRepository } from "./observe.js";
+import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook } from "./hook.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
+import { configureGraphCache } from "./shared-graph-cache.js";
+import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
@@ -46,7 +49,7 @@ import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conf
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
 import { formatGateSummary, gateExitCode, planGate, runGate } from "./gate.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
-import { auditWorkflows, isNonInterfering } from "./workflow-guard.js";
+import { auditEnforceWorkflows, auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
@@ -626,7 +629,24 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
     try { economicsHistory = JSON.parse(readFileSync(resolve(flags["economics-history"]), "utf8")); }
     catch { console.warn("DiffCI timing history is unreadable; performing normal analysis."); }
   }
+  // Opt-in graph cache: local with --graph-cache-dir, plus DiffCI Cloud with --shared-graph-cache.
+  const graphCacheConfig = configureGraphCache({
+    repoPath,
+    version: identity.version,
+    localDir: typeof flags["graph-cache-dir"] === "string" ? resolve(flags["graph-cache-dir"]) : env.DIFFCI_GRAPH_CACHE_DIR ? resolve(env.DIFFCI_GRAPH_CACHE_DIR) : undefined,
+    shared: flags["shared-graph-cache"] === true || env.DIFFCI_SHARED_GRAPH_CACHE === "1",
+    cacheUrl: typeof flags["graph-cache-url"] === "string" ? flags["graph-cache-url"] : env.DIFFCI_GRAPH_CACHE_URL,
+    apiUrl: typeof flags["api-url"] === "string" ? flags["api-url"] : env.DIFFCI_API_URL,
+    token: typeof flags["api-token"] === "string" ? flags["api-token"] : env.DIFFCI_TOKEN,
+    secret: env.DIFFCI_GRAPH_CACHE_SECRET,
+    noSend: flags["no-send"] === true || env.DIFFCI_NO_SEND === "1",
+    redactPaths: flags["redact-paths"] === true,
+    defaultLocalRoot: env.RUNNER_TEMP ?? tmpdir(),
+    local: (dir) => new GraphCache({ cacheDir: dir }),
+    isInsideRepository,
+  });
   const report = await observe({
+    graphCache: graphCacheConfig.cache,
     repoPath,
     env: env as Record<string, string | undefined>,
     version: identity.version,
@@ -639,6 +659,7 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
     economicsJobKey: typeof flags["economics-job"] === "string" ? flags["economics-job"] : undefined,
     forceAnalysis: flags["force-analysis"] === true,
     vueAnalysisCacheDir: typeof flags["vue-analysis-cache"] === "string" ? flags["vue-analysis-cache"] : undefined,
+    agent: resolveObservationAgent(flags.agent, env as Record<string, string | undefined>),
   });
 
   mkdirSync(dirname(reportPath), { recursive: true });
@@ -651,6 +672,13 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
   } else if (flags.quiet !== true) {
     console.log(summary);
     console.log(`  report: ${reportPath}`);
+  }
+  if (graphCacheConfig.cache || graphCacheConfig.notes.length) {
+    await graphCacheConfig.cache?.flush();
+    if (flags.quiet !== true && flags.json !== true) {
+      for (const note of graphCacheConfig.notes) console.log(`  graph cache: ${note}`);
+      if (graphCacheConfig.cache?.lastOutcome) console.log(`  graph cache: ${graphCacheConfig.cache.lastOutcome}`);
+    }
   }
 
   // Sending happens before the job summary is written, so the summary can say whether it worked.
@@ -727,6 +755,34 @@ function runVerifyWorkflow(flags: Record<string, string | boolean>, env: NodeJS.
     return 0;
   }
   console.log("\nBlocking findings above: as written, this installation CAN change what the rest of CI does.");
+  return 1;
+}
+
+/**
+ * `verify-workflow --enforce` (docs/enforce-mode-01-plan.md, step 4). The observer audit cannot apply:
+ * an enforcing job is meant to change CI. This checks the opposite - that the gate is real, that its
+ * kill switch is the repository variable, and that the full suite still runs on every push to main.
+ */
+function runVerifyEnforceWorkflow(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  const result = auditEnforceWorkflows(repoPath, {
+    defaultBranch: stringFlag(flags, "default-branch"),
+    fullCommand: stringFlag(flags, "full-command"),
+  });
+
+  if (result.workflowsScanned.length === 0) {
+    console.log(`No workflow files found under ${join(repoPath, ".github", "workflows")}. Nothing was checked.`);
+    return 1;
+  }
+  console.log(`Scanned ${result.workflowsScanned.length} workflow file(s).`);
+  console.log(`Enforcing job(s): ${result.enforceJobs.length ? result.enforceJobs.join(", ") : "none"}`);
+  console.log(`Full suite (${result.fullCommand ?? "unknown"}) on every push: ${result.fullSuiteJobs.length ? result.fullSuiteJobs.join(", ") : "none"}`);
+  for (const finding of result.findings) console.log(formatFinding(finding));
+  if (isNonInterfering(result)) {
+    console.log("\nNo blocking findings. Enforcement is gated by DIFFCI_ENFORCE and the full suite still runs on push.");
+    return 0;
+  }
+  console.log("\nBlocking findings above: as written, enforce mode could skip tests with nothing checking the skips.");
   return 1;
 }
 
@@ -1027,7 +1083,8 @@ Usage:
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
   diffci observe [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                  [--redact-paths] [--json] [--quiet] [--fail-on-error]
-                 [--api-url <url> --api-token <token>] [--no-send] [--share-usage]
+                 [--api-url <url> --api-token <token>] [--no-send] [--share-usage] [--agent <name|auto>]
+                 [--graph-cache-dir <dir>] [--shared-graph-cache [--graph-cache-url <url>]]
   diffci verify-savings --repo <path> --full <command>
                          (--selected <command> | --selected-from-report <file>)
                          --out <file> [--markdown <file>] [--label <name>]
@@ -1035,6 +1092,7 @@ Usage:
                          [--cache-prepare <command>] [--fixed-order]
   diffci validate-specs --file <json> [--json]
   diffci verify-workflow [--repo <path>]
+  diffci verify-workflow --enforce [--repo <path>] [--default-branch main] [--full-command "<cmd>"]
   diffci gate [--base <sha> --head <sha>] [--tests <command>] [--script <name,...>] [--measure-selected]
               [--only checks|tests] [--plan <file> [--expect-head <sha>]] [--repo <path>] [--out <file>]
               [--json] [--timeout-ms <ms>]
@@ -1065,6 +1123,8 @@ observe analyses the checkout and writes one JSON report. It runs nothing and ch
 verify-savings runs both commands and reports measured paired runtime; it is an opt-in pilot command.
 validate-specs checks an explicit list of specification IDs and logical targets and blocks duplicates.
 verify-workflow checks that the job running DiffCI cannot affect any other job, and exits 1 if it can.
+With --enforce it instead checks that an enforcing job exists, is gated by vars.DIFFCI_ENFORCE, and
+that the full suite still runs on every push to the default branch; it exits 1 if any of that fails.
 gate replaces a build's gate script (for example "npm run check && npm test"). In observe mode, the only
 mode so far, it runs every gate check and the full test command (--tests, default the repository's test
 script) exactly as the build would and exits with their result. It records what DiffCI would have run,
@@ -1081,6 +1141,10 @@ Failures are re-run with the package.json tsx --test runner, or read from --reru
 The report is sent only when both --api-url and --api-token are given (or DIFFCI_API_URL and
 DIFFCI_TOKEN are set). A failed send is reported and never fails the step - the report is on disk
 either way. Plain http is refused; the token is never printed.
+--graph-cache-dir (or DIFFCI_GRAPH_CACHE_DIR) reuses dependency graphs for clean checkouts from a local
+directory outside the checkout. --shared-graph-cache (or DIFFCI_SHARED_GRAPH_CACHE=1) also shares them via
+DiffCI Cloud (Team/Business) using the api-url and api-token; DIFFCI_GRAPH_CACHE_SECRET encrypts them
+client-side. Graphs hold paths and import edges, never file contents; a cache failure only means a local build.
 --share-usage (or DIFFCI_SHARE_USAGE=1) opts in to command, outcome, version, surface and activity reporting.
 diffci telemetry --mode anonymous saves consent; --mode installations also shares a random local installation ID.
 --mode off disables saved consent and deletes the ID. --internal-usage labels tests/internal activity.
@@ -1145,7 +1209,7 @@ async function main(): Promise<void> {
       process.exitCode = runValidateSpecs(flags);
       return;
     case "verify-workflow":
-      process.exitCode = runVerifyWorkflow(flags, env);
+      process.exitCode = flags.enforce === true ? runVerifyEnforceWorkflow(flags, env) : runVerifyWorkflow(flags, env);
       return;
     case "gate":
       process.exitCode = await runGateCommand(flags, env);

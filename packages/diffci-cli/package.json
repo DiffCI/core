@@ -43,6 +43,13 @@
     "diffci": "dist-client/src/client/cli.js",
     "diffci-mcp": "dist-client/src/client/mcp.js"
   },
+  "exports": {
+    "./package.json": "./package.json",
+    "./*": {
+      "types": "./dist-client/src/client/*.d.ts",
+      "default": "./dist-client/src/client/*.js"
+    }
+  },
   "files": [
     "dist-client/src/client",
     "dist-client/src/preflight",
