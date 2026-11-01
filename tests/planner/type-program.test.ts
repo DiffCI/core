@@ -42,6 +42,31 @@ describe("programMembership", () => {
     }
   });
 
+  // #54. Adding a file to `exclude` only drops it from the program when nothing still imports it: an
+  // excluded file reachable through an import stays in and keeps its diagnostics. So a change limited to
+  // `exclude` stays a full run today. A safe narrowing rule would need both: (1) the config change is
+  // ONLY to `exclude`, and (2) no newly excluded file can be reached through imports from any remaining
+  // root. Anything less stays full-suite.
+  it("keeps an exclude-only tsconfig change in the program", () => {
+    const before = {
+      "tsconfig.json": "{ \"include\": [\"src\"] }",
+      "src/main.ts": "import { imported } from \"./imported\";\nexport const main = imported;",
+      "src/imported.ts": "export const imported: number = \"bad\";",
+      "src/unreferenced.ts": "export const unreferenced: number = \"bad\";",
+    };
+    const after = { ...before, "tsconfig.json": "{ \"include\": [\"src\"], \"exclude\": [\"src/imported.ts\", \"src/unreferenced.ts\"] }" };
+    const membership = (sources: Record<string, string>) => programMembership("tsconfig.json", {
+      scripts: {},
+      changes: [{ path: "tsconfig.json", status: "modified" as const }],
+      read: (path: string) => sources[path],
+      files: Object.keys(sources),
+    });
+    // `src/imported.ts` is the case any future narrowing must still catch: it is excluded but `src/main.ts`
+    // still imports it, so `tsc` keeps reporting its error. `src/unreferenced.ts` really does leave.
+    assert.equal(membership(after).inProgram, true);
+    assert.match(membership(after).reason, /tsconfig\.json changed/);
+  });
+
   it("fails closed on unreadable configs and package bases", () => {
     assert.equal(programMembership("missing.json", input(["docs/guide.md"])).inProgram, true);
     const packageBase = { "tsconfig.json": "{ \"extends\": \"@tsconfig/node22/tsconfig.json\", \"include\": [\"src\"] }" };
