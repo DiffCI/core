@@ -233,8 +233,20 @@ const CONFIG_PATTERNS = [
 // flag for that file, otherwise the path-based rule still forces FULL fallback.
 // Only explicitly understood descriptive fields may be ignored. Unknown fields can configure
 // tools (including DiffCI itself), so a behavioral-field allowlist is unsafe.
+//
+// Added with a reason each (#48):
+//   - `maintainers`: npm registry metadata, like `author` and `contributors`; no installer, runner or
+//     bundler reads it.
+// Deliberately NOT ignored, so a change still forces a full run:
+//   - `engines`: Yarn Classic fails the install on a mismatch, and npm does under `engine-strict`.
+//   - `packageManager`: Corepack picks the package manager (and its version) from it.
+//   - `sideEffects`: bundlers (webpack, Rollup, esbuild) use it to drop modules, so a bundled test can
+//     change.
+//   - `browserslist`: Babel preset-env, Autoprefixer and SWC compile against it, which changes the code
+//     babel-jest and similar transforms hand to the tests.
+//   - `prettier`, `eslintConfig`, `jest` and other tool configuration: the tool reads its options here.
 const PACKAGE_JSON_METADATA_FIELDS = new Set([
-  "description", "keywords", "author", "contributors", "homepage", "license", "bugs", "repository",
+  "description", "keywords", "author", "contributors", "maintainers", "homepage", "license", "bugs", "repository",
 ]);
 
 /** Narrows a path-based "package.json changed" signal to whether any behaviorally-relevant field
@@ -263,8 +275,11 @@ export function hasRelevantPackageJsonChange(oldContent: string | undefined, new
  * Fields whose change cannot alter how `npm test` runs, but which a test may read (a release test
  * asserting `version`, a packaging test reading `files`). 2026-10-21 telemetry: `version` alone was the
  * only package.json change in 18 of one dogfood repository's 84 full runs, and non-test scripts in 15 more.
+ *
+ * `man` (#48): npm links the listed pages on a global install; nothing reads it while tests run, but a
+ * packaging test may check the paths, so it is data rather than metadata.
  */
-const PACKAGE_JSON_DATA_FIELDS = new Set(["version", "files", "private", "publishConfig", "funding", "mcpName"]);
+const PACKAGE_JSON_DATA_FIELDS = new Set(["version", "files", "private", "publishConfig", "funding", "mcpName", "man"]);
 
 function parsePackageScripts(content: string | undefined): unknown {
   if (content === undefined) return undefined;

@@ -42,6 +42,13 @@ describe("packageJsonChange", () => {
     assert.equal(packageJsonChange(pkg({}), pkg({ peerDependencies: { a: "1" } })).kind, "behavioral");
     assert.equal(packageJsonChange(pkg({}), pkg({ overrides: { a: "1" } })).kind, "behavioral");
   });
+  it("classifies the fields #48 reviewed", () => {
+    assert.equal(packageJsonChange(pkg({}), pkg({ maintainers: ["someone"] })).kind, "metadata");
+    assert.equal(packageJsonChange(pkg({}), pkg({ man: ["./man/x.1"] })).kind, "data");
+    for (const field of ["engines", "packageManager", "sideEffects", "browserslist", "prettier"]) {
+      assert.equal(packageJsonChange(pkg({}), pkg({ [field]: "changed" })).kind, "behavioral", field);
+    }
+  });
 });
 
 describe("npmLockAffectedDependencies", () => {
