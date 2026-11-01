@@ -60,6 +60,24 @@ They picked their own test files 928 times and ran the full suite 282 times, and
      pre-push hook with `--no-verify` unless the user asks.
    ```
 
+### Short snippet
+
+If you only want the essentials, paste these lines instead:
+
+```md
+## Testing
+Before pushing, run `npx "@diffci.com/diffci@latest" verify --changed --json` and run the checks it lists.
+Do not pick test files yourself or run the full suite "to be safe"; DiffCI falls back to the full suite when it must.
+Do not commit or push while `safe_to_continue` is false.
+```
+
+Where it goes for each agent:
+
+- **Claude Code:** `CLAUDE.md` at the repository root.
+- **Codex:** `AGENTS.md` at the repository root.
+- **Cursor:** `AGENTS.md`, or a project rule at `.cursor/rules/diffci.mdc` that starts with
+  `---`, `description: Run DiffCI before pushing`, `alwaysApply: true`, `---`.
+
 ## Codex
 
 ```sh

@@ -44,6 +44,10 @@ from this repository. Meta Muse Code reads the native root
 use the local MCP configuration in the agent-plugin package or visit
 https://diffci.com/mcp-server.
 
+Installing the plugin does not make an agent use it. Paste the
+[short agent-instructions snippet](docs/agent-installation.md#short-snippet)
+into `CLAUDE.md` or `AGENTS.md` so it runs DiffCI before pushing.
+
 ## GitHub Action
 
 The public [`action.yml`](action.yml) is an observation-only GitHub Action
