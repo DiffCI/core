@@ -101,7 +101,6 @@
     "scripts/fallback-reasons.mjs",
     "scripts/release-surfaces.d.mts",
     "scripts/release-surfaces.mjs",
-    "scripts/run-tests.mjs",
     "scripts/verify-mcp-registry.mjs",
     "scripts/verify-release.mjs",
     "server.json",

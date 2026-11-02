@@ -59,7 +59,35 @@ describe("workflow non-interference guard", () => {
     }
   });
 
+  it("does not treat messages, dispatch fields, variable names or JSON reads as observation jobs", () => {
+    const dir = repoWithWorkflow(`${CLEAN}
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          test -n "$GH_TOKEN" || {
+            echo "DIFFCI_PRODUCT_DISPATCH_TOKEN is required before publishing a release." >&2
+            echo "Use a fine-grained token restricted to DiffCI/DiffCI.com with Contents: write." >&2
+            exit 1
+          }
+          version=$(node -p "require('./packages/diffci-cli/package.json').version")
+          gh api --method POST repos/DiffCI/DiffCI.com/dispatches \\
+            -f event_type=diffci-core-release \\
+            -f "client_payload[version]=$version" >/dev/null
+`);
+    try {
+      const result = auditWorkflows(dir);
+      assert.deepEqual(result.observerJobs, [`${join(".github", "workflows", "ci.yml")}#diffci`]);
+      assert.deepEqual(result.findings, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   for (const script of [
+    "echo y | npx @diffci.com/diffci observe",
+    "echo start; npx @diffci.com/diffci observe",
+    "\"$DIFFCI_HOME/node_modules/.bin/diffci\" observe",
     "npm dist-tag rm @diffci.com/diffci latest || true\n          npx @diffci.com/diffci observe",
     "npm dist-tag rm @diffci.com/diffci latest; npx @diffci.com/diffci observe",
     "npm dist-tag rm @diffci.com/diffci latest || npx @diffci.com/diffci observe",

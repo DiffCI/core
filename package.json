@@ -33,7 +33,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.check.json --noEmit",
-    "test": "node scripts/run-tests.mjs",
+    "test": "tsx --test \"tests/**/*.test.ts\"",
     "benchmark": "node --import tsx scripts/benchmark.ts",
     "audit:boundary": "node scripts/audit-boundary.mjs",
     "agent:check": "node scripts/check-agent-packaging.mjs",

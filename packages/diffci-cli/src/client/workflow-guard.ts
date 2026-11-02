@@ -125,11 +125,25 @@ function runInvokesDiffCiVerification(run: string): boolean {
  * product generates keeps matching: `npm install … @diffci/observer@1.4.2`,
  * `"${RUNNER_TEMP}/diffci/node_modules/.bin/diffci" observe`, `docker run … <image>@sha256:… observe`,
  * `npx @diffci/observer observe` all name DiffCI outside any URL.
+ *
+ * The same holds for four other kinds of data (2026-11-02): plain `echo`/`printf` messages, `gh api`
+ * fields and `repos/...` paths, SCREAMING_SNAKE environment variable names, and `.json` paths, which
+ * are read rather than run. Core's own release workflow mentions `DIFFCI_PRODUCT_DISPATCH_TOKEN` in an
+ * error message, dispatches `-f event_type=diffci-core-release` to `repos/DiffCI/DiffCI.com`, and reads
+ * `./packages/diffci-cli/package.json`, and `check` reported both of those jobs as badly installed
+ * observers. An echo line with a substitution, pipe or command separator is kept, because it can run
+ * something.
  */
 function commandText(run: string): string {
   return run
     .split("\n")
     .map((line) => line.replace(/(^|\s)#.*$/, "$1").replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, " "))
+    .map((line) => (/^\s*(?:echo|printf)\s/.test(line) && !/\$\(|`|\||&&|;/.test(line) ? "" : line))
+    .map((line) => line
+      .replace(/(^|\s)(?:-[fF]|--(?:raw-)?field)\s+(?:"[^"]*"|'[^']*'|\S+)/g, "$1")
+      .replace(/(^|[\s"'])repos\/[^\s"']+/g, "$1")
+      .replace(/\$?\{?\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b\}?/g, " ")
+      .replace(/[^\s"'()]*\.json\b/g, " "))
     // A literal npm registry tag removal neither installs nor invokes the observer. Match the
     // entire line, with only a literal `|| true` allowed, so appended observer commands and shell
     // substitutions still take the conservative inspection path. Other script lines remain intact.
