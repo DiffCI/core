@@ -360,6 +360,9 @@ export interface PackageJsonChange {
   testScriptAddedPaths: string[];
   /** Dependency names whose entry changed, when `kind` is `dependencies`. */
   changedDependencies: string[];
+  /** `kind` is `dependencies` and the edit only changed the request of a dependency that stays in
+   * the same field (no addition, removal or move between fields, and nothing but metadata besides). */
+  specifiersOnly: boolean;
 }
 
 /**
@@ -375,8 +378,8 @@ export interface PackageJsonChange {
  *     workspaces and unparseable JSON.
  */
 export function packageJsonChange(oldContent: string | undefined, newContent: string | undefined): PackageJsonChange {
-  const result = (kind: PackageJsonChange["kind"], testScriptAddedPaths: string[] = [], changedDependencies: string[] = []): PackageJsonChange =>
-    ({ kind, testScriptAddedPaths, changedDependencies });
+  const result = (kind: PackageJsonChange["kind"], testScriptAddedPaths: string[] = [], changedDependencies: string[] = [], specifiersOnly = false): PackageJsonChange =>
+    ({ kind, testScriptAddedPaths, changedDependencies, specifiersOnly });
   if (!hasRelevantPackageJsonChange(oldContent, newContent)) return result("metadata");
   let oldJson: Record<string, unknown>;
   let newJson: Record<string, unknown>;
@@ -392,17 +395,24 @@ export function packageJsonChange(oldContent: string | undefined, newContent: st
   const closure = new Set([...testScriptClosure(oldScripts), ...testScriptClosure(newScripts)]);
   const added = new Set<string>();
   const dependencies = new Set<string>();
+  let specifiersOnly = true;
   for (const field of new Set([...Object.keys(oldJson), ...Object.keys(newJson)])) {
-    if (PACKAGE_JSON_METADATA_FIELDS.has(field) || PACKAGE_JSON_DATA_FIELDS.has(field)) continue;
+    if (PACKAGE_JSON_METADATA_FIELDS.has(field)) continue;
     if (JSON.stringify(oldJson[field]) === JSON.stringify(newJson[field])) continue;
+    if (PACKAGE_JSON_DATA_FIELDS.has(field)) { specifiersOnly = false; continue; }
     if (DEPENDENCY_FIELDS.has(field)) {
       const before = scriptRecord(oldJson[field]);
       const after = scriptRecord(newJson[field]);
       if (!before || !after) return result("behavioral");
-      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) if (before[name] !== after[name]) dependencies.add(name);
+      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        if (before[name] === after[name]) continue;
+        dependencies.add(name);
+        if (before[name] === undefined || after[name] === undefined) specifiersOnly = false;
+      }
       continue;
     }
     if (field !== "scripts") return result("behavioral");
+    specifiersOnly = false;
     for (const name of new Set([...Object.keys(oldScripts), ...Object.keys(newScripts)])) {
       if (oldScripts[name] === newScripts[name] || !closure.has(name)) continue;
       const edit = oldScripts[name] !== undefined && newScripts[name] !== undefined ? testListEdit(oldScripts[name]!, newScripts[name]!) : undefined;
@@ -410,7 +420,9 @@ export function packageJsonChange(oldContent: string | undefined, newContent: st
       for (const path of edit.added) added.add(path);
     }
   }
-  return result(dependencies.size > 0 ? "dependencies" : "data", [...added].sort(), [...dependencies].sort());
+  return dependencies.size > 0
+    ? result("dependencies", [...added].sort(), [...dependencies].sort(), specifiersOnly)
+    : result("data", [...added].sort());
 }
 
 /** packageJsonChange's kind, with a dependency change reported as behavioral. */
@@ -643,6 +655,7 @@ export async function analyzeGitDelta(
           narrowed.add(changedPackageJson);
           if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
           if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+          if (packageChange!.specifiersOnly) analysis.packageJsonSpecifiersOnly = true;
         }
       }
     }
@@ -676,6 +689,7 @@ export async function analyzeGitDelta(
           narrowed.add(changedPackageJson);
           if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
           if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+          if (packageChange!.specifiersOnly) analysis.packageJsonSpecifiersOnly = true;
         }
       }
     }
@@ -715,6 +729,7 @@ export async function analyzeGitDelta(
           narrowed.add(changedPackageJson);
           if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
           if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+          if (packageChange!.specifiersOnly) analysis.packageJsonSpecifiersOnly = true;
         }
       }
     }

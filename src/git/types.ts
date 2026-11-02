@@ -54,6 +54,10 @@ export interface GitDeltaAnalysis {
   /** A modeled lockfile whose raw readers must still be resolved, including for semantic no-ops.
    * Its dependency effects are covered by changedDependencies. */
   dependencyLockfile?: "yarn.lock" | "pnpm-lock.yaml";
+  /** The root package.json edit only changed dependency requests that a modeled lockfile change
+   * accounts for (2026-11-02). Its dependency effect is in changedDependencies, so ImpactAnalyzer
+   * accepts no readers of the file itself. */
+  packageJsonSpecifiersOnly?: boolean;
   /** The changed paths behind each flag above, so a fallback reason can name its files (2026-10-21:
    * "Configuration file(s) changed" was the most frequent reason in both telemetry cohorts and never
    * said which file). Absent on analyses produced before this field existed. */

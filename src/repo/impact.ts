@@ -252,6 +252,7 @@ export class ImpactAnalyzer {
   private repositoryFiles: ReadonlySet<string> | undefined;
   private contentCleared: ReadonlySet<string> = new Set();
   private dependencyLockfile: string | undefined;
+  private packageJsonSpecifiersOnly = false;
   private readRepositoryFile: ((path: string) => string | undefined) | undefined;
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
@@ -292,6 +293,7 @@ export class ImpactAnalyzer {
     const referenceResolved = new Set(delta.analysis.referenceResolvedPaths ?? []);
     this.contentCleared = referenceResolved;
     this.dependencyLockfile = delta.analysis.dependencyLockfile;
+    this.packageJsonSpecifiersOnly = delta.analysis.packageJsonSpecifiersOnly === true;
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
@@ -616,7 +618,12 @@ export class ImpactAnalyzer {
       }
     }
     if (category === "unknown" || category === "test-fixture") {
-      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      // A package.json edit limited to dependency requests is covered by dependency selection, like
+      // the lockfile above, so finding no reader is not a gap. Tooling that loads a file naming it
+      // still is (2026-11-02).
+      const specifiersOnly = changedPath === "package.json" && this.packageJsonSpecifiersOnly;
+      const options = specifiersOnly ? { allowNoReaders: true, implicitReadersUnresolvable: true } : {};
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });

@@ -7,7 +7,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import { analyzeGitDelta } from "../../src/git/git-diff.js";
 import { repositoryFileReader } from "../../src/repo/file-references.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
@@ -133,6 +133,32 @@ describe("pnpm dependency bumps end to end", () => {
       assert.deepEqual(bump.delta.analysis.changedDependencies, ["a"]);
       assert.deepEqual(bump.impact.fallbackReasons, []);
       assert.deepEqual(bump.impact.affectedTests.map((t) => t.path), ["src/uses-a.test.js", "tests/manifest.test.js"]);
+    });
+  });
+
+  it("needs no package.json reader for a request-only bump, but still does for a moved dependency", async () => {
+    const bumpA = { "package.json": manifest("^1.1.0"), "pnpm-lock.yaml": lock({ a: "1.1.0" }).replace("specifier: ^1.0.0\n      version: 1.1.0", "specifier: ^1.1.0\n      version: 1.1.0") };
+    await inRepo({ "tests/manifest.test.js": `import test from "node:test";\ntest("m", () => {});\n` }, async (dir) => {
+      const bump = await analyze(dir, bumpA);
+      assert.equal(bump.delta.analysis.packageJsonSpecifiersOnly, true);
+      assert.deepEqual(bump.impact.fallbackReasons, []);
+      assert.deepEqual(bump.impact.affectedTests.map((t) => t.path), ["src/uses-a.test.js"]);
+      const moved = parse(lock({ a: "1.1.0" })) as { importers: Record<string, Record<string, Record<string, unknown>>> };
+      const root = moved.importers["."]!;
+      root.devDependencies = { c: root.dependencies!.c };
+      delete root.dependencies!.c;
+      const { c, ...rest } = JSON.parse(manifest("^1.1.0")).dependencies;
+      const move = await analyze(dir, { "package.json": manifest("^1.1.0", { dependencies: rest, devDependencies: { c } }), "pnpm-lock.yaml": stringify(moved) });
+      assert.equal(move.delta.analysis.packageJsonSpecifiersOnly, undefined);
+      assert.deepEqual(move.impact.fallbackReasons, ["Unknown changed file: package.json"]);
+    });
+    await inRepo({
+      "tests/manifest.test.js": `import test from "node:test";\ntest("m", () => {});\n`,
+      "vitest.config.js": 'import { readFileSync } from "node:fs";\nexport default { value: readFileSync("package.json", "utf8") };\n',
+    }, async (dir) => {
+      const tooling = await analyze(dir, bumpA);
+      assert.equal(tooling.delta.analysis.packageJsonSpecifiersOnly, true);
+      assert.deepEqual(tooling.impact.fallbackReasons, ["Unknown changed file: package.json"]);
     });
   });
 

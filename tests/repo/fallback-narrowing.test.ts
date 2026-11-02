@@ -35,12 +35,22 @@ describe("testListEdit", () => {
 describe("packageJsonChange", () => {
   const pkg = (fields: Record<string, unknown>) => JSON.stringify({ name: "x", scripts: { test: "node --test a.test.js" }, dependencies: { a: "1.0.0" }, ...fields });
   it("treats a test-list edit as data and reports the added tests", () => {
-    assert.deepEqual(packageJsonChange(pkg({}), pkg({ scripts: { test: "node --test a.test.js b.test.js" } })), { kind: "data", testScriptAddedPaths: ["b.test.js"], changedDependencies: [] });
+    assert.deepEqual(packageJsonChange(pkg({}), pkg({ scripts: { test: "node --test a.test.js b.test.js" } })), { kind: "data", testScriptAddedPaths: ["b.test.js"], changedDependencies: [], specifiersOnly: false });
   });
   it("reports dependency-only edits by name and keeps other behavioral fields behavioral", () => {
-    assert.deepEqual(packageJsonChange(pkg({}), pkg({ dependencies: { a: "1.1.0", b: "2.0.0" } })), { kind: "dependencies", testScriptAddedPaths: [], changedDependencies: ["a", "b"] });
+    assert.deepEqual(packageJsonChange(pkg({}), pkg({ dependencies: { a: "1.1.0", b: "2.0.0" } })), { kind: "dependencies", testScriptAddedPaths: [], changedDependencies: ["a", "b"], specifiersOnly: false });
     assert.equal(packageJsonChange(pkg({}), pkg({ peerDependencies: { a: "1" } })).kind, "behavioral");
     assert.equal(packageJsonChange(pkg({}), pkg({ overrides: { a: "1" } })).kind, "behavioral");
+  });
+  it("marks request-only edits, and nothing that adds, removes or moves a dependency", () => {
+    const specifiersOnly = (fields: Record<string, unknown>) => packageJsonChange(pkg({}), pkg(fields)).specifiersOnly;
+    assert.equal(specifiersOnly({ dependencies: { a: "1.1.0" } }), true);
+    assert.equal(specifiersOnly({ dependencies: { a: "1.1.0" }, description: "metadata is fine" }), true);
+    assert.equal(specifiersOnly({ dependencies: {}, devDependencies: { a: "1.0.0" } }), false);
+    assert.equal(specifiersOnly({ dependencies: { a: "1.0.0", b: "1.0.0" } }), false);
+    assert.equal(specifiersOnly({ dependencies: {} }), false);
+    assert.equal(specifiersOnly({ dependencies: { a: "1.1.0" }, version: "2.0.0" }), false);
+    assert.equal(specifiersOnly({ dependencies: { a: "1.1.0" }, scripts: { test: "node --test a.test.js", build: "tsc" } }), false);
   });
   it("classifies the fields #48 reviewed", () => {
     assert.equal(packageJsonChange(pkg({}), pkg({ maintainers: ["someone"] })).kind, "metadata");
