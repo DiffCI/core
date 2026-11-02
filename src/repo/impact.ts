@@ -528,6 +528,14 @@ export class ImpactAnalyzer {
         .map((ref) => packageRoot(ref.specifier)).filter((name) => !packages.includes(name)))].sort();
       if (undeclared.length) fail(`Yarn lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
     }
+    if (delta.analysis.dependencyLockfile === "pnpm-lock.yaml") {
+      // pnpm is strict by default, but `public-hoist-pattern` and a hoisted node-linker expose
+      // transitive packages at the root. An undeclared import of one is not attributed to a root.
+      const declared = new Set([...profile.packageJson.dependencies, ...profile.packageJson.devDependencies]);
+      const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
+        .map((ref) => packageRoot(ref.specifier)).filter((name) => !declared.has(name)))].sort();
+      if (undeclared.length) fail(`pnpm lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
+    }
     const scripts = profile.packageJson.scripts;
     const closureBodies = [...testScriptClosure(scripts)].map((name) => scripts[name] ?? "");
     for (const name of packages) {

@@ -172,7 +172,7 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | --- | --- | --- |
 | `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts` or `.babelrc` | No |
 | `Dependency manifest changed; full validation required` | Add `peerDependencies` or `engines` to `package.json` | No |
-| `Lockfile changed; full validation required` | Regenerate `pnpm-lock.yaml` | No |
+| `Lockfile changed; full validation required` | Regenerate `pnpm-lock.yaml` after changing its `settings` | No |
 | `GitHub workflow definition(s) changed; full validation required` | Change a step in `.github/workflows/ci.yml` that runs `npm test` | No |
 | `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | No |
 | `Database definition(s) changed; full validation required` | Add a file under `migrations/` | No |
@@ -187,6 +187,7 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | --- | --- | --- |
 | `… (…) cannot be traced without repository contents; full validation required` | Bump a dependency when DiffCI is run without access to the checkout's files | No |
 | `Yarn lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `yarn.lock` while `src/a.js` imports a package not listed in `package.json` | No |
+| `pnpm lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `pnpm-lock.yaml` while `src/a.js` imports a hoisted package not listed in `package.json` | No |
 | `… and no repository source imports it; full validation required` | Bump a devDependency such as `eslint` that only tools load | No |
 | `… and the test script runs it; full validation required` | Bump `vitest` when the `test` script runs `vitest` | No |
 | `… and … loads it; full validation required` | Bump a Babel plugin that `babel.config.js` loads | No |

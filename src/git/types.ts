@@ -48,12 +48,12 @@ export interface GitDeltaAnalysis {
    * the suite from this change on, so ImpactAnalyzer selects them. */
   testScriptAddedPaths?: string[];
   /** Direct dependencies potentially affected by a modeled manifest/lockfile change. npm uses its
-   * installed tree; Classic Yarn includes all roots because its lockfile omits peer relationships.
+   * installed tree and pnpm its snapshot edges; Classic Yarn includes all roots because its lockfile omits peer relationships.
    * ImpactAnalyzer selects their importers or falls back. Absent when no narrowing happened. */
   changedDependencies?: string[];
   /** A modeled lockfile whose raw readers must still be resolved, including for semantic no-ops.
    * Its dependency effects are covered by changedDependencies. */
-  dependencyLockfile?: "yarn.lock";
+  dependencyLockfile?: "yarn.lock" | "pnpm-lock.yaml";
   /** The changed paths behind each flag above, so a fallback reason can name its files (2026-10-21:
    * "Configuration file(s) changed" was the most frequent reason in both telemetry cohorts and never
    * said which file). Absent on analyses produced before this field existed. */

@@ -13,6 +13,7 @@ import {
 import { infrastructureRole, isImplicitlyLoadedFile, testScriptClosure } from "../repo/file-references.js";
 import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
+import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
 import { LOCKFILE } from "../repo/lockfiles.js";
 
@@ -671,6 +672,45 @@ export async function analyzeGitDelta(
         analysis.changedDependencies = affected;
         analysis.dependencyLockfile = "yarn.lock";
         narrowed.add(changedYarnLock);
+        if (changedPackageJson) {
+          narrowed.add(changedPackageJson);
+          if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
+          if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+        }
+      }
+    }
+    // 2026-11-02: pnpm records each snapshot's resolved edges, peers included, so attribution follows
+    // the npm model (src/repo/pnpm-lockfile.ts). Single-project lockfiles only; pnpm's own
+    // configuration files can change resolution or hoisting without a lockfile difference.
+    const changedPnpmLock = filesWithBinary.find((f) => f.path === "pnpm-lock.yaml" && f.changeType === "modified");
+    const otherPnpmConfiguration = allPaths.some((path) => path !== "pnpm-lock.yaml" && path !== "package.json" && (
+      LOCKFILE.test(posix.basename(path))
+      || /^(?:\.npmrc|pnpm-workspace\.yaml|\.pnpmfile\.cjs)$/.test(path)
+      || CONFIG_PATTERNS.some((pattern) => pattern.test(path) || pattern.test(posix.basename(path)))
+      || isImplicitlyLoadedFile(path)));
+    if (dependencyEdit && changedPnpmLock && !otherPnpmConfiguration && (!analysis.dependencyManifestChanged || changedPackageJson)) {
+      const manifests = [oldPackageJson, newPackageJson].map((content) => { try { return JSON.parse(content ?? "") as Record<string, unknown>; } catch { return undefined; } });
+      const direct = new Set<string>();
+      let modelled = manifests.every((manifest) => manifest && manifest.workspaces === undefined
+        && (manifest.packageManager === undefined || (typeof manifest.packageManager === "string" && manifest.packageManager.startsWith("pnpm@"))));
+      for (const manifest of manifests) {
+        for (const field of DEPENDENCY_FIELDS) {
+          const record = scriptRecord(manifest?.[field]);
+          if (!record) { modelled = false; continue; }
+          for (const name of Object.keys(record)) direct.add(name);
+        }
+      }
+      const unsupportedLayout = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb"]
+        .some((path) => [baseSha, headSha].some((sha) => readFileAtSha(sha, path, repoPath) !== undefined));
+      const affected = modelled && !unsupportedLayout
+        ? pnpmLockAffectedDependencies(readFileAtSha(baseSha, "pnpm-lock.yaml", repoPath), readFileAtSha(headSha, "pnpm-lock.yaml", repoPath), [...direct])
+        : undefined;
+      if (affected && (packageChange?.changedDependencies ?? []).every((name) => affected.includes(name))) {
+        analysis.dependencyManifestChanged = false;
+        analysis.lockfileChanged = false;
+        analysis.changedDependencies = affected;
+        analysis.dependencyLockfile = "pnpm-lock.yaml";
+        narrowed.add(changedPnpmLock);
         if (changedPackageJson) {
           narrowed.add(changedPackageJson);
           if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
