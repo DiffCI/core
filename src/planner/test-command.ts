@@ -120,11 +120,18 @@ function configAllowsPath(config: TestRunnerConfig, path: string): boolean {
  * exits 0 having silently skipped the one that mattered (DentalPresence ebac4289f73a: a seeded bug in
  * `src/app/ingest/[...path]/route.ts` went uncaught while 120 other tests passed).
  *
- * WHAT. `node --test` gets each metacharacter as a one-character class (`[` becomes `[[]`), the only
- * escape its glob accepts: it sets `windowsPathsNoEscape` on every platform, so a backslash never
- * escapes. Vitest and bun match file arguments as substrings, so their paths pass through unchanged.
- * Other runners, and brace lists that no class can escape (brace expansion runs first), are refused,
- * which leaves the caller to run the full suite.
+ * WHAT. `node --test` gets each metacharacter as a one-character class, the only escape its glob
+ * accepts: it sets `windowsPathsNoEscape` on every platform, so a backslash never escapes. Vitest and
+ * bun match file arguments as substrings, so their paths pass through unchanged. Other runners, and
+ * brace lists that no class can escape (brace expansion runs first), are refused, which leaves the
+ * caller to run the full suite.
+ *
+ * The class is wrapped in an extglob, `[` becoming `@([[])` rather than `[[]` (2026-11-02). The CLI
+ * runs TypeScript tests as `npx --no-install tsx --test ...`, and npx hands its arguments to a second
+ * `sh -c`, quoting only those with characters such as `(` or `*`. A bare `[[]...path[]]` went through
+ * unquoted, that shell expanded it back to the real `[...path]` directory, and node's glob matched
+ * nothing again (DentalPresence ebac4289f73a under CLI 0.3.22, on Linux; cmd.exe never expands, so
+ * Windows passed). The parentheses make npx quote the argument, and `@(x)` matches exactly `x`.
  */
 const PATTERN_CHARACTERS = /[[\]*?{}()+^$|]/;
 const LITERAL_PATH_FRAMEWORKS: ReadonlySet<KnownTestFramework> = new Set(["vitest", "bun:test"]);
@@ -132,7 +139,7 @@ const LITERAL_PATH_FRAMEWORKS: ReadonlySet<KnownTestFramework> = new Set(["vites
 /** `path` as a `node --test` glob that matches only itself, or undefined when none can. */
 export function nodeTestGlobForPath(path: string): string | undefined {
   if (/\{[^}]*(?:,|\.\.)[^}]*\}/.test(path)) return undefined;
-  return path.replace(/[[\]*?{}()]/g, (character) => `[${character}]`);
+  return path.replace(/[[\]*?{}()]/g, (character) => `@([${character}])`);
 }
 
 function unrunnablePaths(framework: KnownTestFramework, paths: readonly string[]): string[] {

@@ -234,30 +234,38 @@ describe("test paths with pattern characters (2026-11-01, DentalPresence ebac428
     assert.equal(plan.refusalReason, undefined);
     assert.equal(
       commandSpecToString(plan.commands[0]!),
-      'node --test "src/app/[(]marketing[)]/@modal/route.test.ts" "src/app/[[]id[]]/page.test.ts" '
-        + '"src/app/docs/[[][[]...slug[]][]]/route.test.ts" "src/app/ingest/[[]...path[]]/route.test.ts"',
+      'node --test "src/app/@([(])marketing@([)])/@modal/route.test.ts" "src/app/@([[])id@([]])/page.test.ts" '
+        + '"src/app/docs/@([[])@([[])...slug@([]])@([]])/route.test.ts" "src/app/ingest/@([[])...path@([]])/route.test.ts"',
     );
     assert.deepEqual(plan.groups[0]!.paths, [...nextPaths].sort());
   });
 
-  it("runs every bracketed file it names, through the shell the CLI uses", () => {
-    const dir = mkdtempSync(join(tmpdir(), "diffci-brackets-"));
-    try {
-      for (const path of nextPaths) {
-        mkdirSync(join(dir, dirname(path)), { recursive: true });
-        writeFileSync(join(dir, path.replace(/\.ts$/, ".js")), `require("node:test")(${JSON.stringify(path)}, () => {});\n`);
+  // The CLI runs TypeScript tests as `npx --no-install tsx --test`, and npx hands the paths to a second
+  // `sh -c` that expanded a bare `[[]...path[]]` back to `[...path]` (CLI 0.3.22, Linux only).
+  for (const via of ["", "npx --no-install test-node-shim"]) {
+    it(`runs every bracketed file it names, through the shell the CLI uses${via ? " and then npx" : ""}`, () => {
+      const dir = mkdtempSync(join(tmpdir(), "diffci-brackets-"));
+      try {
+        writeFileSync(join(dir, "package.json"), "{}\n");
+        mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
+        writeFileSync(join(dir, "node_modules", ".bin", "test-node-shim"), '#!/bin/sh\nexec node "$@"\n', { mode: 0o755 });
+        writeFileSync(join(dir, "node_modules", ".bin", "test-node-shim.cmd"), "@node %*\r\n");
+        for (const path of nextPaths) {
+          mkdirSync(join(dir, dirname(path)), { recursive: true });
+          writeFileSync(join(dir, path.replace(/\.ts$/, ".js")), `require("node:test")(${JSON.stringify(path)}, () => {});\n`);
+        }
+        const plan = planSelectiveTestCommands(profileOf({ frameworks: ["node:test"] }), nextPaths.map((path) => path.replace(/\.ts$/, ".js")));
+        const command = commandSpecToString(plan.commands[0]!).replace(/^node/, via || "node");
+        const win = process.platform === "win32";
+        const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
+        const result = spawnSync(win ? "cmd.exe" : "sh", win ? ["/d", "/s", "/c", command] : ["-c", command], { cwd: dir, encoding: "utf8", env, windowsVerbatimArguments: win });
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, new RegExp(`tests ${nextPaths.length}\\b`), result.stdout);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
       }
-      const plan = planSelectiveTestCommands(profileOf({ frameworks: ["node:test"] }), nextPaths.map((path) => path.replace(/\.ts$/, ".js")));
-      const command = commandSpecToString(plan.commands[0]!);
-      const win = process.platform === "win32";
-      const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
-      const result = spawnSync(win ? "cmd.exe" : "sh", win ? ["/d", "/s", "/c", command] : ["-c", command], { cwd: dir, encoding: "utf8", env, windowsVerbatimArguments: win });
-      assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, new RegExp(`tests ${nextPaths.length}\\b`), result.stdout);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+    });
+  }
 
   it("passes the paths through unchanged to runners that match them as substrings", () => {
     const plan = planSelectiveTestCommands(profileOf({ frameworks: ["vitest"], packageManager: "pnpm" }), ["src/app/[id]/page.test.ts"]);
