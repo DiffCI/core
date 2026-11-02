@@ -425,7 +425,7 @@ function withoutTestRunnerContext(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return rest;
 }
 
-export function measureCommand(command: string, options: Pick<VerifySavingsOptions, "cwd" | "timeoutMs" | "tailBytes">): CommandMeasurement {
+export function measureCommand(command: string, options: Pick<VerifySavingsOptions, "cwd" | "timeoutMs" | "tailBytes"> & { env?: Record<string, string> }): CommandMeasurement {
   const startedAt = new Date().toISOString();
   const started = Date.now();
   // Match the shell used by Windows package scripts, including && short-circuiting
@@ -441,6 +441,7 @@ export function measureCommand(command: string, options: Pick<VerifySavingsOptio
     windowsVerbatimArguments: process.platform === "win32",
     env: {
       ...withoutTestRunnerContext(process.env),
+      ...options.env,
       CI: "1",
       FORCE_COLOR: "0",
       COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",

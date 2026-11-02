@@ -21,9 +21,10 @@ export function batchCommand(command: string, paths: readonly string[], limit = 
   if (command.length <= limit || paths.length === 0) return [command];
   const tokens = command.split(" ");
   const selected = new Set(paths);
-  // A `node --test` path with brackets arrives quoted and class-escaped: "src/app/[[]id[]]/x.test.ts".
+  // A `node --test` path with brackets arrives quoted and class-escaped: "src/app/@([[])id@([]])/x.test.ts"
+  // (Core before 2026-11-02 emitted the bare class, "src/app/[[]id[]]/x.test.ts").
   const isSelected = (token: string) => selected.has(token)
-    || selected.has((commandArguments(token)[0] ?? "").replace(/\[(.)\]/g, "$1"));
+    || selected.has((commandArguments(token)[0] ?? "").replace(/@\(\[(.)\]\)|\[(.)\]/g, (_, wrapped?: string, bare?: string) => wrapped ?? bare ?? ""));
   let start = tokens.length;
   while (start > 0 && isSelected(tokens[start - 1]!)) start--;
   const trailing = tokens.slice(start);
@@ -49,7 +50,7 @@ export function batchCommand(command: string, paths: readonly string[], limit = 
  * Runs `commands` in order as one verification. Every part runs, so one receipt carries every failing
  * test; the first non-zero exit is the result, and the remaining time budget is shared between parts.
  */
-export function measureCommands(commands: readonly string[], options: { cwd: string; timeoutMs: number; tailBytes: number }): CommandMeasurement {
+export function measureCommands(commands: readonly string[], options: { cwd: string; timeoutMs: number; tailBytes: number; env?: Record<string, string> }): CommandMeasurement {
   if (commands.length === 1) return measureCommand(commands[0]!, options);
   const started = Date.now();
   const parts: CommandMeasurement[] = [];

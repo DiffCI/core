@@ -9,7 +9,7 @@ import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
-import { unmatchedNodeTests } from "./selected-coverage.js";
+import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
 
@@ -257,9 +257,19 @@ async function executeWithPolicy(
   const preexistingNote = preexistingChecks.length
     ? `; gate check(s) ${preexistingChecks.map((check) => check.id).join(", ")} also fail at the base commit (already broken before this change)`
     : "";
-  const execution = checkRun?.failure
-    ? checkRun.failure.measurement
-    : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes });
+  // Selected `node --test` files run under a probe that records which of them actually started.
+  const expectedNodeTests = selection === "selected" && result ? selectedNodeTests(command, result.selectedTests) : [];
+  const trace = expectedNodeTests.length && !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
+  let startedNodeTests: string[] | undefined;
+  let execution: CommandMeasurement;
+  try {
+    execution = checkRun?.failure
+      ? checkRun.failure.measurement
+      : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env });
+    startedNodeTests = trace?.read();
+  } finally {
+    trace?.dispose();
+  }
   let after: WorkingTreeSnapshot;
   try {
     after = captureWorkingTreeSnapshot(options.repoPath);
@@ -291,12 +301,17 @@ async function executeWithPolicy(
   // Every selected file contributes at least one test (node:test) or test file (vitest, jest) to the
   // runner's summary; a smaller count means some selected tests never ran, which is not a pass.
   const selectedCount = selection === "selected" && result ? result.selectedTests.length : 0;
-  const unexecuted = succeeded && execution.runnerTestCount !== undefined && execution.runnerTestCount < selectedCount;
+  // A count of 120 cannot show one missing file (2026-11-02); the probe's record of started files can.
+  const unstarted = succeeded ? unstartedNodeTests(expectedNodeTests, startedNodeTests) : [];
+  const undercounted = succeeded && execution.runnerTestCount !== undefined && execution.runnerTestCount < selectedCount;
+  const unexecuted = unstarted.length > 0 || undercounted;
   const verification: VerificationStatus = !unchanged || unexecuted ? "blocked" : succeeded ? "passed" : "failed";
   const finalReason = !unchanged
     ? before.baseSha !== after.baseSha
       ? "HEAD moved while verification was running; rerun DiffCI for the new snapshot"
       : `the working tree changed while verification was running (${altered.slice(0, 5).map((change) => `${change.status} ${change.path}`).join(", ")}${altered.length > 5 ? `, ${altered.length - 5} more` : ""}); rerun DiffCI for the new snapshot`
+    : unstarted.length
+      ? `node --test never started ${unstarted.length} selected test file(s), such as ${unstarted[0]}, so the selection did not run as written; run the full test command instead`
     : unexecuted
       ? `the runner reported ${String(execution.runnerTestCount)} test(s) for ${selectedCount} selected test file(s), so some selected tests did not run; run the full test command instead`
     : succeeded
