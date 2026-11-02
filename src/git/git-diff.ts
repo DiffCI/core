@@ -441,6 +441,17 @@ function readFileAtSha(sha: string, path: string, repoPath: string | undefined):
   return result.stdout;
 }
 
+/** Root entries include directories and gitlinks, which recursive file inventories can omit. */
+function readRootPathsAtSha(sha: string, repoPath: string | undefined): ReadonlySet<string> | undefined {
+  const result = runGit(["ls-tree", "--full-tree", "--name-only", "-z", sha], repoPath);
+  if (result.status !== 0 || !result.stdout.endsWith("\0")) return undefined;
+  const paths = result.stdout.slice(0, -1).split("\0");
+  // An absence decision needs a complete listing. Keep whitespace and backslashes literal.
+  if (paths.some((path) => !path || path === "." || path === ".." || path.includes("/"))) return undefined;
+  const roots = new Set(paths);
+  return roots.size === paths.length ? roots : undefined;
+}
+
 export function computeAnalysis(files: ChangedFile[]): GitDeltaAnalysis {
   const paths = files.flatMap((f) =>
     f.oldPath ? [f.path, f.oldPath] : [f.path],
@@ -674,8 +685,13 @@ export async function analyzeGitDelta(
       const afterDirect = yarnDirectDependencies(newPackageJson);
       // A second package manager or alternate Yarn install layout is outside this model, even when
       // its configuration did not change in this delta.
-      const unsupportedLayout = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", "bun.lockb", ".yarnrc", ".yarnrc.yml", ".pnp.js", ".pnp.cjs"]
-        .some((path) => [baseSha, headSha].some((sha) => readFileAtSha(sha, path, repoPath) !== undefined));
+      const alternateLayouts = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", "bun.lockb", ".yarnrc", ".yarnrc.yml", ".pnp.js", ".pnp.cjs"];
+      const unsupportedLayout = [baseSha, headSha].some((sha) => {
+        const roots = readRootPathsAtSha(sha, repoPath);
+        // Either revision can rule out narrowing, including a layout deleted before HEAD.
+        // An unavailable or malformed listing cannot prove that these paths are absent.
+        return !roots || alternateLayouts.some((path) => roots.has(path));
+      });
       const affected = beforeDirect && afterDirect && !unsupportedLayout
         ? yarnLockAffectedDependencies(readFileAtSha(baseSha, "yarn.lock", repoPath), readFileAtSha(headSha, "yarn.lock", repoPath), beforeDirect, afterDirect)
         : undefined;
