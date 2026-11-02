@@ -12,6 +12,4 @@ Use Node.js 22.5+ and run `npm ci`, `npm run typecheck`, `npm test`, `npm run bu
 
 Contributions to this repository are made under the MIT License. Submit only work you are entitled to contribute and preserve third-party notices.
 
-Before your first pull request can be merged, accept the [Contributor License Agreement](CLA.md) by commenting `I have read the CLA Document and I hereby sign the CLA` on the pull request; the CLA check prompts you. You keep the copyright in your work. The agreement lets DiffCI keep distributing it under the MIT License and other terms, and you only sign once.
-
 Sign off every commit to certify the [Developer Certificate of Origin](https://developercertificate.org/), using `git commit -s`. This adds a `Signed-off-by: Your Name <you@example.com>` line stating that you wrote the change or otherwise have the right to submit it under the MIT License.
