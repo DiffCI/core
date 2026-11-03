@@ -10,6 +10,10 @@ npx "@diffci.com/diffci@latest" check
 
 Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/using-diffci.md).
 
+[![DiffCI demo video](docs/demo-video.jpg)](https://www.youtube.com/watch?v=ychCnVVRQq0)
+
+▶ [Watch the demo on YouTube](https://www.youtube.com/watch?v=ychCnVVRQq0)
+
 ## Why
 
 Coding agents pass the narrow check they picked and miss wider breakage, then rerun the whole suite when they are unsure. We measured this on our own agent-built production app (about 1,100 commits in two months, most of them co-authored by Claude):
