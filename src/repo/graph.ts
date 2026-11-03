@@ -16,6 +16,7 @@ import type {
   GraphIntegrityFinding,
   GraphIntegrityReport,
   GraphPerformanceMetrics,
+  RepositoryProfile,
   ResolutionReference,
   SourceRoot,
   UnresolvedDependency,
@@ -26,6 +27,54 @@ interface ImportRef {
   kind: DependencyEdgeKind;
   dynamic: boolean;
   computed?: boolean;
+  /** For a computed load whose target set is still bounded by literal text: `` import(`./x/${a}.json`) ``
+   * or `import.meta.glob("./x/*.json")`. `base` is the literal directory prefix (a specifier ending in
+   * "/"); `regex` matches paths relative to it. Unresolvable patterns keep the load computed. */
+  patterns?: { base: string; regex: string; negated: boolean }[];
+}
+
+const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// A specifier may omit the extension or name a directory's index module.
+const OPTIONAL_MODULE_SUFFIX = "(?:\\.[A-Za-z0-9]+|/index\\.[A-Za-z0-9]+)?";
+
+/** `` `@/../locales/${lng}/${ns}.json` `` -> base "@/../locales/", each substitution matching any text. A
+ * substitution can hold "/" so it matches across directories, which can only over-select. */
+function templatePattern(template: ts.TemplateExpression): ImportRef["patterns"] {
+  const head = template.head.text;
+  const cut = head.lastIndexOf("/");
+  if (cut < 0) return undefined;
+  const regex = escapeRegex(head.slice(cut + 1)) + template.templateSpans.map((span) => `.*${escapeRegex(span.literal.text)}`).join("");
+  return [{ base: head.slice(0, cut + 1), regex: `${regex}${OPTIONAL_MODULE_SUFFIX}`, negated: false }];
+}
+
+/** One Vite `import.meta.glob` pattern; `[...]` classes are not translated and keep the load computed. */
+function globPattern(glob: string): NonNullable<ImportRef["patterns"]>[number] | undefined {
+  const negated = glob.startsWith("!");
+  const body = negated ? glob.slice(1) : glob;
+  const firstWild = body.search(/[*?{[]/);
+  const cut = body.lastIndexOf("/", firstWild < 0 ? body.length : firstWild);
+  if (cut < 0 || body.includes("[")) return undefined;
+  let regex = "";
+  const rest = body.slice(cut + 1);
+  for (let i = 0; i < rest.length; i++) {
+    const char = rest[i]!;
+    if (rest.startsWith("**/", i)) { regex += "(?:.*/)?"; i += 2; }
+    else if (rest.startsWith("**", i)) { regex += ".*"; i += 1; }
+    else if (char === "*") regex += "[^/]*";
+    else if (char === "?") regex += "[^/]";
+    else if (char === "{") {
+      const close = rest.indexOf("}", i);
+      if (close < 0) return undefined;
+      regex += `(?:${rest.slice(i + 1, close).split(",").map(escapeRegex).join("|")})`;
+      i = close;
+    } else regex += escapeRegex(char);
+  }
+  return { base: body.slice(0, cut + 1), regex, negated };
+}
+
+function isImportMetaGlob(expression: ts.Expression): boolean {
+  return ts.isPropertyAccessExpression(expression) && /^glob(?:Eager)?$/.test(expression.name.text)
+    && ts.isMetaProperty(expression.expression) && expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword;
 }
 
 const SOURCE_EXTENSIONS = new Set([
@@ -147,11 +196,25 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require" && shadowDepth === 0;
       if ((isImport || isRequire) && firstArg) {
         const literal = ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg);
+        const patterns = ts.isTemplateExpression(firstArg) ? templatePattern(firstArg) : undefined;
         refs.push({
           specifier: literal ? firstArg.text : firstArg.getText(sourceFile).slice(0, 200),
           kind: isImport ? "dynamic-import" : "require",
           dynamic: isImport || !literal,
           computed: !literal,
+          ...(patterns ? { patterns } : {}),
+        });
+      } else if (isImportMetaGlob(node.expression) && firstArg) {
+        // Vite expands these at build time; without them a file loaded only through a glob had no edge.
+        const items = ts.isArrayLiteralExpression(firstArg) ? [...firstArg.elements] : [firstArg];
+        const globs = items.map((item) => ts.isStringLiteral(item) || ts.isNoSubstitutionTemplateLiteral(item) ? item.text : undefined);
+        const patterns = globs.every((glob) => glob !== undefined) ? globs.map((glob) => globPattern(glob!)) : [];
+        refs.push({
+          specifier: firstArg.getText(sourceFile).slice(0, 200),
+          kind: "dynamic-import",
+          dynamic: true,
+          computed: true,
+          ...(patterns.length && patterns.every(Boolean) ? { patterns: patterns as NonNullable<ImportRef["patterns"]> } : {}),
         });
       }
     }
@@ -169,6 +232,8 @@ class DependencyGraphImpl implements DependencyGraph {
   readonly edges: DependencyEdge[];
   readonly forward: Record<string, string[]> = {};
   readonly reverse: Record<string, string[]> = {};
+  /** `reverse` without `import type` edges, which TypeScript erases before anything runs. */
+  private readonly reverseRuntime: Record<string, string[]> = {};
 
   constructor(
     sourcePaths: ReadonlySet<string>,
@@ -199,6 +264,7 @@ class DependencyGraphImpl implements DependencyGraph {
     for (const node of this.nodes) {
       this.forward[node.path] = [];
       this.reverse[node.path] = [];
+      this.reverseRuntime[node.path] = [];
     }
 
     for (const edge of this.edges) {
@@ -207,14 +273,14 @@ class DependencyGraphImpl implements DependencyGraph {
       }
       if (this.reverse[edge.to] !== undefined) {
         this.reverse[edge.to]!.push(edge.from);
+        if (edge.kind !== "type-import") this.reverseRuntime[edge.to]!.push(edge.from);
       }
     }
 
-    for (const key of Object.keys(this.forward)) {
-      this.forward[key] = [...new Set(this.forward[key]!)].sort();
-    }
-    for (const key of Object.keys(this.reverse)) {
-      this.reverse[key] = [...new Set(this.reverse[key]!)].sort();
+    for (const adjacency of [this.forward, this.reverse, this.reverseRuntime]) {
+      for (const key of Object.keys(adjacency)) {
+        adjacency[key] = [...new Set(adjacency[key]!)].sort();
+      }
     }
   }
 
@@ -237,34 +303,31 @@ class DependencyGraphImpl implements DependencyGraph {
   }
 
   transitiveDependenciesOf(filePath: string): string[] {
-    return this.transitiveTraversal(filePath, "forward");
+    return this.transitiveTraversal(filePath, this.forward);
   }
 
   transitiveDependentsOf(filePath: string): string[] {
-    return this.transitiveTraversal(filePath, "reverse");
+    return this.transitiveTraversal(filePath, this.reverse);
   }
 
-  private transitiveTraversal(
-    filePath: string,
-    direction: "forward" | "reverse",
-  ): string[] {
-    const rel = this.normalizeQuery(filePath);
-    const visited = new Set<string>();
-    const queue: string[] = [rel];
-    const result: string[] = [];
-    const adjacency = direction === "forward" ? this.forward : this.reverse;
+  transitiveRuntimeDependentsOf(filePath: string): string[] {
+    return this.transitiveTraversal(filePath, this.reverseRuntime);
+  }
 
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      if (visited.has(current)) continue;
-      visited.add(current);
-      if (current !== rel) result.push(current);
-      for (const next of adjacency[current] ?? []) {
-        if (!visited.has(next)) queue.push(next);
+  private transitiveTraversal(filePath: string, adjacency: Record<string, string[]>): string[] {
+    const rel = this.normalizeQuery(filePath);
+    const visited = new Set<string>([rel]);
+    // An index, not shift(): shift() is O(n) and made dependents of hub modules quadratic (2026-11-03,
+    // 379 s of impact analysis on one LobeHub commit whose changed files had ~14k dependents).
+    const queue: string[] = [rel];
+    for (let head = 0; head < queue.length; head++) {
+      for (const next of adjacency[queue[head]!] ?? []) {
+        if (visited.has(next)) continue;
+        visited.add(next);
+        queue.push(next);
       }
     }
-
-    return result.sort();
+    return queue.slice(1).sort();
   }
 
   private normalizeQuery(filePath: string): string {
@@ -800,6 +863,35 @@ export async function buildDependencyGraph(
     addEdge(importerRel, assetRel, "asset");
   }
 
+  /** Every repository file a bounded computed load can name, or undefined to keep it computed: the
+   * base directory does not resolve, nothing matches, or a match is neither analyzed source nor an
+   * asset. Alias directories resolve as in findAssetCandidate, and all candidates are unioned. */
+  function resolvePatternTargets(importerAbs: string, patterns: NonNullable<ImportRef["patterns"]>, importerOptions: ts.CompilerOptions): string[] | undefined {
+    const compilerAliases = Object.entries(importerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
+    const aliasRoot = importerOptions.baseUrl ?? (importerOptions as { pathsBasePath?: string }).pathsBasePath ?? repoPath;
+    const included = new Set<string>();
+    const excluded = new Set<string>();
+    for (const pattern of patterns) {
+      const base = pattern.base.replace(/\/+$/, "") || ".";
+      if (base.startsWith("/")) return undefined;
+      const directories = base.startsWith(".") ? [resolve(dirname(importerAbs), base)]
+        : [...expandAliasCandidates(base, compilerAliases, aliasRoot), ...expandAliasCandidates(base, profile.pathAliases, repoPath)];
+      const matcher = new RegExp(`^${pattern.regex}$`);
+      for (const directory of directories) {
+        const rel = toRelativeInternal(repoPath, directory);
+        if (rel === undefined) continue;
+        const prefix = rel === "." ? "" : `${rel}/`;
+        for (const file of files) {
+          if (file.startsWith(prefix) && matcher.test(file.slice(prefix.length))) (pattern.negated ? excluded : included).add(file);
+        }
+      }
+    }
+    const importerRel = toRelativeInternal(repoPath, importerAbs);
+    const targets = [...included].filter((file) => !excluded.has(file) && file !== importerRel).sort();
+    if (!targets.length || targets.some((file) => !internalSourcePaths.has(file) && !isAssetFileName(file))) return undefined;
+    return targets;
+  }
+
   let filesParsed = sourceFiles.length;
   let followedImplementationFiles = 0;
 
@@ -866,6 +958,17 @@ export async function buildDependencyGraph(
     for (const ref of refs) {
       // Expression text is not a module name. In particular, import(name) must
       // not be classified as an external package called "name".
+      if (ref.computed && ref.patterns) {
+        const targets = resolvePatternTargets(sf.fileName, ref.patterns, importerOptions);
+        if (targets) {
+          for (const target of targets) {
+            if (internalSourcePaths.has(target)) addEdge(importerRel, target, ref.kind);
+            else recordAssetEdge(importerRel, target);
+          }
+          recordReference(targets.some((target) => internalSourcePaths.has(target)) ? "internal-source" : "internal-asset", importerRel, ref);
+          continue;
+        }
+      }
       if (ref.computed) {
         recordUnresolved(importerRel, ref, "computed module specifier requires full validation");
         recordReference("unresolved", importerRel, ref);
@@ -1123,6 +1226,7 @@ export async function buildDependencyGraph(
     confidence,
     integrity,
     resolvedViaProjectReferences,
+    runtimeTestSelection: runtimeTestSelectionEligible(repoPath, files, profile),
   };
 }
 
@@ -1291,6 +1395,35 @@ export function validateDependencyGraph(graph: DependencyGraph): GraphIntegrityR
   };
 }
 
+/**
+ * Whether an `import type` edge can be ignored when selecting tests (2026-11-03). Vitest transpiles
+ * without type checking, so a type-only change cannot alter a runtime test's outcome; ts-jest, tsd,
+ * tstyche and Vitest's typecheck mode do check types. Any sign of them anywhere in the repository,
+ * including workspace packages, keeps type-only edges selecting tests. Type tests (`*.test-d.ts`) are
+ * selected through every edge either way (impact.ts).
+ */
+function runtimeTestSelectionEligible(repoPath: string, files: readonly string[], profile: RepositoryProfile): boolean {
+  const configs = profile.testRunnerConfigs ?? [];
+  if (!configs.length || configs.some((config) => config.runner !== "vitest")) return false;
+  const read = (path: string) => { try { return readFileSync(join(repoPath, path), "utf8"); } catch { return undefined; } };
+  for (const file of files) {
+    if (file.split("/").includes("node_modules")) continue;
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    if (/^jest\.config\./.test(name)) return false;
+    if (/^vit(?:e|est)[\w.-]*\.(?:config|workspace|projects)\.[cm]?[jt]s$/.test(name)) {
+      const text = read(file);
+      if (text === undefined || /\btypecheck\b/.test(text)) return false;
+    } else if (name === "package.json") {
+      let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
+      try { manifest = JSON.parse(read(file) ?? ""); } catch { return false; }
+      const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
+      if (packages.some((name) => ["jest", "ts-jest", "tsd", "tstyche"].includes(name))) return false;
+      if (Object.values(manifest.scripts ?? {}).some((script) => typeof script !== "string" || /(?:^|[\s&;|(])(?:jest|tsd|tstyche)(?:\s|$)|--typecheck/.test(script))) return false;
+    }
+  }
+  return true;
+}
+
 function computeConfidence(
   unresolvedCount: number,
   dynamicUnresolvedCount: number,
@@ -1372,13 +1505,23 @@ export function refineConfidenceForDelta(result: DependencyGraphResult, changedF
   if (result.unresolved.length === 0) return result.confidence;
 
   const reachableFromChanged = new Set<string>();
+  const dependents = new Set<string>();
+  const runtimeDependents = new Set<string>();
+  const runtimeOnly = result.runtimeTestSelection === true && typeof result.graph.transitiveRuntimeDependentsOf === "function";
   for (const file of changedFiles) {
     for (const dep of result.graph.transitiveDependenciesOf(file)) reachableFromChanged.add(dep);
-    for (const dep of result.graph.transitiveDependentsOf(file)) reachableFromChanged.add(dep);
+    for (const dep of result.graph.transitiveDependentsOf(file)) { reachableFromChanged.add(dep); dependents.add(dep); }
+    if (runtimeOnly) for (const dep of result.graph.transitiveRuntimeDependentsOf!(file)) runtimeDependents.add(dep);
   }
   const changedSet = new Set(changedFiles);
 
-  const relevantUnresolved = result.unresolved.some((u) => !u.computed && (changedSet.has(u.importer) || reachableFromChanged.has(u.importer)));
+  // An importer that already depends on a changed file is affected, and so is everything depending on
+  // it: whatever its missing edge points at, following that edge cannot reach a test that is not already
+  // selected (2026-11-03: one broken `import type` in a LobeHub test file made 35 of 40 commits UNSAFE).
+  // "Already depends" means through the edges that select tests: runtime edges when type-only ones do
+  // not select (runtimeTestSelection), unless the missing edge is itself type-only.
+  const alreadyAffected = (u: UnresolvedDependency) => (runtimeOnly && !u.typeOnly ? runtimeDependents : dependents).has(u.importer);
+  const relevantUnresolved = result.unresolved.some((u) => !u.computed && !alreadyAffected(u) && (changedSet.has(u.importer) || reachableFromChanged.has(u.importer)));
   if (relevantUnresolved) return "UNSAFE";
 
   // None of the unresolved imports are reachable from this delta's changed files - narrow to what

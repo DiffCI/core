@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DependencyGraphResult } from "../repo/types.js";
 
-export const GRAPH_CACHE_SCHEMA_VERSION = "3";
+// 4: bounded computed loads have edges, and results carry runtimeTestSelection (2026-11-03).
+export const GRAPH_CACHE_SCHEMA_VERSION = "4";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

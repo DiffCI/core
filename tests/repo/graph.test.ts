@@ -406,12 +406,14 @@ describe("refineConfidenceForDelta", () => {
     assert.strictEqual(refineConfidenceForDelta(result, ["src/entry.ts"]), "UNSAFE", "entry.ts depends on broken.ts, so its own incompleteness is inherited");
   });
 
-  it("keeps UNSAFE when the changed file is transitively DEPENDED ON BY the file with the unresolved import", async () => {
+  it("narrows when the file with the unresolved import already depends on the changed file", async () => {
     const result = await buildFixture({
       "src/shared.ts": "export const s = 1;\n",
       "src/broken.ts": "import { s } from './shared';\nimport { x } from './missing';\n",
     });
-    assert.strictEqual(refineConfidenceForDelta(result, ["src/shared.ts"]), "UNSAFE", "broken.ts depends on shared.ts, so changing shared.ts could ripple into the incompletely-understood broken.ts");
+    // broken.ts and everything depending on it are affected by shared.ts already; its missing edge
+    // cannot add a test the selection lacks (2026-11-03, reversing the 2026-08-21 expectation).
+    assert.strictEqual(refineConfidenceForDelta(result, ["src/shared.ts"]), "COMPLETE");
   });
 
   it("passes through a confidence that was never UNSAFE, unchanged, with no narrowing applied", async () => {
@@ -677,9 +679,8 @@ describe("runtime module references", () => {
   for (const [name, source] of Object.entries({
     "variable import": "const path = './changed'; export const load = () => import(path);",
     "conditional import": "export const load = () => import(true ? './changed' : './other');",
-    "interpolated import": "export const load = (name: string) => import(`./${name}`);",
     "variable require": "const path = './changed'; export const load = () => require(path);",
-    "interpolated require": "export const load = (name: string) => require(`./${name}`);",
+    "interpolated import from the repository root": "export const load = (name: string) => import(`/src/${name}`);",
   })) {
     // A computed target can be any file, so the changed module has no edge to the loader. Every test
     // that runs the loader is selected instead of a full run; a test that never runs it is not.
@@ -732,6 +733,162 @@ describe("runtime module references", () => {
       }
     });
   }
+
+  const delta = (path: string) => ({
+    baseSha: "base", headSha: "head", files: [{ path, changeType: "modified" as const }], directories: [],
+    summary: { total: 1, added: 0, modified: 1, deleted: 0, renamed: 0, copied: 0, unmerged: 0, unknown: 0 },
+    analysis: { empty: false, configChanged: false, dependencyManifestChanged: false, lockfileChanged: false, workflowChanged: false, infrastructureChanged: false, databaseChanged: false },
+  });
+
+  for (const [name, source] of Object.entries({
+    import: "export const load = (name: string) => import(`./${name}`);",
+    require: "export const load = (name: string) => require(`./${name}`);",
+  })) {
+    // The literal text bounds the target to src/, so every file there is a dependency (2026-11-03).
+    it(`resolves an interpolated ${name} to every file its literal text allows`, async () => {
+      const root = createTempRepo({
+        "src/changed.ts": "export const value = 1;",
+        "src/loader.ts": source,
+        "lib/outside.ts": "export const value = 3;",
+        "tests/loader.test.ts": "import { load } from '../src/loader'; export const value = load('changed');",
+        "tests/unrelated.test.ts": "export const unrelated = 1;",
+      });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.equal(result.confidence, "COMPLETE", JSON.stringify(result.unresolved));
+        assert.deepEqual(result.graph.dependenciesOf("src/loader.ts"), ["src/changed.ts"], "the importer itself and lib/ are not targets");
+        assert.deepEqual(result.graph.transitiveDependentsOf("src/changed.ts"), ["src/loader.ts", "tests/loader.test.ts"]);
+        assert.deepEqual(result.graph.transitiveDependentsOf("lib/outside.ts"), []);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("resolves an aliased interpolated import of JSON files so a changed one selects its readers", async () => {
+    const root = createTempRepo({
+      "src/i18n.ts": "export const load = (lng: string, ns: string) => import(`@/../locales/${lng}/${ns}.json`);",
+      "locales/en/auth.json": "{}",
+      "locales/fr/auth.json": "{}",
+      "tests/i18n.test.ts": "import { load } from '../src/i18n'; export const value = load('en', 'auth');",
+      "tests/unrelated.test.ts": "export const unrelated = 1;",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.deepEqual(result.graph.dependenciesOf("src/i18n.ts"), ["locales/en/auth.json", "locales/fr/auth.json"]);
+      const impact = new ImpactAnalyzer().analyze(delta("locales/en/auth.json"), result, result.profile);
+      assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("; "));
+      assert.deepEqual(impact.affectedTests.map((test) => test.path), ["tests/i18n.test.ts"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("adds an edge for every file an import.meta.glob matches, minus its negated patterns", async () => {
+    const root = createTempRepo({
+      "src/registry.ts": "export const modules = import.meta.glob(['./mods/*.ts', '!./mods/skip.ts']);",
+      "src/mods/a.ts": "export const a = 1;",
+      "src/mods/nested/b.ts": "export const b = 1;",
+      "src/mods/skip.ts": "export const skip = 1;",
+      "tests/registry.test.ts": "import { modules } from '../src/registry'; export const value = modules;",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.confidence, "COMPLETE", JSON.stringify(result.unresolved));
+      assert.deepEqual(result.graph.dependenciesOf("src/registry.ts"), ["src/mods/a.ts"], "* stays within one directory");
+      assert.ok(result.graph.transitiveDependentsOf("src/mods/a.ts").includes("tests/registry.test.ts"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, source] of Object.entries({
+    "character class": "export const modules = import.meta.glob('./mods/[ab].ts');",
+    "non-literal pattern": "const pattern = './mods/*.ts'; export const modules = import.meta.glob(pattern);",
+    "pattern matching nothing": "export const modules = import.meta.glob('./missing/*.ts');",
+  })) {
+    it(`keeps an import.meta.glob with a ${name} computed`, async () => {
+      const root = createTempRepo({ "src/registry.ts": source, "src/mods/a.ts": "export const a = 1;" });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.ok(result.unresolved.some((ref) => ref.importer === "src/registry.ts" && ref.computed), JSON.stringify(result.unresolved));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+describe("runtime test selection", () => {
+  const vitestRepo = (extra: FixtureFiles = {}) => createTempRepo({
+    "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "vitest run" }, devDependencies: { vitest: "^3.0.0" } }),
+    "vitest.config.ts": "export default { test: { include: ['tests/**/*.test.ts', 'tests/**/*.test-d.ts'] } };",
+    "src/types.ts": "export interface Shape { size: number }\nexport const unit = 1;\n",
+    "tests/runtime.test.ts": "import { unit } from '../src/types'; export const value = unit;",
+    "tests/typed.test.ts": "import type { Shape } from '../src/types'; export const shape: Shape = { size: 1 };",
+    "tests/shape.test-d.ts": "import type { Shape } from '../src/types'; export type Size = Shape['size'];",
+    ...extra,
+  });
+  const changed = (path: string) => ({
+    baseSha: "base", headSha: "head", files: [{ path, changeType: "modified" as const }], directories: [],
+    summary: { total: 1, added: 0, modified: 1, deleted: 0, renamed: 0, copied: 0, unmerged: 0, unknown: 0 },
+    analysis: { empty: false, configChanged: false, dependencyManifestChanged: false, lockfileChanged: false, workflowChanged: false, infrastructureChanged: false, databaseChanged: false },
+  });
+
+  it("does not select a Vitest test that only imports types from the changed file, but keeps type tests", async () => {
+    const root = vitestRepo();
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(selected.includes("tests/runtime.test.ts"), JSON.stringify(selected));
+      assert.ok(selected.includes("tests/shape.test-d.ts"), JSON.stringify(selected));
+      assert.ok(!selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  for (const [name, extra] of Object.entries<FixtureFiles>({
+    "a Jest config": { "packages/legacy/jest.config.js": "module.exports = {};" },
+    "ts-jest in a workspace package": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", devDependencies: { "ts-jest": "^29.0.0" } }) },
+    "Vitest typecheck mode": { "vitest.config.ts": "export default { test: { typecheck: { enabled: true } } };" },
+    "a tsd script": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "tsd" } }) },
+  })) {
+    it(`keeps type-only edges selecting tests when the repository has ${name}`, async () => {
+      const root = vitestRepo(extra);
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.equal(result.runtimeTestSelection, false);
+        const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+        assert.ok(selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("narrows an unresolved type import in a test that already depends on the changed file", async () => {
+    const root = vitestRepo({ "tests/runtime.test.ts": "import { unit } from '../src/types';\nimport type { Missing } from './action';\nexport const value: Missing | number = unit;" });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.confidence, "UNSAFE");
+      assert.notEqual(refineConfidenceForDelta(result, ["src/types.ts"]), "UNSAFE");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps UNSAFE for a runtime unresolved import in a file that reaches the change only through types", async () => {
+    const root = vitestRepo({ "tests/typed.test.ts": "import type { Shape } from '../src/types';\nimport { missing } from './missing';\nexport const shape: Shape = { size: missing };" });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      assert.equal(refineConfidenceForDelta(result, ["src/types.ts"]), "UNSAFE", "the test is not selected, so its missing edge could hide a dependency on the change");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("TypeScript import-equals dependencies", () => {

@@ -171,6 +171,9 @@ export interface DependencyGraph {
   dependentsOf(filePath: string): string[];
   transitiveDependenciesOf(filePath: string): string[];
   transitiveDependentsOf(filePath: string): string[];
+  /** Dependents through edges that exist at runtime (`import type` excluded). Absent means unknown, and
+   * callers fall back to transitiveDependentsOf. */
+  transitiveRuntimeDependentsOf?(filePath: string): string[];
 }
 
 export interface UnresolvedDependency {
@@ -248,4 +251,8 @@ export interface DependencyGraphResult {
    * rather than assuming COMPLETE, matching computeConfidence()'s own priority (project-reference use
    * caps confidence even when nothing else flags a problem). Previously computed but never exposed. */
   resolvedViaProjectReferences: boolean;
+  /** Tests may be selected through runtime edges alone: every test runner found compiles without type
+   * checking, so an `import type` edge cannot change a test's outcome (2026-11-03). Absent or false
+   * means type-only edges select tests too. */
+  runtimeTestSelection?: boolean;
 }

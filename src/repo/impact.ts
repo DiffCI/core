@@ -21,6 +21,8 @@ const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error
 function isLockfile(filePath: string): boolean { return /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(filePath); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
+/** Vitest's default `typecheck.include`: tests whose outcome is the type checker's. */
+const TYPE_TEST_FILE = /\.(?:test|spec)-d\.[cm]?[jt]sx?$/;
 // "Is this a test?" is answered by the profile's test patterns (src/repo/test-discovery.ts) - one shared
 // definition with analyzer discovery and graph node flags. Module-level helpers receive it explicitly.
 type IsTestFile = (filePath: string) => boolean;
@@ -260,6 +262,16 @@ export class ImpactAnalyzer {
   private selectTestPhases = false;
   private testPhases = new Set<string>();
   private workersOutsideSuite: boolean | undefined;
+  private runtimeTestSelection = false;
+
+  /** Dependents whose tests a change to `path` can affect. When the graph allows runtime selection
+   * (DependencyGraphResult.runtimeTestSelection) an `import type` edge selects only type tests. */
+  private testDependents(graph: DependencyGraph, path: string, dependents: readonly string[]): ReadonlySet<string> {
+    if (!this.runtimeTestSelection || !graph.transitiveRuntimeDependentsOf) return new Set(dependents);
+    const selected = new Set(graph.transitiveRuntimeDependentsOf(path));
+    for (const dependent of dependents) if (TYPE_TEST_FILE.test(dependent)) selected.add(dependent);
+    return selected;
+  }
 
   /** True when nothing in the repository runs a Worker (file-references.ts, suiteMayRunWorkers); false,
    * which keeps wrangler configs global, whenever repository contents are unavailable. */
@@ -281,6 +293,7 @@ export class ImpactAnalyzer {
     this.selectTestPhases = options.selectTestPhases === true;
     this.testPhases = new Set();
     this.workersOutsideSuite = undefined;
+    this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
     this.compiledProjectCache = undefined;
     // One read per file per analysis, however many changed files ask who reads them.
@@ -774,11 +787,13 @@ export class ImpactAnalyzer {
     for (const code of resolution.code) {
       if (!affectedSources.has(code)) affectedSources.set(code, []);
       affectedSources.get(code)!.push(makeEvidence("FILE_REFERENCE", changedPath, `${code} reads ${changedPath}`, code));
-      for (const dependent of graph.transitiveDependentsOf(code)) {
-        if (this.isTestFile(dependent)) this.addAffectedTest(changedPath, dependent, graph, affectedTests, "FILE_REFERENCE", evidence);
+      const codeDependents = graph.transitiveDependentsOf(code);
+      const testDependents = this.testDependents(graph, code, codeDependents);
+      for (const dependent of codeDependents) {
+        if (this.isTestFile(dependent) && testDependents.has(dependent)) this.addAffectedTest(changedPath, dependent, graph, affectedTests, "FILE_REFERENCE", evidence);
         else if (nodeByPath(graph, dependent)?.isEntryPoint) this.addAffectedEntryPoint(dependent, profile, affectedEntryPoints, "FILE_REFERENCE", changedPath, evidence);
       }
-      for (const scriptPath of collectScriptsAmong([code, ...graph.transitiveDependentsOf(code)], this.isTestFile, this.layout)) {
+      for (const scriptPath of collectScriptsAmong([code, ...codeDependents], this.isTestFile, this.layout)) {
         if (!affectedScripts.has(scriptPath)) affectedScripts.set(scriptPath, []);
         affectedScripts.get(scriptPath)!.push(makeEvidence("FILE_REFERENCE", changedPath, `${changedPath} is read by script ${scriptPath}`, scriptPath));
       }
@@ -800,11 +815,12 @@ export class ImpactAnalyzer {
     affectedAssets.get(assetPath)!.push(makeEvidence("ASSET_DEPENDENCY", assetPath, `Changed asset: ${assetPath}`));
     if (!hasNode(graph, assetPath)) return;
     const dependents = graph.transitiveDependentsOf(assetPath);
+    const testDependents = this.testDependents(graph, assetPath, dependents);
     for (const dependent of dependents) {
       if (nodeByPath(graph, dependent)?.isEntryPoint) {
         this.addAffectedEntryPoint(dependent, profile, affectedEntryPoints, "ASSET_DEPENDENCY", assetPath, evidence);
       }
-      if (this.isTestFile(dependent)) {
+      if (this.isTestFile(dependent) && testDependents.has(dependent)) {
         this.addAffectedTest(assetPath, dependent, graph, affectedTests, "ASSET_DEPENDENCY", evidence);
       }
       if (isSourceFilePath(dependent) && !this.isTestFile(dependent)) {
@@ -847,6 +863,7 @@ export class ImpactAnalyzer {
     }
 
     const dependents = graph.transitiveDependentsOf(sourcePath);
+    const testDependents = this.testDependents(graph, sourcePath, dependents);
     for (const dependent of dependents) {
       if (!this.isTestFile(dependent)) {
         if (!affectedSources.has(dependent)) affectedSources.set(dependent, []);
@@ -855,7 +872,7 @@ export class ImpactAnalyzer {
       if (nodeByPath(graph, dependent)?.isEntryPoint) {
         this.addAffectedEntryPoint(dependent, profile, affectedEntryPoints, "DEPENDENCY", sourcePath, evidence);
       }
-      if (this.isTestFile(dependent)) {
+      if (this.isTestFile(dependent) && testDependents.has(dependent)) {
         this.addAffectedTest(sourcePath, dependent, graph, affectedTests, "DEPENDENCY", evidence);
       }
     }
@@ -1042,7 +1059,9 @@ export class ImpactAnalyzer {
         if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
         continue;
       }
-      const runners = [importer, ...graph.transitiveDependentsOf(importer)].filter((path) => this.isTestFile(path));
+      const importerDependents = graph.transitiveDependentsOf(importer);
+      const testDependents = this.testDependents(graph, importer, importerDependents);
+      const runners = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));
       for (const test of runners) this.addAffectedTest(importer, test, graph, affectedTests, "COMPUTED_IMPORT", evidence);
       evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected`));
     }
