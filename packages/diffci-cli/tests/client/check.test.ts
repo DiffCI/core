@@ -144,6 +144,8 @@ describe("automatic check timing", () => {
       write(dir, "src/beta.js", "export const beta = () => 2;\n");
       write(dir, "test/alpha.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {alpha} from '../src/alpha.js'; test('alpha', () => assert.equal(alpha(), 1));\n");
       write(dir, "test/beta.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {beta} from '../src/beta.js'; test('beta', () => assert.equal(beta(), 2));\n");
+      // A gating observer job: check summarises its findings instead of listing each one.
+      write(dir, ".github/workflows/ci.yml", "jobs:\n  smoke:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npx @diffci.com/diffci@1.0.0 observe\n      - run: npm test\n");
       git(dir, "add", "-A");
       git(dir, "commit", "--quiet", "-m", "initial");
       const base = git(dir, "rev-parse", "HEAD");
@@ -155,6 +157,8 @@ describe("automatic check timing", () => {
 
       const run = spawnSync(process.execPath, ["--import", "tsx", CLI, "check", "--repo", dir, "--base", base, "--head", head, "--out", out], { cwd: ROOT, encoding: "utf8", timeout: 120_000 });
       assert.equal(run.status, 0, run.stdout + run.stderr);
+      assert.match(run.stdout, /workflow: 2 blocking finding\(s\) in 1 DiffCI job\(s\) .*diffci verify-workflow/);
+      assert.doesNotMatch(run.stdout, /\[BLOCKING\]/);
       assert.match(run.stdout, /running full and selected validation/);
       assert.match(run.stdout, /DiffCI verify-savings: .*%/);
       const savingsPath = out.replace(/\.json$/, "-savings.json");

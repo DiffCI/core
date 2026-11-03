@@ -508,7 +508,12 @@ function summarise(report: ObservationReport, executionFollows = false): string 
     `  non-interference${executionFollows ? " (analysis phase)" : ""}: worktree ${report.nonInterference.worktreeUnchanged ? "unchanged" : "CHANGED - report this"}, report written ${report.nonInterference.reportWrittenOutsideRepository ? "outside" : "INSIDE"} the checkout`,
   );
   const blocking = report.nonInterference.workflowFindings.filter((f) => f.severity === "BLOCKING");
-  if (blocking.length > 0) {
+  // `check` is a local trial, not an installation, so it names the count and where to look; `observe`
+  // runs inside the installation being judged and keeps every finding in its log.
+  if (blocking.length > 0 && executionFollows) {
+    const jobs = new Set(blocking.map((finding) => `${finding.workflow}#${finding.job ?? ""}`));
+    lines.push(`  workflow: ${blocking.length} blocking finding(s) in ${jobs.size} DiffCI job(s) could let an observer affect CI; run \`diffci verify-workflow\` for details`);
+  } else if (blocking.length > 0) {
     lines.push(`  workflow: ${blocking.length} blocking finding(s) - this installation CAN affect other jobs:`);
     for (const finding of blocking) lines.push(formatFinding(finding));
   }
