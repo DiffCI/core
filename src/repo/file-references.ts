@@ -186,7 +186,7 @@ const LOCKFILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "
 const TEST_LIFECYCLE = ["pretest", "test", "posttest", "prepare", "preinstall", "install", "postinstall"];
 /** Non-code files that can run something or direct what code reads: shell and interpreter scripts,
  * and structured manifests. Only these are followed to their own readers. */
-const DIRECTING_EXTENSIONS = /\.(?:sh|bash|zsh|ps1|psm1|bat|cmd|py|rb|pl|json|jsonc|json5|ya?ml|toml|ini|cfg|conf)$/i;
+export const DIRECTING_EXTENSIONS = /\.(?:sh|bash|zsh|ps1|psm1|bat|cmd|py|rb|pl|json|jsonc|json5|ya?ml|toml|ini|cfg|conf)$/i;
 
 /** Script names reachable from `npm test`, including lifecycle hooks and any script one of those bodies
  * names. Over-inclusive by design: a script name appearing anywhere in a reachable body is followed. */
@@ -303,14 +303,47 @@ export function contentNamesPath(content: string, readerPath: string, target: st
   return false;
 }
 
+/** Calls that list a directory's contents, in the languages Core analyses and the scripts tests run. */
+const DIRECTORY_WALK = /\b(?:readdir(?:Sync)?|opendir(?:Sync)?|globSync|glob|fastGlob|fg|globby|walk(?:Sync)?|scandir|listdir|iterdir|rglob|WalkDir|Walk|ReadDir|Files\.(?:walk|list|find)|listFiles)\s*\(/;
+
+/** Whether `content` calls a directory-listing API; callers pre-filter tests with it once per analysis. */
+export function listsDirectories(content: string | undefined): boolean {
+  return content !== undefined && DIRECTORY_WALK.test(content);
+}
+
+/**
+ * Tests that list a directory containing `filePath` (2026-11-04). The CI replay's one miss: a commit
+ * added `scripts/ci-reproduction.ts`, and a test that reads every file under `scripts/` failed. Nothing
+ * imports a new script, so the graph selected nothing for it, and no fallback said so. A test that calls a
+ * directory-listing API and names one of the file's ancestor directories now counts as reading it.
+ * Additive only: it never narrows a selection. A walk that starts at the repository root without naming
+ * a directory is still invisible, as in resolveFileReferences.
+ */
+export function directoryWalkers(filePath: string, tests: readonly string[], read: (path: string) => string | undefined): string[] {
+  const pattern = referencePattern(referenceTokens(filePath));
+  return tests.filter((test) => {
+    const content = read(test);
+    return listsDirectories(content) && contentNamesPath(content!, test, filePath, pattern, true);
+  });
+}
+
 /** Configs that tooling loads by their default name and that can run a repository file - a Worker
  * entry point, a container command, a test setup file, a bundler plugin - without a test naming
  * either. `tsconfig.json`, `.gitignore` and lint or style configs list paths but run nothing; a
  * non-default `wrangler.validation.json` is used only when a command names it. */
 const RUNS_FILES_WITHOUT_NAMING = /^(?:wrangler\.(?:toml|json|jsonc)|dockerfile.*|docker-compose.*|compose\.ya?ml|procfile|makefile|justfile|taskfile\.ya?ml|(?:vitest|vite|jest|playwright|cypress|ava|babel|webpack|rollup|esbuild|vue|nuxt|svelte|astro|next)\.config\..+|\.mocharc.*|\.babelrc.*|\.c8rc.*|\.nycrc.*)$/i;
 
-function loadsWithoutNaming(path: string): boolean {
+export function loadsWithoutNaming(path: string): boolean {
   return RUNS_FILES_WITHOUT_NAMING.test(posix.basename(path));
+}
+
+/** A root dependency manifest that a Dockerfile names only in `COPY`/`ADD` instructions, which put it
+ * into the image for a package manager to install from. Any other instruction naming it (a `RUN` that
+ * reads it) does not qualify. */
+function copiesOnly(content: string, target: string): boolean {
+  if (target.includes("/") || !["package.json", ...LOCKFILES].includes(target)) return false;
+  const lines = content.split(/\r?\n/).filter((line) => new RegExp(`(?:^|[\\s/"'])${target.replace(/[.]/g, "\\.")}(?=$|[\\s"',\\]])`).test(line));
+  return lines.length > 0 && lines.every((line) => /^\s*(?:COPY|ADD)\s/i.test(line));
 }
 
 /** A Cloudflare Workers deployment config (`wrangler.toml`, `wrangler.product.jsonc`). */
@@ -463,7 +496,12 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         }
         if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors)) continue;
         visited.add(candidate);
-        if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
+        if (input.allowNoReaders && /^dockerfile/i.test(base) && copiesOnly(content, target.path)) {
+          // The caller modelled what the file does when installed (dependency selection); a Dockerfile
+          // that only copies it into the image to install from it adds nothing (2026-11-04: DentalPresence's
+          // `COPY package.json package-lock.json ./` made every dependency bump a full run).
+          resolution.readers.push({ path: candidate, kind: "documentation", via: target.path });
+        } else if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
           resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
           resolution.unresolvable.push(`${candidate} is loaded by tooling and names ${target.path}`);
         } else if (candidate.startsWith(".github/")) {

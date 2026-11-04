@@ -280,6 +280,7 @@
     "docs/change-plan.md",
     "docs/schemas/diffci.gate-plan.v1.schema.json",
     ".github/dependabot.yml",
-    ".github/workflows/codeql.yml"
+    ".github/workflows/codeql.yml",
+    "tests/repo/directory-walkers.test.ts"
   ]
 }

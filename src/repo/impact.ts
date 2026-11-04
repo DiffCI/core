@@ -8,7 +8,7 @@ import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { infrastructureRole, isImplicitlyLoadedFile, isWorkerConfig, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
+import { directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -266,6 +266,7 @@ export class ImpactAnalyzer {
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
   private unresolved: readonly UnresolvedDependency[] = [];
+  private walkerTests: string[] | undefined;
 
   /** Dependents whose tests a change to `path` can affect. When the graph allows runtime selection
    * (DependencyGraphResult.runtimeTestSelection) an `import type` edge selects only type tests. */
@@ -296,6 +297,7 @@ export class ImpactAnalyzer {
     this.selectTestPhases = options.selectTestPhases === true;
     this.testPhases = new Set();
     this.workersOutsideSuite = undefined;
+    this.walkerTests = undefined;
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
     this.unresolved = graphResult.unresolved ?? [];
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
@@ -562,7 +564,11 @@ export class ImpactAnalyzer {
         .filter((ref) => ref.resolution === "external-package" && packageRoot(ref.specifier) === name)
         .map((ref) => ref.importer))].sort();
       if (importers.length === 0) {
-        fail(`${dependencyChange(name)} and no repository source imports it; full validation required`);
+        const blocker = this.resolveUnimportedPackage(name, changedFile, closureBodies, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+        if (blocker) {
+          evidence.push(makeEvidence("DEPENDENCY", changedFile, `${name}: ${blocker}`));
+          fail(`${dependencyChange(name)} and no repository source imports it; full validation required`);
+        }
         continue;
       }
       const quoted = new RegExp(`["'\`]${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:/[^"'\`]*)?["'\`]`);
@@ -592,6 +598,67 @@ export class ImpactAnalyzer {
     }
   }
 
+  /**
+   * A changed dependency no repository code imports (2026-11-04). Usually a CLI the repository runs by
+   * its executable's name: bumping `@diffci.com/diffci`, run as `diffci`, made all 601 DentalPresence
+   * tests run. Such a package reaches the suite only by being run or loaded, so it narrows when
+   * package-lock.json records its executables and every file naming the package or one of them
+   * resolves: a test is selected, graph code selects its dependent tests, and any other code or
+   * directing file must itself resolve by reference. Returns why it cannot narrow: the executables are
+   * unknown, the name suggests tooling loads it by convention (types, plugins, presets, test runners),
+   * or the test script, a file tooling loads, or a test-feeding workflow step names it.
+   */
+  private resolveUnimportedPackage(
+    name: string,
+    changedFile: string,
+    closureBodies: readonly string[],
+    graph: DependencyGraph,
+    profile: RepositoryProfile,
+    affectedSources: Map<string, ImpactEvidence[]>,
+    affectedEntryPoints: Map<string, EntryPointImpact>,
+    affectedTests: Map<string, TestImpact>,
+    affectedScripts: Map<string, ImpactEvidence[]>,
+    evidence: ImpactEvidence[],
+  ): string | undefined {
+    if (/(?:^@types\/|types|plugin|preset|config|loader|register|polyfill|setup|eslint|prettier|stylelint|babel|postcss|tailwind|jest|vitest|mocha|ava|playwright|cypress|typescript|ts-node|^tsx$|swc|esbuild|vite|webpack|rollup)/i.test(name)) {
+      return "tooling may load it by naming convention";
+    }
+    if (!this.repositoryFiles?.has("package-lock.json")) return "its executables are unknown without package-lock.json";
+    let bin: unknown;
+    try {
+      const lock = JSON.parse(this.readRepositoryFile!("package-lock.json") ?? "") as { packages?: Record<string, { bin?: unknown }> };
+      bin = lock.packages?.[`node_modules/${name}`]?.bin;
+    } catch { return "package-lock.json could not be parsed"; }
+    const bins = typeof bin === "string" ? [name.split("/").pop()!] : bin && typeof bin === "object" ? Object.keys(bin) : [];
+    if (bins.length === 0) return "it has no executable, so only tooling can load it";
+    const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const named = new RegExp(`(?:^|[\\s"'\`=/(])(?:${[name, ...bins].map(escape).join("|")})(?=$|[\\s"'\`/@),;:])`, "m");
+    if (closureBodies.some((body) => named.test(body))) return "the test script runs it";
+    const scripts = profile.packageJson.scripts;
+    for (const path of this.sortedRepositoryFiles) {
+      if (path === "package.json" || isLockfile(path) || this.layout.isDocumentationPath(path)) continue;
+      const content = this.readRepositoryFile!(path);
+      if (content === undefined || !named.test(content)) continue;
+      if (isImplicitlyLoadedFile(path) || loadsWithoutNaming(path) || posix.basename(path) === "package.json") return `${path} names it and tooling loads that file`;
+      if (path.startsWith(".github/")) {
+        if (path.startsWith(".github/actions/") || (/^\.github\/workflows\//.test(path) && workflowFeedsTests(content, named, scripts))) return `${path} runs it before tests`;
+        continue;
+      }
+      if (isSourceFilePath(path) && this.isTestFile(path)) {
+        evidence.push(makeEvidence("DEPENDENCY", changedFile, `${path} names ${name}`, path));
+        this.addAffectedTest(changedFile, path, graph, affectedTests, "DEPENDENCY", evidence);
+      } else if (isSourceFilePath(path) && hasNode(graph, path)) {
+        evidence.push(makeEvidence("DEPENDENCY", changedFile, `${path} names ${name}`, path));
+        this.processSourceChange(path, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+      } else if (isSourceFilePath(path) || DIRECTING_EXTENSIONS.test(path)) {
+        if (!this.resolveByReference(path, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { implicitReadersUnresolvable: true })) {
+          return `${path} names it and its own readers could not be resolved`;
+        }
+      }
+    }
+    return undefined;
+  }
+
   private processChangedPath(
     changedPath: string,
     changedImpact: ChangedImpact,
@@ -611,6 +678,17 @@ export class ImpactAnalyzer {
     if (this.goEmbedPaths.has(changedPath)) {
       this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
       return;
+    }
+    // Non-code files are resolved by reference below, directories included; code is not, so a test that
+    // lists the directory a code file is in is added here (file-references.ts, directoryWalkers).
+    if (isSourceFilePath(changedPath) && this.readRepositoryFile) {
+      const read = this.readRepositoryFile;
+      this.walkerTests ??= this.sortedRepositoryFiles.filter((path) => this.isTestFile(path) && listsDirectories(read(path)));
+      for (const test of directoryWalkers(changedPath, this.walkerTests, this.readRepositoryFile)) {
+        if (test === changedPath) continue;
+        evidence.push(makeEvidence("FILE_REFERENCE", changedPath, `${test} lists a directory containing ${changedPath}`, test));
+        this.addAffectedTest(changedPath, test, graph, affectedTests, "FILE_REFERENCE", evidence);
+      }
     }
     const category = changedImpact.category;
     if (changedPath === this.dependencyLockfile) {

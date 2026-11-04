@@ -274,3 +274,64 @@ describe("workspace package manifests (LobeHub, 2026-11-03)", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("dependencies nothing imports (2026-11-04)", () => {
+  // DentalPresence: bumping @diffci.com/diffci, a CLI its package.json scripts run as `diffci`, ran all
+  // 601 tests, and a Dockerfile copying package.json to install from it blocked every dependency bump.
+  function write(dir: string, files: Record<string, string>) {
+    for (const [path, content] of Object.entries(files)) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), content); }
+  }
+  const manifest = (cli: string, test = "node --test") => JSON.stringify({ name: "fixture", type: "module",
+    scripts: { test, "acme:check": "acme check" }, devDependencies: { "@acme/cli": cli } }, null, 2);
+  const lock = (version: string, bin: unknown = { acme: "bin/acme.js" }) => JSON.stringify({ name: "fixture", lockfileVersion: 3,
+    packages: { "": { devDependencies: { "@acme/cli": "^1" } }, "node_modules/@acme/cli": { version, ...(bin ? { bin } : {}) } } }, null, 2);
+  const files = {
+    "package.json": manifest("^1"),
+    "package-lock.json": lock("1.0.0"),
+    "Dockerfile": "FROM node:22\nCOPY package.json package-lock.json ./\nRUN npm ci\n",
+    "src/a.js": "export const a = 1;\n",
+    "src/a.test.js": `import { a } from "./a.js";\nimport test from "node:test";\ntest("a", () => a);\n`,
+    "tests/acme.test.js": `import { spawnSync } from "node:child_process";\nimport test from "node:test";\ntest("cli", () => spawnSync("acme", ["--version"]));\n`,
+  };
+  async function bump(extra: Record<string, string> = {}, change: Record<string, string> = {}) {
+    const dir = join(tmpdir(), `diffci-cli-dep-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      execSync("git init --quiet && git config user.email t@diffci.local && git config user.name t && git config core.autocrlf false", { cwd: dir });
+      write(dir, { ...files, ...extra });
+      execSync("git add -A && git commit --quiet -m base", { cwd: dir });
+      const baseSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+      write(dir, { "package.json": manifest("^1.1.0"), "package-lock.json": lock("1.1.0"), ...change });
+      execSync("git add -A && git commit --quiet -m head", { cwd: dir });
+      const headSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+      const delta = await analyzeGitDelta({ repoPath: dir, baseSha, headSha });
+      assert.ok(delta.success);
+      const graph = await buildDependencyGraph({ repoPath: dir, excludeDirs: ["node_modules", ".git"] });
+      return new ImpactAnalyzer().analyze(delta.delta, graph, graph.profile, { repositoryFiles: delta.inventory?.files, readRepositoryFile: repositoryFileReader(dir) });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it("selects only the tests that run a CLI's executable when its version is bumped", async () => {
+    const impact = await bump();
+    assert.deepEqual(impact.fallbackReasons, []);
+    assert.deepEqual(impact.affectedTests.map((t) => t.path), ["tests/acme.test.js"]);
+  });
+
+  it("falls back when the test script runs it, or a workflow runs it before tests", async () => {
+    const viaScript = await bump({ "package.json": manifest("^1", "node --test && acme check") }, { "package.json": manifest("^1.1.0", "node --test && acme check") });
+    assert.match(viaScript.fallbackReasons.join("\n"), /@acme\/cli changed and no repository source imports it/);
+    const workflow = "on: push\njobs:\n  t:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npx acme prepare\n      - run: npm test\n";
+    const viaWorkflow = await bump({ ".github/workflows/ci.yml": workflow });
+    assert.match(viaWorkflow.fallbackReasons.join("\n"), /@acme\/cli changed and no repository source imports it/);
+  });
+
+  it("falls back for a package with no executable, which only tooling can load", async () => {
+    const impact = await bump({ "package-lock.json": lock("1.0.0", null) }, { "package-lock.json": lock("1.1.0", null) });
+    assert.match(impact.fallbackReasons.join("\n"), /@acme\/cli changed and no repository source imports it/);
+  });
+
+  it("keeps a Dockerfile that reads package.json in a RUN step unresolvable", async () => {
+    const impact = await bump({ "Dockerfile": "FROM node:22\nCOPY package.json ./\nRUN node -p \"require('./package.json').version\"\n" });
+    assert.ok(impact.fallbackReasons.includes("Unknown changed file: package.json"));
+  });
+});
