@@ -618,6 +618,18 @@ export class ImpactAnalyzer {
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       return;
     }
+    // A workspace package's manifest edit beyond version and metadata fields (git-diff.ts clears those)
+    // changes what the package installs, runs or exports, which reaches every package importing it.
+    // Readers that name the file are only the package's own tests, so they cannot bound it (2026-11-03).
+    const workspaceManifest = changedPath.endsWith("/package.json") && !changedPath.split("/").includes("node_modules")
+      && !this.contentCleared.has(changedPath) && changedImpact.file.changeType !== "added";
+    if (workspaceManifest) {
+      const message = `Workspace package manifest changed dependencies, scripts or resolution fields: ${changedPath}; full validation required`;
+      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
+      riskSignals.push({ level: "critical", reason: "DEPENDENCY_MANIFEST", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+      return;
+    }
     if (category === "test-fixture") {
       // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
       // degrades to the unknown-file fallback below rather than being silently dropped.

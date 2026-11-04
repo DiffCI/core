@@ -77,6 +77,20 @@ test("a check the change broke still stops verification before the tests", async
   }
 });
 
+test("a check killed at the base (out of memory) is not read as already broken", async () => {
+  // LobeHub, 2026-11-04: `type-check` was killed with exit 137 at the base while verify held its heap.
+  const { repo, base, head } = fixture(`a === 1 ? process.exit(137) : a === 3`, 3);
+  try {
+    const report = await verify(repo, base, head, true);
+    assert.equal(report.checks?.[0]?.status, "failed");
+    assert.equal(report.checks?.[0]?.baseline?.status, "unknown");
+    assert.match(report.checks?.[0]?.baseline?.reason ?? "", /killed \(exit code 137/);
+    assert.match(report.reason, /gate check check failed.*tests were not run/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("without --baseline-on-failure a failing check stops verification as before", async () => {
   const { repo, base, head } = fixture("true", 2);
   try {
@@ -84,6 +98,38 @@ test("without --baseline-on-failure a failing check stops verification as before
     assert.equal(report.verification, "failed", report.reason);
     assert.equal(report.checks?.[0]?.baseline, undefined);
     assert.match(report.reason, /tests were not run/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a check that needs a workspace package's own node_modules is rerun at the base with them", async () => {
+  // LobeHub, 2026-11-03: `type-check` resolves dependencies installed under each pnpm workspace
+  // package. With only the root node_modules in the base tree it failed there too, so a type error
+  // the change introduced read as already broken and verify ran the tests instead.
+  const repo = mkdtempSync(join(tmpdir(), "diffci-verify-check-baseline-ws-"));
+  try {
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "test@diffci.local");
+    git(repo, "config", "user.name", "DiffCI test");
+    for (const dir of ["src", "test", "packages/p/node_modules/dep", "node_modules"]) mkdirSync(join(repo, dir), { recursive: true });
+    writeFileSync(join(repo, ".gitignore"), "node_modules\n");
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", private: true, type: "module", workspaces: ["packages/*"], scripts: { check: "node packages/p/check.cjs", test: "node --test test/" } }));
+    writeFileSync(join(repo, "tsconfig.json"), JSON.stringify({ compilerOptions: { allowJs: true, noEmit: true, module: "esnext", target: "es2022" }, include: ["src", "test"] }));
+    writeFileSync(join(repo, "packages/p/package.json"), JSON.stringify({ name: "p", private: true, dependencies: { dep: "1.0.0" } }));
+    writeFileSync(join(repo, "packages/p/node_modules/dep/index.js"), "module.exports = 1;\n");
+    writeFileSync(join(repo, "packages/p/check.cjs"), `require("dep");\nconst a = require("fs").readFileSync(require("path").join(__dirname, "../../src/a.js"), "utf8");\nif (a.includes("= 3")) process.exit(1);\n`);
+    writeFileSync(join(repo, "src", "a.js"), "export const a = 1;\n");
+    writeFileSync(join(repo, "test", "a.test.js"), `import { test } from "node:test";\ntest("a", () => {});\n`);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "base");
+    const base = git(repo, "rev-parse", "HEAD");
+    writeFileSync(join(repo, "src", "a.js"), "export const a = 3;\n");
+    git(repo, "commit", "-q", "-am", "change");
+    const report = await verify(repo, base, git(repo, "rev-parse", "HEAD"), true);
+    assert.equal(report.checks?.[0]?.status, "failed");
+    assert.equal(report.checks?.[0]?.baseline?.status, "introduced", report.checks?.[0]?.baseline?.reason);
+    assert.match(report.reason, /gate check check failed.*tests were not run/);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

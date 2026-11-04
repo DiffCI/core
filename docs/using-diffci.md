@@ -172,6 +172,7 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | --- | --- | --- |
 | `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts` or `.babelrc` | No |
 | `Dependency manifest changed; full validation required` | Add `peerDependencies` or `engines` to `package.json` | No |
+| `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency or edit `scripts` or `exports` in `packages/a/package.json` (a `version` bump is narrowed) | No |
 | `Lockfile changed; full validation required` | Regenerate `pnpm-lock.yaml` after changing its `settings` | No |
 | `GitHub workflow definition(s) changed; full validation required` | Change a step in `.github/workflows/ci.yml` that runs `npm test` | No |
 | `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | No |

@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 import { measureCommands } from "./command-batches.js";
 
@@ -65,6 +65,17 @@ function git(repoPath: string, args: string[]) {
   return spawnSync("git", args, { cwd: repoPath, encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
 }
 
+/**
+ * A base run that a signal ended (SIGKILL from the out-of-memory killer, exit 137 through a shell) says
+ * nothing about the base commit (2026-11-04, LobeHub: `type-check` was killed at the base while verify
+ * still held its heap, and the type error the change introduced read as already broken).
+ */
+function killedReason(execution: { exitCode: number | null; signal?: string | null }): string | undefined {
+  if (execution.signal) return `the base run was killed by ${execution.signal}`;
+  if (execution.exitCode !== null && execution.exitCode > 128) return `the base run was killed (exit code ${execution.exitCode}, signal ${execution.exitCode - 128}); out of memory is the usual cause`;
+  return undefined;
+}
+
 export function compareWithBaseline(input: {
   repoPath: string;
   baseSha: string;
@@ -82,6 +93,8 @@ export function compareWithBaseline(input: {
     const execution = measureCommands(input.commands, { cwd: directory, timeoutMs: input.timeoutMs, tailBytes: 0 });
     const baseExecution = { exit_code: execution.exitCode, wall_ms: execution.wallMs, timed_out: execution.timedOut };
     if (execution.timedOut) return report("unknown", "the base run timed out", { base_execution: baseExecution });
+    const killed = killedReason(execution);
+    if (killed) return report("unknown", killed, { base_execution: baseExecution });
     const atBase = new Set(execution.failingTests ?? []);
     if (execution.exitCode === 0) {
       return report("introduced", "the same command passes at the base commit", { failing_at_base: 0, introduced: input.headFailures.slice(0, 20), base_execution: baseExecution });
@@ -118,6 +131,8 @@ export function checkAtBaseline(input: { repoPath: string; baseSha: string; head
     const execution = measureCommands([input.command], { cwd: directory, timeoutMs: input.timeoutMs, tailBytes: 0 });
     const baseExecution = { exit_code: execution.exitCode, wall_ms: execution.wallMs, timed_out: execution.timedOut };
     if (execution.timedOut) return report("unknown", "the base run timed out", { base_execution: baseExecution });
+    const killed = killedReason(execution);
+    if (killed) return report("unknown", killed, { base_execution: baseExecution });
     return execution.exitCode === 0
       ? report("introduced", "the same check passes at the base commit", { base_execution: baseExecution })
       : report("preexisting", "the same check also fails at the base commit", { base_execution: baseExecution });
@@ -127,13 +142,24 @@ export function checkAtBaseline(input: { repoPath: string; baseSha: string; head
 
 type BaseTree<T> = { ok: true; value: T } | { ok: false; reason: string };
 
+/** Directories holding a tracked package.json and an installed node_modules: the root, then every
+ * workspace package. pnpm and Yarn workspaces install each package's own dependencies there, so a base
+ * tree with only the root's linked cannot resolve them, and a type check fails at the base for that
+ * alone (2026-11-03, LobeHub replay: a type error the change introduced read as already broken). */
+function installedModuleDirs(repoPath: string): string[] {
+  const listed = git(repoPath, ["ls-files", "-z", "--", "package.json", "*/package.json"]);
+  const dirs = listed.status === 0 ? listed.stdout.toString("utf8").split(" ").filter(Boolean).map((file) => posix.dirname(file)) : ["."];
+  return [...new Set(dirs)].filter((dir) => !dir.split("/").includes("node_modules") && existsSync(join(repoPath, dir, "node_modules"))).sort();
+}
+
 /**
  * Runs `use` in the base commit, exported with `git archive` into a temporary directory with the
- * repository's installed node_modules linked in. The same declines apply to tests and checks: the
- * dependency manifests differ, or nothing is installed. The repository itself is never written.
+ * repository's installed node_modules linked in, the root's and each workspace package's that the base
+ * also has. The same declines apply to tests and checks: the dependency manifests differ, or nothing is
+ * installed. The repository itself is never written.
  */
 function withBaseTree<T>(input: { repoPath: string; baseSha: string; headSha: string }, use: (directory: string) => T): BaseTree<T> {
-  const changedDependencies = git(input.repoPath, ["diff", "--quiet", input.baseSha, input.headSha, "--", ...DEPENDENCY_FILES]);
+  const changedDependencies = git(input.repoPath, ["diff", "--quiet", input.baseSha, input.headSha, "--", ...DEPENDENCY_FILES, ...DEPENDENCY_FILES.map((file) => `*/${file}`)]);
   if (changedDependencies.status !== 0) return { ok: false, reason: "dependency manifests or lockfiles differ between base and head" };
   const modules = join(input.repoPath, "node_modules");
   if (declaresDependencies(input.repoPath) && !existsSync(modules)) {
@@ -141,25 +167,32 @@ function withBaseTree<T>(input: { repoPath: string; baseSha: string; headSha: st
   }
 
   const directory = mkdtempSync(join(tmpdir(), "diffci-baseline-"));
-  const link = join(directory, "node_modules");
+  const links: string[] = [];
   try {
     const archive = git(input.repoPath, ["archive", "--format=tar", input.baseSha]);
     if (archive.status !== 0) return { ok: false, reason: "the base commit could not be exported" };
     const extract = spawnSync("tar", ["-x", "-f", "-", "-C", directory], { input: archive.stdout, maxBuffer: 64 * 1024 * 1024 });
     if (extract.status !== 0) return { ok: false, reason: "the base commit could not be extracted" };
-    if (existsSync(modules)) symlinkSync(modules, link, process.platform === "win32" ? "junction" : "dir");
+    for (const dir of installedModuleDirs(input.repoPath)) {
+      const link = join(directory, dir, "node_modules");
+      if (!existsSync(join(directory, dir)) || lstatSync(link, { throwIfNoEntry: false })) continue;
+      symlinkSync(join(input.repoPath, dir, "node_modules"), link, process.platform === "win32" ? "junction" : "dir");
+      links.push(link);
+    }
     return { ok: true, value: use(directory) };
   } catch (error) {
     return { ok: false, reason: `the base run could not be prepared: ${error instanceof Error ? error.message : String(error)}` };
   } finally {
-    // Remove the dependency link itself first, so cleanup can never descend into the real node_modules.
+    // Remove the dependency links themselves first, so cleanup can never descend into a real node_modules.
     let linked = false;
-    try {
-      if (lstatSync(link, { throwIfNoEntry: false })) {
-        try { unlinkSync(link); } catch { rmdirSync(link); }
-      }
-    } catch { linked = true; }
-    // If the link could not be removed, leave the temporary directory rather than risk the real one.
+    for (const link of links) {
+      try {
+        if (lstatSync(link, { throwIfNoEntry: false })) {
+          try { unlinkSync(link); } catch { rmdirSync(link); }
+        }
+      } catch { linked = true; }
+    }
+    // If a link could not be removed, leave the temporary directory rather than risk the real one.
     if (!linked) rmSync(directory, { recursive: true, force: true });
   }
 }

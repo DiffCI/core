@@ -220,3 +220,42 @@ describe("dependency bumps end to end", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe("workspace package manifests (LobeHub, 2026-11-03)", () => {
+  function write(dir: string, files: Record<string, string>) {
+    for (const [path, content] of Object.entries(files)) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), content); }
+  }
+  const member = (fields: Record<string, unknown>) => JSON.stringify({ name: "@fx/a", version: "1.0.0", type: "module", scripts: { build: "tsc" }, dependencies: { left: "^1" }, ...fields }, null, 2);
+  const files = {
+    "package.json": JSON.stringify({ name: "fixture", private: true, type: "module", workspaces: ["packages/*"], scripts: { test: "node --test" } }, null, 2),
+    "packages/a/package.json": member({}),
+    "packages/a/src/index.js": "export const a = 1;\n",
+    "packages/a/src/index.test.js": `import { a } from "./index.js";\nimport test from "node:test";\ntest("a", () => a);\n`,
+    "src/other.test.js": `import test from "node:test";\ntest("o", () => 1);\n`,
+  };
+  async function analyze(dir: string, change: Record<string, string>) {
+    const baseSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+    write(dir, change);
+    execSync("git add -A && git commit --quiet -m head", { cwd: dir });
+    const headSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+    const delta = await analyzeGitDelta({ repoPath: dir, baseSha, headSha });
+    assert.ok(delta.success);
+    const graph = await buildDependencyGraph({ repoPath: dir, excludeDirs: ["node_modules", ".git"] });
+    return new ImpactAnalyzer().analyze(delta.delta, graph, graph.profile, { repositoryFiles: delta.inventory?.files, readRepositoryFile: repositoryFileReader(dir) });
+  }
+  it("narrows a version bump and keeps dependency and script edits global with a named reason", async () => {
+    const dir = join(tmpdir(), `diffci-ws-manifest-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    try {
+      execSync("git init --quiet && git config user.email t@diffci.local && git config user.name t && git config core.autocrlf false", { cwd: dir });
+      write(dir, files);
+      execSync("git add -A && git commit --quiet -m base", { cwd: dir });
+      const version = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released" }) });
+      assert.deepEqual(version.fallbackReasons, []);
+      const dependency = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" } }) });
+      assert.deepEqual(dependency.fallbackReasons, ["Workspace package manifest changed dependencies, scripts or resolution fields: packages/a/package.json; full validation required"]);
+      const script = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" }, scripts: { build: "tsc -b" } }) });
+      assert.equal(script.fallbackReasons.length, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

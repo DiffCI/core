@@ -749,6 +749,19 @@ export async function analyzeGitDelta(
         }
       }
     }
+    // 2026-11-03: a workspace package's package.json used to be an unknown file and a full run. One whose
+    // edit is limited to metadata and data fields (a release bumping `version`) cannot change how tests
+    // run, so its readers are resolved like the root's. A script edit stays unknown: the root's test
+    // command can run a workspace script by any name, so the package's own test closure does not bound it.
+    for (const file of filesWithBinary) {
+      if (file.changeType !== "modified" || !file.path.endsWith("/package.json") || file.path.split("/").includes("node_modules")) continue;
+      const before = readFileAtSha(baseSha, file.path, repoPath);
+      const after = readFileAtSha(headSha, file.path, repoPath);
+      const change = packageJsonChange(before, after);
+      if (change.kind !== "metadata" && change.kind !== "data") continue;
+      if (JSON.stringify(parsePackageScripts(before)) !== JSON.stringify(parsePackageScripts(after))) continue;
+      referenceResolvedPaths.push(file.path);
+    }
     // 2026-10-21: a workflow that cannot run tests (deploy, publish, scan) cannot change a test
     // outcome. Both sides of the change are inspected, since removing a test step changes CI too.
     if (analysis.workflowChanged) {
