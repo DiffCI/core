@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/DiffCI/core/blob/main/docs/schemas/diffci.gate-plan.v1.schema.json",
+  "title": "DiffCI change plan (diffci.gate-plan.v1)",
+  "description": "DiffCI's decisions for one commit range: which gate checks run, are narrowed or are skipped, and which tests are selected, each with a reason. Written by `diffci gate --plan-out`; read by `diffci gate --plan`. See docs/change-plan.md.",
+  "type": "object",
+  "required": ["schema", "diffci_version", "analysis", "checks", "tests"],
+  "additionalProperties": true,
+  "properties": {
+    "schema": { "const": "diffci.gate-plan.v1" },
+    "diffci_version": { "type": "string", "description": "Version of the DiffCI package that wrote the plan." },
+    "range": {
+      "type": "object",
+      "description": "The commits the plan is for. Absent when no range could be resolved; every check then runs as written.",
+      "required": ["base_sha", "head_sha", "source"],
+      "additionalProperties": true,
+      "properties": {
+        "base_sha": { "type": "string" },
+        "head_sha": { "type": "string", "description": "A consumer must not use a plan whose head_sha is not the commit being gated." },
+        "source": { "type": "string", "description": "How the range was chosen: explicit-flags, pull-request-event, push-event or head-parent." }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "required": ["status", "fallback_reasons"],
+      "additionalProperties": true,
+      "properties": {
+        "status": { "type": "string", "description": "OBSERVED when the change was analysed; REFUSED or ERROR otherwise, in which case tests.selection is unavailable." },
+        "reason": { "type": "string", "description": "Why the change was not analysed." },
+        "mode": { "enum": ["SELECTIVE", "FULL"], "description": "FULL when the analysis fell back to the whole suite." },
+        "fallback_reasons": { "type": "array", "items": { "type": "string" }, "description": "Why the analysis fell back to the full suite; empty when it did not." },
+        "duration_ms": { "type": "number", "minimum": 0 }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "description": "Every leaf of the repository's gate (for example `npm run check`), in the order the gate runs them.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "decision", "command", "reason"],
+        "additionalProperties": true,
+        "properties": {
+          "id": { "type": "string", "description": "The script name, or `script[n]` for the n-th part of one." },
+          "kind": { "enum": ["typecheck", "lint", "format", "script", "unknown"] },
+          "decision": { "enum": ["RUN", "NARROWED", "SKIP"], "description": "RUN as written, NARROWED to the changed files (command rewritten), or SKIP for this change." },
+          "command": { "type": "string", "description": "The command to run; for NARROWED, the narrowed command." },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "required": ["selection", "reason", "tests_selected", "tests_available"],
+      "additionalProperties": true,
+      "properties": {
+        "selection": { "enum": ["selected", "full", "unavailable"], "description": "unavailable means the consumer must run its full test command." },
+        "reason": { "type": "string" },
+        "tests_selected": { "type": "integer", "minimum": 0 },
+        "tests_available": { "type": "integer", "minimum": 0 },
+        "selected_commands": { "type": "array", "items": { "type": "string" }, "description": "Present only when selection is selected: the commands that run the selected tests, in order." }
+      }
+    }
+  }
+}

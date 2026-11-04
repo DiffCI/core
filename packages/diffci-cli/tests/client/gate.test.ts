@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -147,6 +147,35 @@ test("a plan made where git history exists drives a gate that runs without it", 
       assert.match(result.analysis.reason ?? "", why);
       assert.deepEqual(unusable.ran, ["npm run lint", "node scripts/docs.mjs"], "the full gate still runs");
     }
+  } finally { rmSync(repo.dir, { recursive: true, force: true }); }
+});
+
+/** The subset of JSON Schema the published plan schema uses: type, const, enum, required, properties, items, minimum. */
+function schemaErrors(schema: any, value: unknown, path = "$"): string[] {
+  const errors: string[] = [];
+  if ("const" in schema && value !== schema.const) errors.push(`${path}: expected ${JSON.stringify(schema.const)}`);
+  if (schema.enum && !schema.enum.includes(value)) errors.push(`${path}: ${JSON.stringify(value)} is not one of ${schema.enum.join(", ")}`);
+  const type = Array.isArray(value) ? "array" : Number.isInteger(value) ? "integer" : typeof value;
+  if (schema.type && !(schema.type === type || (schema.type === "number" && type === "integer"))) errors.push(`${path}: expected ${schema.type}, got ${type}`);
+  if (typeof schema.minimum === "number" && typeof value === "number" && value < schema.minimum) errors.push(`${path}: below ${schema.minimum}`);
+  if (type === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) if (!(key in record)) errors.push(`${path}.${key}: required`);
+    for (const [key, sub] of Object.entries(schema.properties ?? {})) if (key in record) errors.push(...schemaErrors(sub, record[key], `${path}.${key}`));
+  }
+  if (type === "array" && schema.items) (value as unknown[]).forEach((item, i) => errors.push(...schemaErrors(schema.items, item, `${path}[${i}]`)));
+  return errors;
+}
+
+test("plans match the published diffci.gate-plan.v1 schema", async () => {
+  const schema = JSON.parse(readFileSync(new URL("../../../../docs/schemas/diffci.gate-plan.v1.schema.json", import.meta.url), "utf8"));
+  const repo = fixture();
+  try {
+    const selective = await planGate(options(repo, () => false).opts);
+    const failed = await planGate(options(repo, () => false, { analyse: async () => { throw new Error("boom"); } }).opts);
+    assert.equal(failed.tests.selection, "unavailable");
+    for (const plan of [selective, failed]) assert.deepEqual(schemaErrors(schema, JSON.parse(JSON.stringify(plan))), []);
+    assert.notDeepEqual(schemaErrors(schema, { ...selective, checks: [{ ...selective.checks[0], decision: "MAYBE" }] }), [], "the validator rejects an unknown decision");
   } finally { rmSync(repo.dir, { recursive: true, force: true }); }
 });
 

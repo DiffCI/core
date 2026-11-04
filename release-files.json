@@ -272,6 +272,11 @@
     "docs/research/2026-10-30-seeded-regression-pilot.md",
     "packages/diffci-cli/tests/client/verify-check-baseline.test.ts",
     "packages/diffci-cli/tests/client/verify-snapshot.test.ts",
-    "packages/diffci-cli/tests/client/verify-summary.test.ts"
+    "packages/diffci-cli/tests/client/verify-summary.test.ts",
+    "SECURITY.md",
+    "STEWARDSHIP.md",
+    ".github/workflows/scorecard.yml",
+    "docs/change-plan.md",
+    "docs/schemas/diffci.gate-plan.v1.schema.json"
   ]
 }
