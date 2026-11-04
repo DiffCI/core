@@ -70,9 +70,9 @@
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.12",
+    "@types/node": "^26.6.5",
     "tsx": "^4.23.15",
-    "typescript": "^5.8.3"
+    "typescript": "^7.0.2"
   },
   "bundleDependencies": [
     "@diffci.com/core"
