@@ -6,8 +6,7 @@ on:
       - "cli-release-v*"
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   verify-muse-plugin-integrity:
@@ -62,6 +61,10 @@ jobs:
     name: Publish @diffci.com/diffci
     needs: [require-product-dispatch, verify-muse-plugin-integrity]
     runs-on: ubuntu-26.04
+    permissions:
+      # Creates the GitHub Release and publishes to npm with provenance.
+      contents: write
+      id-token: write
     env:
       GIT_SSH_COMMAND: /bin/false
     steps:

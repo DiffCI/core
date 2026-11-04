@@ -278,6 +278,8 @@
     "STEWARDSHIP.md",
     ".github/workflows/scorecard.yml",
     "docs/change-plan.md",
-    "docs/schemas/diffci.gate-plan.v1.schema.json"
+    "docs/schemas/diffci.gate-plan.v1.schema.json",
+    ".github/dependabot.yml",
+    ".github/workflows/codeql.yml"
   ]
 }

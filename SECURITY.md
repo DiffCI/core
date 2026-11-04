@@ -2,7 +2,9 @@
 
 ## Reporting a vulnerability
 
-Report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability**. Don't open a public issue, pull request or discussion for a suspected vulnerability.
+Report vulnerabilities privately through GitHub: [open a private security advisory](https://github.com/DiffCI/core/security/advisories/new), or choose **Report a vulnerability** on the repository's **Security** tab. Don't open a public issue, pull request or discussion for a suspected vulnerability.
+
+Fixed vulnerabilities are disclosed in [published security advisories](https://github.com/DiffCI/core/security/advisories) once a fixed release is available.
 
 Include the affected version (`diffci --version`), the command or Action input that triggers it, and a minimal reproduction. A synthetic repository is enough; don't send customer source, credentials or private logs.
 
