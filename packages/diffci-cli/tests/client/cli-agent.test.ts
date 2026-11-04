@@ -18,7 +18,7 @@ describe("agent-facing CLI commands", () => {
   it("prints check and init as first-class commands", () => {
     const result = runCli(["help"], ROOT);
     assert.equal(result.status, 0);
-    assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--hook\] \[--force\]/);
+    assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\] \[--force\]/);
     assert.match(result.stdout, /diffci mcp/);
     assert.match(result.stdout, /diffci verify \[--changed \| --base <sha> --head <sha>\]/);
     assert.match(result.stdout, /diffci check \[--repo <path>\]/);
@@ -70,6 +70,66 @@ describe("agent-facing CLI commands", () => {
       assert.match(result.stdout, /skipped package installation/);
       assert.equal(existsSync(join(dir, ".github", "workflows", "diffci.yml")), false);
       assert.equal(existsSync(join(dir, ".github", "workflows", "diffci-verify.yml")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sets up the MCP server, skill and pre-push hook by default, keeping what DiffCI did not write", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-agent-setup-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: dir });
+      writeFileSync(join(dir, ".mcp.json"), `${JSON.stringify({ mcpServers: { other: { command: "other-server" } } })}\n`, "utf8");
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = runCli(["init", "--repo", dir], ROOT);
+        assert.equal(result.status, 0, result.stderr);
+        if (attempt === 0) {
+          assert.match(result.stdout, /updated \.mcp\.json \(diffci MCP server\)/);
+          assert.match(result.stdout, /wrote \.cursor\/mcp\.json \(diffci MCP server\)/);
+          assert.match(result.stdout, /wrote \.claude\/skills\/diffci-verify\/SKILL\.md/);
+          assert.match(result.stdout, /wrote \.git\/hooks\/pre-push/);
+        } else {
+          assert.match(result.stdout, /kept \.mcp\.json \(diffci MCP server current\)/);
+          assert.match(result.stdout, /kept \.claude\/skills\/diffci-verify\/SKILL\.md \(current\)/);
+        }
+      }
+
+      const claudeConfig = JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf8")) as { mcpServers: Record<string, { command: string; args?: string[] }> };
+      assert.deepEqual(claudeConfig.mcpServers.other, { command: "other-server" });
+      assert.equal(claudeConfig.mcpServers.diffci?.command, "node");
+      assert.match(claudeConfig.mcpServers.diffci?.args?.[1] ?? "", new RegExp(`'@diffci\\.com/diffci@${PACKAGE_VERSION.replaceAll(".", "\\.")}', 'diffci-mcp'`));
+      const pluginConfig = JSON.parse(readFileSync(join(ROOT, "..", "..", "integrations", "agent-plugin", ".mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> };
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, ".cursor", "mcp.json"), "utf8")), pluginConfig, "init must launch MCP exactly like the portable plugin");
+      const pluginSkill = readFileSync(join(ROOT, "..", "..", "integrations", "agent-plugin", "skills", "diffci-verify", "SKILL.md"), "utf8").replace(/\r\n/g, "\n");
+      assert.equal(readFileSync(join(dir, ".claude", "skills", "diffci-verify", "SKILL.md"), "utf8"), pluginSkill);
+      assert.match(readFileSync(join(dir, ".git", "hooks", "pre-push"), "utf8"), /diffci:managed pre-push hook/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves out each agent integration on request and keeps a foreign diffci server", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-agent-opt-out-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: dir });
+      mkdirSync(join(dir, ".cursor"));
+      const foreign = `${JSON.stringify({ mcpServers: { diffci: { command: "my-own-diffci" } } })}\n`;
+      writeFileSync(join(dir, ".cursor", "mcp.json"), foreign, "utf8");
+
+      const kept = runCli(["init", "--repo", dir, "--no-skill", "--no-hook"], ROOT);
+      assert.equal(kept.status, 0, kept.stderr);
+      assert.match(kept.stdout, /kept \.cursor\/mcp\.json \(its diffci server was not written by DiffCI/);
+      assert.equal(readFileSync(join(dir, ".cursor", "mcp.json"), "utf8"), foreign);
+      assert.match(kept.stdout, /skipped the pre-push hook \(--no-hook\)/);
+      assert.equal(existsSync(join(dir, ".claude", "skills")), false);
+      assert.equal(existsSync(join(dir, ".git", "hooks", "pre-push")), false);
+
+      rmSync(join(dir, ".mcp.json"));
+      const noMcp = runCli(["init", "--repo", dir, "--no-mcp", "--no-hook"], ROOT);
+      assert.equal(noMcp.status, 0, noMcp.stderr);
+      assert.match(noMcp.stdout, /skipped the MCP server configs \(--no-mcp\)/);
+      assert.equal(existsSync(join(dir, ".mcp.json")), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

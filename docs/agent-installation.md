@@ -19,16 +19,22 @@ their tests.
 Installing the MCP server makes DiffCI available; it does not make agents use it.
 On one dogfood repository, agents ran DiffCI in 24 of over 1,500 test commands.
 They picked their own test files 928 times and ran the full suite 282 times, and
-104 pushes then failed the repository's gates in CI. Three things change that:
+104 pushes then failed the repository's gates in CI. One command sets up
+everything below:
+
+```sh
+npx "@diffci.com/diffci@latest" init
+```
+
+Besides the instruction files, it registers the DiffCI MCP server in `.mcp.json`
+(Claude Code) and `.cursor/mcp.json` (Cursor), keeping any other servers there,
+writes the `diffci-verify` skill to `.claude/skills/diffci-verify/SKILL.md`, and
+installs the pre-push hook. Commit the config and skill files so every agent
+session in the repository finds them. `--no-mcp`, `--no-skill` and `--no-hook`
+leave each part out. Three things make DiffCI the default:
 
 1. **A pre-push hook**, so every push verifies the commits being pushed whoever
-   runs it:
-
-   ```sh
-   npx "@diffci.com/diffci@latest" init --hook
-   ```
-
-   It writes `pre-push` into Git's hooks directory (honouring `core.hooksPath`,
+   runs it. It writes `pre-push` into Git's hooks directory (honouring `core.hooksPath`,
    such as `.husky`), never over a hook DiffCI did not write unless you pass
    `--force`. Failing verification blocks the push. If DiffCI cannot verify, for
    example with uncommitted changes, it explains and lets the push through, because

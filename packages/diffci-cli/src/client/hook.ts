@@ -81,6 +81,15 @@ export function hookCommand(manager: "npm" | "pnpm" | "yarn" | "bun" | undefined
   }
 }
 
+export function isGitRepository(repoPath: string): boolean {
+  try {
+    execFileSync("git", ["rev-parse", "--git-dir"], { cwd: repoPath, stdio: "ignore", windowsHide: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Writes the hook into the directory Git actually runs hooks from (`core.hooksPath` included, such as
  * `.husky`). An existing hook DiffCI did not write is kept unless `force` is set. */
 export function installPrePushHook(repoPath: string, command: string, force: boolean): string {

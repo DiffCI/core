@@ -85,14 +85,16 @@ const tools = [
   },
   {
     name: "diffci_init",
-    description: "Seed a repository with AI-agent instruction files for DiffCI.",
+    description: "Seed a repository with DiffCI agent instruction files, MCP server configs, the diffci-verify skill and the pre-push hook.",
     inputSchema: {
       type: "object",
       properties: {
         repo: { type: "string", description: "Repository path. Defaults to the MCP server working directory." },
         workflow: { type: "boolean", description: "Also add the non-blocking GitHub Actions observer workflow." },
         verificationWorkflow: { type: "boolean", description: "Also add the blocking GitHub Actions verification workflow." },
-        hook: { type: "boolean", description: "Also install a Git pre-push hook that verifies the commits being pushed." },
+        hook: { type: "boolean", description: "Install the Git pre-push hook that verifies the commits being pushed (default true)." },
+        mcp: { type: "boolean", description: "Register the DiffCI MCP server in .mcp.json and .cursor/mcp.json (default true)." },
+        skill: { type: "boolean", description: "Add the diffci-verify skill to .claude/skills (default true)." },
         force: { type: "boolean", description: "Overwrite existing instruction files." },
       },
       additionalProperties: false,
@@ -165,7 +167,9 @@ function commandForTool(name: string, args: Record<string, unknown>): string[] {
       if (repo) command.push("--repo", resolve(repo));
       if (booleanArg(args, "workflow")) command.push("--workflow");
       if (booleanArg(args, "verificationWorkflow")) command.push("--verification-workflow");
-      if (booleanArg(args, "hook")) command.push("--hook");
+      if (args.hook === false) command.push("--no-hook");
+      if (args.mcp === false) command.push("--no-mcp");
+      if (args.skill === false) command.push("--no-skill");
       if (booleanArg(args, "force")) command.push("--force");
       return command;
     }

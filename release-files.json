@@ -63,6 +63,7 @@
     "packages/diffci-cli/scripts/package-smoke.mjs",
     "packages/diffci-cli/src/client/agent-selection.ts",
     "packages/diffci-cli/src/client/agent-identity.ts",
+    "packages/diffci-cli/src/client/agent-setup.ts",
     "packages/diffci-cli/src/client/cli.ts",
     "packages/diffci-cli/src/client/command-batches.ts",
     "packages/diffci-cli/src/client/selected-coverage.ts",

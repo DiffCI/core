@@ -69,7 +69,7 @@ planner decides RUN/SKIP per task without ever looking inside a composite script
    ```
 
    `diffci verify --changed` runs the selected checks before the selected tests, and the pre-push
-   hook (`diffci init --hook`, see `docs/agent-installation.md`) makes that the default path before a
+   hook (`diffci init`, see `docs/agent-installation.md`) makes that the default path before a
    push.
 
 ## Safety rules
