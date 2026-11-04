@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { infrastructureRole, isImplicitlyLoadedFile, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
+import { contentNamesPath, infrastructureRole, isImplicitlyLoadedFile, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests, workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
 import { analyzeGitDelta, packageJsonChangeKind } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
@@ -176,6 +176,15 @@ describe("workflowFeedsTests", () => {
     assert.equal(workflowFeedsTests(job("      - run: cp data.json x\n      - uses: some/test-action@v1\n"), names), true);
     assert.equal(workflowFeedsTests("jobs:\n  call:\n    uses: ./.github/workflows/ci.yml\n    with:\n      file: data.json\n", names), true);
     assert.equal(workflowFeedsTests("not: [valid", names), true);
+  });
+  it("finds the naming step with a word-level matcher, so a setup script beside the action does not name packages/", () => {
+    const target = "packages/agents/src/__fixtures__/handshake.json";
+    const pattern = referencePattern(referenceTokens(target));
+    const words = (text: string) => contentNamesPath(text, ".github/workflows/test.yml", target, pattern, true);
+    const workflow = job(`      - run: bash "$GITHUB_ACTION_PATH/../../packages/setup.sh"\n      - run: npm test\n`);
+    assert.equal(workflowFeedsTests(workflow, pattern), true);
+    assert.equal(workflowFeedsTests(workflow, words), false);
+    assert.equal(workflowFeedsTests(job(`      - run: cp "packages/agents/src/__fixtures__/handshake.json" /tmp\n      - run: npm test\n`), words), true);
   });
 });
 

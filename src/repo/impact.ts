@@ -754,7 +754,7 @@ export class ImpactAnalyzer {
       evidence.push(makeEvidence("UNKNOWN_FILE", removedPath, `${importer.importer} imports ${importer.specifier}, which may have resolved to the removed ${removedPath}`));
       return false;
     }
-    if (!this.resolveByReference(removedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true, implicitReadersUnresolvable: true, directories: false })) return false;
+    if (!this.resolveByReference(removedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { implicitReadersUnresolvable: true, removed: true })) return false;
     for (const node of graph.nodes) {
       if (node.path === removedPath || moduleKey(node.path) !== key) continue;
       evidence.push(makeEvidence("DELETED_FILE_LEGACY_DEPENDENTS", removedPath, `${node.path} may now resolve imports of the removed ${removedPath}`, node.path));
@@ -810,7 +810,7 @@ export class ImpactAnalyzer {
     affectedTests: Map<string, TestImpact>,
     affectedScripts: Map<string, ImpactEvidence[]>,
     evidence: ImpactEvidence[],
-    { implicitReadersUnresolvable = false, allowNoReaders = false, directories = true }: { implicitReadersUnresolvable?: boolean; allowNoReaders?: boolean; directories?: boolean } = {},
+    { implicitReadersUnresolvable = false, allowNoReaders = false, removed = false }: { implicitReadersUnresolvable?: boolean; allowNoReaders?: boolean; removed?: boolean } = {},
   ): boolean {
     if (!this.repositoryFiles || !this.readRepositoryFile) return false;
     if (isImplicitlyLoadedFile(changedPath) && !(isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite())) return false;
@@ -827,7 +827,7 @@ export class ImpactAnalyzer {
       contentCleared: this.contentCleared,
       implicitReadersUnresolvable,
       allowNoReaders,
-      directories,
+      removed,
       testPhases: this.selectTestPhases,
       workerConfigsOutsideSuite: this.workerConfigsOutsideSuite(),
     });

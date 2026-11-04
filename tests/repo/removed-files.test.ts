@@ -71,6 +71,15 @@ describe("files gone at HEAD", () => {
     assert.deepEqual(selected(impact), ["tests/button.test.ts"]);
   });
 
+  it("skips a file too large to read rather than treating it as an unknown reader", async () => {
+    const impact = await analyzeChange({ "src/button.module.css": null, "src/button.tsx": "export const button = 1;\n" }, {
+      ...base,
+      "db/meta/snapshot.json": JSON.stringify({ blob: "x".repeat(1_100_000) }),
+    });
+    assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("\n"));
+    assert.deepEqual(selected(impact), ["tests/button.test.ts"]);
+  });
+
   it("falls back when an unchanged file still imports the deleted path", async () => {
     const impact = await analyzeChange({ "src/button.module.css": null });
     assert.equal(impact.fallbackRequired, true);

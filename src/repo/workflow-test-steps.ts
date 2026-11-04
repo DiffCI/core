@@ -75,16 +75,18 @@ function commandRunsTests(text: string, scripts: Readonly<Record<string, string>
  * authoritative, not part of the suite DiffCI selects from. One dogfood repository's deploy workflow runs two such
  * checks, and counting them blocked every site HTML change in its replayed history.
  *
- * So the answer is true when a job step matching `names` is, or precedes, a step that runs the test
+ * So the answer is true when a job step `names` matches is, or precedes, a step that runs the test
  * command or a test runner, or an action not known to be test-free; when a reusable-workflow job or
  * job-level configuration names it in a job that runs tests; and whenever the YAML cannot be read.
  */
-export function workflowFeedsTests(workflowText: string, names: RegExp, scripts: Readonly<Record<string, string>> = {}): boolean {
+export function workflowFeedsTests(workflowText: string, names: RegExp | ((text: string) => boolean), scripts: Readonly<Record<string, string>> = {}): boolean {
   let document: unknown;
   try { document = parse(workflowText); } catch { return true; }
   if (!document || typeof document !== "object") return true;
+  // A word-level matcher reads steps as JSON text, whose escapes (`\n`, `\"`) would join into words.
+  const named = typeof names === "function" ? (text: string) => names(text.replace(/\\[nrt]/g, " ").replace(/\\"/g, '"')) : (text: string) => names.test(text);
   const jobs = (document as { jobs?: unknown }).jobs;
-  if (!jobs || typeof jobs !== "object") return names.test(workflowText);
+  if (!jobs || typeof jobs !== "object") return named(workflowText);
   const testStep = (step: unknown): boolean => {
     if (!step || typeof step !== "object") return true;
     const { uses, run } = step as { uses?: unknown; run?: unknown };
@@ -99,11 +101,11 @@ export function workflowFeedsTests(workflowText: string, names: RegExp, scripts:
     if (!job || typeof job !== "object") return true;
     if (jobDisabled(job)) continue;
     const { steps, uses, ...configuration } = job as { steps?: unknown; uses?: unknown };
-    if (uses !== undefined) { if (names.test(JSON.stringify(job))) return true; continue; }
+    if (uses !== undefined) { if (named(JSON.stringify(job))) return true; continue; }
     if (!Array.isArray(steps)) return true;
-    const firstNaming = steps.findIndex((step) => names.test(JSON.stringify(step)));
+    const firstNaming = steps.findIndex((step) => named(JSON.stringify(step)));
     const jobRunsTests = steps.some(testStep);
-    if (jobRunsTests && names.test(JSON.stringify(configuration))) return true;
+    if (jobRunsTests && named(JSON.stringify(configuration))) return true;
     if (firstNaming !== -1 && steps.slice(firstNaming).some(testStep)) return true;
   }
   return false;

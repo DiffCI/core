@@ -119,6 +119,7 @@ describe("word-level naming", () => {
     // A bare directory name counts only between quotes or slashes, not in a comment's prose.
     assert.equal(contentNamesPath(`run: cat "packages/sdk/x.json"\n# onto the overlay packages, and`, action, target, pattern(target), true), false);
     assert.equal(contentNamesPath(`run: ls "packages"`, action, target, pattern(target), true), true);
+    assert.equal(contentNamesPath("require(`${process.env.GITHUB_WORKSPACE}/.github/packages/check.cjs`)", action, target, pattern(target), true), false);
   });
 });
 

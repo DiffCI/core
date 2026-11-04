@@ -142,7 +142,7 @@ export interface ReferenceResolutionInput {
   isCodeFile: (path: string) => boolean;
   /** Whether something a workflow names can reach the test suite through it, given a pattern matching
    * the name (src/repo/workflow-test-steps.ts, workflowFeedsTests). */
-  workflowFeedsTests: (content: string, names: RegExp) => boolean;
+  workflowFeedsTests: (content: string, names: (text: string) => boolean) => boolean;
   /** Changed files whose content analyzeGitDelta proved cannot change how tests run
    * (GitDeltaAnalysis.referenceResolvedPaths); a workflow reading them does not block. */
   contentCleared?: ReadonlySet<string>;
@@ -156,9 +156,10 @@ export interface ReferenceResolutionInput {
   /** Treat a reader that tooling loads implicitly (wrangler config, Dockerfile, `*.config.*`) as
    * unresolvable. Used for code: such a reader can run the file without anything naming it. */
   implicitReadersUnresolvable?: boolean;
-  /** Also match the changed file's ancestor directories (a test listing them finds it). False for a file
-   * gone at HEAD, whose dependents are resolved through the graph instead. Defaults to true. */
-  directories?: boolean;
+  /** The file is gone at HEAD and the graph has shown nothing can still import it (ImpactAnalyzer's
+   * resolveRemovedFile). Only a reader naming the file itself, not its directories, can observe its
+   * absence, and finding none is not a gap; an unreadable file is skipped as in any other resolution. */
+  removed?: boolean;
   /** Resolve a file the root test script runs directly (`node scripts/test-security.js`) to that phase
    * of the script instead of failing closed (ReferenceResolution.phases). Off by default: a caller
    * that does not run the returned phases must keep the fallback. */
@@ -275,7 +276,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
     // A leading variable is a directory the content does not name (`$GITHUB_ACTION_PATH/../../scripts/x.sh`
     // names `scripts/x.sh` somewhere, not the repository's `scripts/`), so the rest is a path relative to
     // an unknown directory (2026-11-04: a LobeHub composite action blocked every changed file under scripts/).
-    const variable = /^\$(?:\{\w+\}|\w+)\/(.+)$/.exec(word);
+    const variable = /^\$(?:\{[\w.]+\}|\w+)\/(.+)$/.exec(word);
     if (variable && !/[*?{}[\]!$]/.test(variable[1]!)) {
       const rest = variable[1]!.replace(/^(?:\.\.?\/)+/, "").replace(/\/+$/, "");
       if (names.some((name) => name === rest || name.endsWith(`/${rest}`) || rest.endsWith(`/${name}`))) return true;
@@ -433,7 +434,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
       // directory. A reader reached through the changed file (a script, a manifest) matters only if
       // something runs or reads it by name; matching its directories as well made `"tests"` and
       // `"fixtures"` match nearly every file and no generic name (package.json) could resolve.
-      const ancestors = target.path === filePath && input.directories !== false;
+      const ancestors = target.path === filePath && !input.removed;
       const pattern = referencePattern(referenceTokens(target.path, { ancestors }));
       for (const candidate of input.files) {
         if (visited.has(candidate) || candidate === target.path || LOCKFILES.has(posix.basename(candidate))) continue;
@@ -471,7 +472,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           // A change content inspection already showed cannot alter how tests run (a version bump)
           // stays that way when a workflow reads the file.
           const executes = candidate.startsWith(".github/actions/")
-            || (/^\.github\/workflows\//.test(candidate) && !input.contentCleared?.has(target.path) && input.workflowFeedsTests(content, pattern));
+            || (/^\.github\/workflows\//.test(candidate) && !input.contentCleared?.has(target.path) && input.workflowFeedsTests(content, (text) => contentNamesPath(text, candidate, target.path, pattern, ancestors)));
           if (!executes) continue;
           resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
           resolution.unresolvable.push(`${candidate} names ${target.path}`);
@@ -503,7 +504,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
   // script or test-feeding workflow step reaches: the suite cannot observe the file. Finding no such
   // reader at all is different - the file's reader is unknown, so it stays unknown.
   const executableReaders = resolution.readers.some((reader) => reader.kind === "transitive");
-  if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !input.allowNoReaders && !loadedOnlyOutsideTests(filePath, input, read)) {
+  if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !input.allowNoReaders && !input.removed && !loadedOnlyOutsideTests(filePath, input, read)) {
     resolution.unresolvable.push(`no test or source file names ${filePath}`);
   }
   resolution.phases = resolution.unresolvable.length === 0 ? [...phases].sort() : [];
