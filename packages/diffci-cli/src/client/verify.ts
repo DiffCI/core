@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { batchCommand, measureCommands } from "./command-batches.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
-import { inferFullCommand, inferSelectedCommand } from "./full-command.js";
+import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport } from "./report.js";
@@ -520,7 +520,20 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
   let command: string | undefined;
   let reason: string;
   let primaryPhases: string[] = [];
-  if (result.mode === "SELECTIVE" && !result.commandRefusalReason && result.proposedCommands.length === 1) {
+  let selectedParts: string[] | undefined;
+  const multiple = result.mode === "SELECTIVE" && !result.commandRefusalReason && result.proposedCommands.length > 1
+    ? inferSelectedCommands(repoPath, result.proposedCommands, result.selectedTests) : undefined;
+  if (multiple?.commands) {
+    selection = "selected";
+    selectedParts = multiple.commands;
+    command = multiple.commands.join(" && ");
+    primaryPhases = (result.testPhases ?? []).map(phaseCommand);
+    reason = `dependency impact (${multiple.reason})${primaryPhases.length ? `; also ran ${primaryPhases.length} test-script phase(s) that read changed files: ${result.testPhases!.join("; ")}` : ""}`;
+  } else if (multiple) {
+    selection = "full";
+    command = inferFullCommand(repoPath).command;
+    reason = `selected verification was not executable (${multiple.reason}); broadened to full verification`;
+  } else if (result.mode === "SELECTIVE" && !result.commandRefusalReason && result.proposedCommands.length === 1) {
     const inferred = inferSelectedCommand(repoPath, result.proposedCommands[0]!, result.selectedTests);
     // A selected file the runner's glob would not match never runs, and the rest still pass (2026-11-01).
     const unmatched = inferred.command ? unmatchedNodeTests(inferred.command, result.selectedTests) : [];
@@ -574,7 +587,7 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
 
   // Each part stays within the shell's command-line limit (cmd.exe stops at 8,191 characters).
   const commands = command ? [
-    ...batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : []),
+    ...(selectedParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
     ...primaryPhases,
     ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : []),
   ] : [];

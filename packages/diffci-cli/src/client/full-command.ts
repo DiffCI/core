@@ -3,6 +3,27 @@ import { join } from "node:path";
 import { readRepositoryConfig } from "@diffci.com/core/repo/repo-config";
 import { analyzeRepository } from "@diffci.com/core/repo/analyzer";
 import { commandSpecToString, planSelectiveTestCommands } from "@diffci.com/core/planner/test-command";
+import { batchCommand } from "./command-batches.js";
+
+/**
+ * A selection the planner splits across several commands - a workspace package and the root suite, or
+ * several Vitest projects - rebuilt from the repository so only the planner's own commands run, each
+ * split to fit the shell. Before 2026-11-04 verify ran the full suite for any plan of more than one
+ * command (LobeHub: every narrowed commit, 27 minutes then a timeout).
+ */
+export function inferSelectedCommands(repoPath: string, proposed: readonly string[], selectedTests: readonly string[]): { commands?: string[]; reason: string } {
+  const plan = planSelectiveTestCommands(analyzeRepository({ repoPath }), selectedTests);
+  if (plan.refusalReason || !plan.commands.length) return { reason: plan.refusalReason ?? "the plan has no commands" };
+  if (JSON.stringify(plan.commands.map(commandSpecToString)) !== JSON.stringify(proposed)) return { reason: "report commands differ from the verified plan" };
+  const commands = plan.groups.flatMap((group) => {
+    // The trailing arguments that name selected files, as the shell string spells them.
+    const paths = group.commandSpec.args
+      .filter((arg) => group.paths.some((path) => path === arg || path.endsWith(`/${arg}`)))
+      .map((arg) => commandSpecToString({ executable: "", args: [arg] }).slice(1));
+    return batchCommand(commandSpecToString(group.commandSpec), paths);
+  });
+  return { commands, reason: `${plan.commands.length} commands from the verified plan` };
+}
 
 /** Rebuild the complete plan locally; never join arbitrary report commands. */
 export function inferWorkspaceComparison(repoPath: string, proposed: readonly string[], selectedTests: readonly string[]): { full?: string; selected?: string; reason: string } {

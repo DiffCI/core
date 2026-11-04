@@ -64,7 +64,12 @@ function detectPackageManager(repoPath: string): PackageManager {
   if (existsSync(join(repoPath, "package-lock.json"))) {
     return "npm";
   }
-  return "unknown";
+  // A repository that commits no lockfile (pnpm `lockfile: false`, as LobeHub sets) still names its
+  // manager in package.json for Corepack (2026-11-04: LobeHub read as "unknown", so workspace routing
+  // refused every selection and verify ran the full suite).
+  const declared = readJson<{ packageManager?: unknown }>(join(repoPath, "package.json"))?.packageManager;
+  const name = typeof declared === "string" ? declared.split("@", 1)[0] : undefined;
+  return name === "npm" || name === "pnpm" || name === "yarn" || name === "bun" ? name : "unknown";
 }
 
 function findConfig(repoPath: string, name: string): string | undefined {
@@ -466,7 +471,8 @@ export function analyzeRepository(
   );
 
   let testFileCount = testFilePaths.length;
-  const lockfile =
+  // Only a lockfile that exists: a manager named in package.json alone has none.
+  const lockfileName =
     packageManager === "npm"
       ? "package-lock.json"
       : packageManager === "yarn"
@@ -476,6 +482,7 @@ export function analyzeRepository(
           : packageManager === "bun"
             ? (existsSync(join(repoPath, "bun.lockb")) ? "bun.lockb" : "bun.lock")
             : undefined;
+  const lockfile = lockfileName && existsSync(join(repoPath, lockfileName)) ? lockfileName : undefined;
 
   const nextConfigFile = findConfig(repoPath, "next.config");
 

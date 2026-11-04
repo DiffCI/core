@@ -146,3 +146,70 @@ it("batches long selections without dropping or duplicating test identities", ()
     assert.ok(plan.commands.every(command => command.args.join(' ').length < 5000));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+/** LobeHub's shape (2026-11-04): no lockfile, pnpm named in package.json, the app and server suites at the
+ * root as inline Vitest projects, and workspace packages beside them, some with other test scripts. */
+function rootProjectsFixture() {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-root-projects-"));
+  const write = (path: string, content: string) => { mkdirSync(join(dir, path, ".."), { recursive: true }); writeFileSync(join(dir, path), content); };
+  write("package.json", JSON.stringify({ packageManager: "pnpm@10.0.0", scripts: { test: "npm run test-app && npm run test-server", "test-app": "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+  write("pnpm-workspace.yaml", "packages:\n  - 'packages/**'\n  - .\n  - e2e\n");
+  write("vitest.config.mts", `import tsconfigPaths from 'vite-tsconfig-paths';
+const exclude = ['**/node_modules/**', '**/packages/**', '**/e2e/**'];
+export default defineConfig({
+  plugins: [tsconfigPaths({ projects: ['.', './apps/share'] })],
+  test: {
+    alias,
+    environment: 'happy-dom',
+    exclude,
+    projects: [
+      { extends: true, test: { name: 'app', exclude: [...exclude, '**/apps/server/**'] } },
+      { extends: true, test: { name: 'server', environment: 'node', include: ['**/apps/server/**/*.{test,spec}.?(c|m)[jt]s?(x)'] } },
+    ],
+    globals: true,
+    setupFiles: './tests/setup.ts',
+  },
+});`);
+  for (const path of ["src/store/a.test.ts", "src/routes/(main)/page.test.tsx", "apps/server/src/router.test.ts"]) write(path, "import {test} from 'vitest'; test('x',()=>{});");
+  write("packages/p/package.json", JSON.stringify({ scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+  write("packages/p/vitest.config.ts", "export default {test:{include:['src/**/*.test.ts']}};");
+  write("packages/p/src/p.test.ts", "import {test} from 'vitest'; test('p',()=>{});");
+  write("e2e/package.json", JSON.stringify({ scripts: { test: "bun run test:unit && cucumber-js" }, devDependencies: { vitest: "4.1.8" } }));
+  write("e2e/src/flow.test.ts", "import {test} from 'vitest'; test('e',()=>{});");
+  return { dir, write };
+}
+
+it("routes root-package tests through the root's inline Vitest projects beside workspace packages", () => {
+  const { dir } = rootProjectsFixture();
+  try {
+    const profile = analyzeRepository({ repoPath: dir });
+    assert.equal(profile.packageManager, "pnpm");
+    assert.equal(profile.lockfile, undefined);
+    const config = profile.testRunnerConfigs!.find(c => c.file === "vitest.config.mts")!;
+    assert.deepEqual(config.projects!.map(p => [p.name, p.runtimeSelectionSafe]), [["app", true], ["server", true]]);
+    const plan = planSelectiveTestCommands(profile, ["apps/server/src/router.test.ts", "packages/p/src/p.test.ts", "src/routes/(main)/page.test.tsx", "src/store/a.test.ts"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands.map(c => [c.executable, ...c.args].join(" ")), [
+      "pnpm exec vitest run --config vitest.config.mts --project app src/routes/(main)/page.test.tsx src/store/a.test.ts",
+      "pnpm exec vitest run --config vitest.config.mts --project server apps/server/src/router.test.ts",
+      "pnpm --dir packages/p exec vitest run --config vitest.config.ts src/p.test.ts",
+    ]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("still refuses a selected test in a package whose script it cannot narrow", () => {
+  const { dir } = rootProjectsFixture();
+  try {
+    const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["e2e/src/flow.test.ts", "src/store/a.test.ts"]);
+    assert.match(plan.refusalReason!, /single declared Vitest phase/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("treats root projects it cannot read as ambiguous rather than routing by lifted globs", () => {
+  const { dir, write } = rootProjectsFixture();
+  try {
+    write("vitest.config.mts", "export default {test:{projects:[{extends:true,test:{name:'app',include:patterns}}]}};");
+    const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["src/store/a.test.ts"]);
+    assert.match(plan.refusalReason!, /statically declared/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

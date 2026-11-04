@@ -168,6 +168,55 @@ function buildCommand(
   return { executable: prefix.executable, args: [...prefix.args, ...invocation.leadingArgs, ...configArgs, ...pathArgs] };
 }
 
+/** Include globs that only ever match runtime test files: `*.test.ts`, or Vitest's default include.
+ * Neither matches a `*.test-d.ts` type test. */
+function runtimeOnlyGlob(glob: string): boolean {
+  return glob.endsWith(".test.ts") || glob.endsWith("*.{test,spec}.?(c|m)[jt]s?(x)");
+}
+
+/**
+ * Groups for a config with inline Vitest projects: each runtime-only project's selected files, in
+ * batches that keep every command under 3,500 characters, and every other project in full. Returns a
+ * refusal reason when a selected file has no project. `paths` are relative to the config's directory;
+ * `pathPrefix` makes them repository-relative.
+ */
+function projectGroups(
+  config: TestRunnerConfig,
+  paths: readonly string[],
+  wrap: (args: string[]) => CommandSpec,
+  runnerPrefix: string,
+  pathPrefix: string,
+): SelectiveTestCommandGroup[] | string {
+  const projects = config.projects!;
+  const claims = (project: (typeof projects)[number], path: string) => project.includes.some(glob => matchesGlob(path, glob))
+    && !(project.excludes ?? []).some(glob => matchesGlob(path, glob));
+  if (paths.some(path => !projects.some(project => claims(project, path)))) return "Selected test has no declared Vitest project";
+  const groups: SelectiveTestCommandGroup[] = [];
+  for (const project of projects) {
+    // Only conventional runtime-only globs are narrowed. Type/property or
+    // unfamiliar projects always retain their full original configuration.
+    const runtimeOnly = project.runtimeSelectionSafe && project.includes.every(runtimeOnlyGlob);
+    const selected = paths.filter(path => claims(project, path));
+    if (runtimeOnly && !selected.length) continue;
+    const prefix = ["run", "--config", config.file, "--project", project.name];
+    if (!runtimeOnly) {
+      groups.push({ runnerId: `${runnerPrefix}project:${project.name}`, label: "Full auxiliary project", paths: [], commandSpec: wrap(prefix) });
+      continue;
+    }
+    const batches: string[][] = [[]];
+    for (const path of selected) {
+      if (path.length > 3000) return "Vitest project selection exceeds the safe command length";
+      const batch = batches[batches.length - 1]!;
+      if (batch.length && [...prefix, ...batch, path].join(" ").length > 3500) batches.push([path]);
+      else batch.push(path);
+    }
+    for (const [index, batch] of batches.entries()) {
+      groups.push({ runnerId: `${runnerPrefix}project:${project.name}${batches.length > 1 ? `:${index}` : ""}`, label: "Selected runtime project", paths: batch.map(path => `${pathPrefix}${path}`), commandSpec: wrap([...prefix, ...batch]) });
+    }
+  }
+  return groups;
+}
+
 /**
  * Routes each selected test to the runner configuration that claims it, then emits one command per
  * group. A repository with `vitest.config.ts` and `vitest.e2e.config.ts` gets two commands, because
@@ -184,32 +233,41 @@ export function planSelectiveTestCommands(
     const suites = profile.workspaceTestPackages;
     const refuse = (reason: string): SelectiveTestCommandPlan => ({ commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: reason });
     if (!["pnpm", "npm"].includes(profile.packageManager) || suites.some(s => suites.some(other => other !== s && s.packageRoot.startsWith(`${other.packageRoot}/`)))) return refuse("Workspace routing requires non-overlapping declared npm or pnpm packages");
-    if (selectedPaths.some(path => !suites.some(s => path.startsWith(`${s.packageRoot}/`) && s.profile.testFilePaths.includes(path.slice(s.packageRoot.length + 1))))) return refuse("A selected test has no verified workspace owner");
+    const owned = (path: string) => suites.some(s => path.startsWith(`${s.packageRoot}/`) && s.profile.testFilePaths.includes(path.slice(s.packageRoot.length + 1)));
+    // Tests no workspace package owns belong to the root package's own suite, planned as a
+    // single-package repository would be (2026-11-04: LobeHub keeps its app and server tests at the
+    // root beside `packages/*`, and every selection was refused).
+    const rootPaths = selectedPaths.filter(path => !owned(path));
+    if (rootPaths.some(path => suites.some(s => path.startsWith(`${s.packageRoot}/`)))) return refuse("A selected test has no verified workspace owner");
+    const rootScript = profile.packageJson.scripts.test ?? "";
+    const runsWorkspaceScripts = !rootScript.trim() || /(?:^|\s)(?:-r|--recursive|--filter|-F|--workspaces?|-ws)(?:[\s=]|$)|\b(?:turbo|nx|lerna)\b/.test(rootScript);
     const groups: SelectiveTestCommandGroup[] = [];
+    if (rootPaths.length) {
+      const root = planSelectiveTestCommands({ ...profile, workspaceTestPackages: undefined }, rootPaths);
+      if (root.refusalReason || root.unroutedPaths.length) return refuse(root.refusalReason ?? "A selected root test has no runner");
+      groups.push(...root.groups);
+    }
     for (const suite of suites) {
       const child = suite.profile;
       const script = child.packageJson.scripts.test?.trim();
-      if (!/^vitest(?: run)?(?: --typecheck)?$/.test(script ?? "") || child.packageJson.scripts.pretest || child.packageJson.scripts.posttest || child.testUniverse?.blindSpot || child.testUniverse?.declaredFrameworks.length !== 1 || child.testUniverse.declaredFrameworks[0] !== "vitest" || child.workspaceTestPackages?.length) return refuse("Workspace test scripts require a single declared Vitest phase without lifecycle hooks or discovery blind spots");
       const paths = selectedPaths.filter(path => path.startsWith(`${suite.packageRoot}/`)).map(path => path.slice(suite.packageRoot.length + 1));
+      if (!/^vitest(?: run)?(?: --typecheck)?$/.test(script ?? "") || child.packageJson.scripts.pretest || child.packageJson.scripts.posttest || child.testUniverse?.blindSpot || child.testUniverse?.declaredFrameworks.length !== 1 || child.testUniverse.declaredFrameworks[0] !== "vitest" || child.workspaceTestPackages?.length) {
+        // A package with no selected test has nothing to narrow when the root test script never runs
+        // workspace scripts, so their extra phases are not part of full validation either, unless it
+        // runs type tests, which the graph does not track (2026-11-04: LobeHub's root runs only its own
+        // Vitest suite, and 13 packages, `e2e` among them, have other scripts).
+        if (!paths.length && !runsWorkspaceScripts && !/--typecheck\b/.test(script ?? "")) continue;
+        return refuse("Workspace test scripts require a single declared Vitest phase without lifecycle hooks or discovery blind spots");
+      }
       const wrap = (args: string[]): CommandSpec => profile.packageManager === "npm"
         ? { executable: "npm", args: ["exec", "--offline", `--workspace=${suite.packageRoot}`, "--", "vitest", ...args] }
         : { executable: "pnpm", args: ["--dir", suite.packageRoot, "exec", "vitest", ...args] };
       const projectConfigs = child.testRunnerConfigs?.filter(config => config.projects !== undefined) ?? [];
       if (projectConfigs.length) {
         if (projectConfigs.length !== 1 || child.testRunnerConfigs?.length !== 1 || !projectConfigs[0]!.projects) return refuse("Vitest projects must be statically declared inline in one configuration");
-        const config = projectConfigs[0]!;
-        const projects = config.projects!;
-        if (paths.some(path => !projects.some(project => project.includes.some(glob => matchesGlob(path, glob))))) return refuse("Selected test has no declared Vitest project");
-        for (const project of projects) {
-          // Only conventional runtime-only globs are narrowed. Type/property or
-          // unfamiliar projects always retain their full original configuration.
-          const runtimeOnly = project.runtimeSelectionSafe && project.includes.every(glob => glob.endsWith(".test.ts"));
-          const selected = paths.filter(path => project.includes.some(glob => matchesGlob(path, glob)));
-          if (runtimeOnly && !selected.length) continue;
-          const args = ["run", "--config", config.file, "--project", project.name, ...(runtimeOnly ? selected : [])];
-          if (args.join(" ").length > 3500) return refuse("Vitest project selection exceeds the safe command length");
-          groups.push({ runnerId: `${suite.packageRoot}:project:${project.name}`, label: runtimeOnly ? "Selected runtime project" : "Full auxiliary project", paths: runtimeOnly ? selected.map(path => `${suite.packageRoot}/${path}`) : [], commandSpec: wrap(args) });
-        }
+        const planned = projectGroups(projectConfigs[0]!, paths, wrap, `${suite.packageRoot}:`, `${suite.packageRoot}/`);
+        if (typeof planned === "string") return refuse(planned);
+        groups.push(...planned);
         continue;
       }
       if (child.testRunnerConfigs?.some(config => config.runtimeSelectionUnsafe)) {
@@ -290,6 +348,20 @@ export function planSelectiveTestCommands(
   const frameworks = profile.testUniverse?.declaredFrameworks ?? [];
   const configs = profile.testRunnerConfigs ?? [];
   if (configs.some(config => config.runtimeSelectionUnsafe)) return { commands: [], groups: [], unroutedPaths: paths, refusalReason: "Non-isolated or ambiguous Vitest isolation requires full validation" };
+
+  // Inline Vitest projects give each file its project's options, so files run per project. The lifted
+  // include globs mix every project's, and routing by them sent `apps/server` tests nowhere and package
+  // tests to a config that excludes them (2026-11-04, LobeHub).
+  const projectConfigs = configs.filter(config => config.projects !== undefined);
+  if (projectConfigs.length) {
+    const refuse = (reason: string): SelectiveTestCommandPlan => ({ commands: [], groups: [], unroutedPaths: paths, refusalReason: reason });
+    const config = projectConfigs[0]!;
+    if (projectConfigs.length !== 1 || !config.projects || configs.some(other => other !== config && other.runner === "vitest")) return refuse("Vitest projects must be statically declared inline in one configuration");
+    const prefix = execPrefix(profile.packageManager, "vitest");
+    const planned = projectGroups(config, paths, args => ({ executable: prefix.executable, args: [...prefix.args, ...args] }), "vitest:", "");
+    if (typeof planned === "string") return refuse(planned);
+    return { commands: planned.map(group => group.commandSpec), groups: planned, unroutedPaths: [] };
+  }
 
   if (frameworks.length === 0 && configs.length === 0) {
     return {

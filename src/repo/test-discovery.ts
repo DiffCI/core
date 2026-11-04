@@ -30,8 +30,9 @@ export type TestFamily = "unit" | "snapshot" | "e2e" | "integration" | "benchmar
 export interface TestRunnerConfig {
   /** A known unsupported declaration that makes even a nonempty test universe incomplete. */
   discoveryError?: string;
-  /** Inline Vitest projects; undefined means no projects, null means ambiguous. */
-  projects?: { name: string; includes: string[]; runtimeSelectionSafe: boolean }[] | null;
+  /** Inline Vitest projects; undefined means no projects, null means ambiguous. `excludes` holds the
+   * root `test.exclude` and the project's own, which `extends: true` concatenates. */
+  projects?: { name: string; includes: string[]; excludes?: string[]; runtimeSelectionSafe: boolean }[] | null;
   runtimeSelectionUnsafe?: boolean;
   /** Repo-relative config file, e.g. "vitest.e2e.config.ts". */
   file: string;
@@ -116,7 +117,9 @@ function inlineProjects(source: string): TestRunnerConfig["projects"] {
   let found: ts.Node[] = [];
   let sharedState = false;
   const visit = (node: ts.Node): void => {
-    if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "projects") found.push(node.initializer);
+    // Only `test.projects`: plugin options use the same name (LobeHub's `tsconfigPaths({ projects })`).
+    if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "projects" && ts.isObjectLiteralExpression(node.parent)
+      && ts.isPropertyAssignment(node.parent.parent) && node.parent.parent.name.getText(ast) === "test") found.push(node.initializer);
     if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "isolate" && node.initializer.kind !== ts.SyntaxKind.TrueKeyword) sharedState = true;
     ts.forEachChild(node, visit);
   };
@@ -127,26 +130,67 @@ function inlineProjects(source: string): TestRunnerConfig["projects"] {
     if (!ts.isObjectLiteralExpression(node)) return;
     const values = new Map<string, ts.Expression>();
     for (const property of node.properties) {
-      if (!ts.isPropertyAssignment(property) || !ts.isIdentifier(property.name) || values.has(property.name.text)) return;
-      values.set(property.name.text, property.initializer);
+      // `{ alias, exclude }` shorthand names a binding of the same name.
+      const value = ts.isPropertyAssignment(property) ? property.initializer : ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
+      if (!value || !property.name || !ts.isIdentifier(property.name) || values.has(property.name.text)) return;
+      values.set(property.name.text, value);
+    }
+    return values;
+  };
+  // Top-level `const exclude = ['...']`, which configs spread into projects (2026-11-04, LobeHub).
+  const constArrays = new Map<string, ts.ArrayLiteralExpression>();
+  for (const statement of ast.statements) {
+    if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && declaration.initializer && ts.isArrayLiteralExpression(declaration.initializer)) constArrays.set(declaration.name.text, declaration.initializer);
+    }
+  }
+  const strings = (node: ts.Expression, depth = 0): string[] | undefined => {
+    if (depth > 4) return;
+    if (ts.isIdentifier(node)) return constArrays.has(node.text) ? strings(constArrays.get(node.text)!, depth + 1) : undefined;
+    if (!ts.isArrayLiteralExpression(node)) return;
+    const values: string[] = [];
+    for (const element of node.elements) {
+      const lifted = ts.isStringLiteral(element) ? [element.text] : ts.isSpreadElement(element) ? strings(element.expression, depth + 1) : undefined;
+      if (!lifted) return;
+      values.push(...lifted);
     }
     return values;
   };
   const projects: NonNullable<TestRunnerConfig["projects"]> = [];
   const inherited = properties(found[0].parent.parent);
-  const inheritedSafe = inherited && [...inherited.keys()].every(key => ["projects", "coverage", "setupFiles", "globalSetup", "isolate"].includes(key));
+  // Root options that only shape how each file is loaded or reported. Running a subset of files under
+  // them runs each file exactly as the full run would (2026-11-04: LobeHub's root sets alias, deps,
+  // environment, exclude, globals and server.deps beside setupFiles and coverage).
+  const inheritedSafe = inherited && [...inherited.keys()].every(key => ["projects", "coverage", "setupFiles", "globalSetup", "isolate", "alias", "deps", "environment", "exclude", "globals", "server"].includes(key));
+  const inheritedExclude = inherited?.get("exclude");
+  const rootExcludes = inheritedExclude ? strings(inheritedExclude) : [];
+  if (!rootExcludes) return null;
   for (const element of found[0].elements) {
     const project = properties(element);
     const test = project?.get("test");
     const fields = test && properties(test);
     const name = fields?.get("name");
     const include = fields?.get("include");
-    if (!project || project.size !== 2 || project.get("extends")?.kind !== ts.SyntaxKind.TrueKeyword || !fields || !name || !ts.isStringLiteral(name) || !/^[\w-]+$/.test(name.text) || !include || !ts.isArrayLiteralExpression(include) || !include.elements.length || include.elements.some(value => !ts.isStringLiteral(value))) return null;
+    const exclude = fields?.get("exclude");
+    // `extends: true` concatenates arrays, so a project without `include` takes the root's, and with no
+    // root include Vitest's default. A root include is not modelled.
+    const includes = include ? strings(include) : inherited?.has("include") ? undefined : [VITEST_DEFAULT_INCLUDE];
+    const excludes = exclude ? strings(exclude) : [];
+    if (!project || project.size !== 2 || project.get("extends")?.kind !== ts.SyntaxKind.TrueKeyword || !fields || !name || !ts.isStringLiteral(name) || !/^[\w-]+$/.test(name.text) || !includes?.length || !excludes) return null;
     if (projects.some(value => value.name === name.text)) return null;
-    projects.push({ name: name.text, includes: include.elements.map(value => (value as ts.StringLiteral).text), runtimeSelectionSafe: Boolean(inheritedSafe) && !sharedState && [...fields.keys()].every(key => ["name", "include", "isolate"].includes(key)) });
+    projects.push({
+      name: name.text,
+      includes,
+      ...(rootExcludes.length || excludes.length ? { excludes: [...new Set([...rootExcludes, ...excludes])] } : {}),
+      runtimeSelectionSafe: Boolean(inheritedSafe) && !sharedState && [...fields.keys()].every(key => ["name", "include", "exclude", "environment", "isolate"].includes(key)),
+    });
   }
   return projects.length ? projects : null;
 }
+
+/** Vitest's own `test.include` default. */
+export const VITEST_DEFAULT_INCLUDE = "**/*.{test,spec}.?(c|m)[jt]s?(x)";
 
 export interface TestDiscovery {
   configs: TestRunnerConfig[];

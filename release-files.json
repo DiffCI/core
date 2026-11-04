@@ -245,6 +245,7 @@
     "packages/diffci-cli/tests/client/usage-signal.test.ts",
     "packages/diffci-cli/tests/client/verify-changed.test.ts",
     "packages/diffci-cli/tests/client/verify-check-baseline.test.ts",
+    "packages/diffci-cli/tests/client/verify-multi-command.test.ts",
     "packages/diffci-cli/tests/client/verify-snapshot.test.ts",
     "packages/diffci-cli/tests/client/verify-summary.test.ts",
     "packages/diffci-cli/tests/client/workflow-guard.test.ts",
