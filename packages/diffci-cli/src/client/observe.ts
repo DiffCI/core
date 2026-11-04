@@ -293,14 +293,20 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
 
     const baseline = runPathBaseline(profile.testFilePaths, delta.files, profile);
 
-    const selectedTests = impact.affectedTests.map((test) => test.path).sort();
+    const affected = impact.affectedTests.map((test) => test.path).sort();
+    // `outsideSuitePaths` is newer than some bundled engines, which never return it.
+    const firstPlan: (ReturnType<typeof planSelectiveTestCommands> & { outsideSuitePaths?: string[] }) | undefined =
+      impact.fallbackRequired ? undefined : planSelectiveTestCommands(profile, affected);
+    // Affected tests the plan finds the full test command never runs (every Vitest project that would
+    // include them excludes them) move beside the selection, as impact.ts moves tests a node:test script
+    // never runs (2026-11-04, LobeHub: `apps/desktop` tests refused every plan).
+    const planOutside = new Set(firstPlan?.outsideSuitePaths ?? []);
+    const selectedTests = affected.filter((path) => !planOutside.has(path));
+    const commandPlan = planOutside.size ? planSelectiveTestCommands(profile, selectedTests) : firstPlan;
     // The comparator's own identities, sorted and redacted identically so the two arms of an economics
     // experiment are executed the same way rather than merely counted the same way.
     const comparatorSelectedTests = [...baseline.selectedTests].sort().map(hashPath);
-    const commandPlan = impact.fallbackRequired
-      ? undefined
-      : planSelectiveTestCommands(profile, selectedTests);
-    const outsideSuite = (impact.testsOutsideFullSuite ?? []).map((test) => test.path).sort();
+    const outsideSuite = [...(impact.testsOutsideFullSuite ?? []).map((test) => test.path), ...planOutside].sort();
     const outsidePlan = outsideSuite.length ? planSelectiveTestCommands(profile, outsideSuite) : undefined;
 
     markPhase("impactAndCommands");

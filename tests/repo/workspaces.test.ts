@@ -155,7 +155,7 @@ function rootProjectsFixture() {
   write("package.json", JSON.stringify({ packageManager: "pnpm@10.0.0", scripts: { test: "npm run test-app && npm run test-server", "test-app": "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
   write("pnpm-workspace.yaml", "packages:\n  - 'packages/**'\n  - .\n  - e2e\n");
   write("vitest.config.mts", `import tsconfigPaths from 'vite-tsconfig-paths';
-const exclude = ['**/node_modules/**', '**/packages/**', '**/e2e/**'];
+const exclude = ['**/node_modules/**', '**/apps/desktop/**', '**/packages/**', '**/e2e/**'];
 export default defineConfig({
   plugins: [tsconfigPaths({ projects: ['.', './apps/share'] })],
   test: {
@@ -170,7 +170,7 @@ export default defineConfig({
     setupFiles: './tests/setup.ts',
   },
 });`);
-  for (const path of ["src/store/a.test.ts", "src/routes/(main)/page.test.tsx", "apps/server/src/router.test.ts"]) write(path, "import {test} from 'vitest'; test('x',()=>{});");
+  for (const path of ["src/store/a.test.ts", "src/routes/(main)/page.test.tsx", "apps/server/src/router.test.ts", "apps/desktop/src/main/app.test.ts"]) write(path, "import {test} from 'vitest'; test('x',()=>{});");
   write("packages/p/package.json", JSON.stringify({ scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
   write("packages/p/vitest.config.ts", "export default {test:{include:['src/**/*.test.ts']}};");
   write("packages/p/src/p.test.ts", "import {test} from 'vitest'; test('p',()=>{});");
@@ -211,5 +211,19 @@ it("treats root projects it cannot read as ambiguous rather than routing by lift
     write("vitest.config.mts", "export default {test:{projects:[{extends:true,test:{name:'app',include:patterns}}]}};");
     const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["src/store/a.test.ts"]);
     assert.match(plan.refusalReason!, /statically declared/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("reports tests every including project excludes as outside the full suite, not as refusals", () => {
+  const { dir, write } = rootProjectsFixture();
+  try {
+    const selected = ["apps/desktop/src/main/app.test.ts", "src/store/a.test.ts"];
+    const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), selected);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands.map(c => c.args.join(" ")), ["exec vitest run --config vitest.config.mts --project app src/store/a.test.ts"]);
+    assert.deepEqual(plan.outsideSuitePaths, ["apps/desktop/src/main/app.test.ts"]);
+    // A test script that could run the excluded files keeps the refusal.
+    write("package.json", JSON.stringify({ packageManager: "pnpm@10.0.0", scripts: { test: "vitest run && node --test apps/desktop" }, devDependencies: { vitest: "4.1.8" } }));
+    assert.match(planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), selected).refusalReason!, /no declared Vitest project/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

@@ -44,6 +44,10 @@ export interface SelectiveTestCommandPlan {
   groups: SelectiveTestCommandGroup[];
   /** Selected paths no group could claim. Non-empty means the plan does not cover the selection. */
   unroutedPaths: string[];
+  /** Selected paths the full test command never runs either: every Vitest project that would include
+   * them excludes them, and the test script runs nothing but that config. The caller reports them
+   * outside the full suite rather than as run. */
+  outsideSuitePaths?: string[];
   /** Set when no complete plan could be produced. The caller must treat this as "cannot run a
    * subset" and fall back, never as "there is nothing to run". */
   refusalReason?: string;
@@ -176,9 +180,10 @@ function runtimeOnlyGlob(glob: string): boolean {
 
 /**
  * Groups for a config with inline Vitest projects: each runtime-only project's selected files, in
- * batches that keep every command under 3,500 characters, and every other project in full. Returns a
- * refusal reason when a selected file has no project. `paths` are relative to the config's directory;
- * `pathPrefix` makes them repository-relative.
+ * batches that keep every command under 3,500 characters, and every other project in full. `excluded`
+ * lists selected files that a project includes and every such project excludes, which the config
+ * never runs. Returns a refusal reason when a selected file has no project otherwise. `paths` are
+ * relative to the config's directory; `pathPrefix` makes them repository-relative.
  */
 function projectGroups(
   config: TestRunnerConfig,
@@ -186,11 +191,13 @@ function projectGroups(
   wrap: (args: string[]) => CommandSpec,
   runnerPrefix: string,
   pathPrefix: string,
-): SelectiveTestCommandGroup[] | string {
+): { groups: SelectiveTestCommandGroup[]; excluded: string[] } | string {
   const projects = config.projects!;
-  const claims = (project: (typeof projects)[number], path: string) => project.includes.some(glob => matchesGlob(path, glob))
+  const includes = (project: (typeof projects)[number], path: string) => project.includes.some(glob => matchesGlob(path, glob));
+  const claims = (project: (typeof projects)[number], path: string) => includes(project, path)
     && !(project.excludes ?? []).some(glob => matchesGlob(path, glob));
-  if (paths.some(path => !projects.some(project => claims(project, path)))) return "Selected test has no declared Vitest project";
+  const unclaimed = paths.filter(path => !projects.some(project => claims(project, path)));
+  if (unclaimed.some(path => !projects.some(project => includes(project, path)))) return "Selected test has no declared Vitest project";
   const groups: SelectiveTestCommandGroup[] = [];
   for (const project of projects) {
     // Only conventional runtime-only globs are narrowed. Type/property or
@@ -214,7 +221,24 @@ function projectGroups(
       groups.push({ runnerId: `${runnerPrefix}project:${project.name}${batches.length > 1 ? `:${index}` : ""}`, label: "Selected runtime project", paths: batch.map(path => `${pathPrefix}${path}`), commandSpec: wrap([...prefix, ...batch]) });
     }
   }
-  return groups;
+  return { groups, excluded: unclaimed.map(path => `${pathPrefix}${path}`) };
+}
+
+/**
+ * Whether the `test` script runs only the default Vitest config: each `&&` phase is `vitest` or
+ * `vitest run` with flags that keep the config, or a package-manager run of another such script. A
+ * script that does not exist runs no tests. Anything else could run files the config excludes.
+ */
+function runsOnlyDefaultVitest(scripts: Readonly<Record<string, string>>, name = "test", depth = 0): boolean {
+  const script = scripts[name];
+  if (script === undefined) return depth > 0;
+  if (depth > 5 || !script.trim() || scripts[`pre${name}`] || scripts[`post${name}`]) return false;
+  return script.split(/\s*&&\s*/).every((phase) => {
+    const run = /^(?:npm|pnpm|yarn|bun) (?:run )?([\w:-]+)$/.exec(phase.trim());
+    if (run) return runsOnlyDefaultVitest(scripts, run[1]!, depth + 1);
+    const words = phase.trim().split(/\s+/);
+    return words[0] === "vitest" && words.slice(1).every((word, index) => (index === 0 && word === "run") || /^--(?:silent|reporter|coverage|passWithNoTests)(?:=\S+)?$/.test(word));
+  });
 }
 
 /**
@@ -242,10 +266,12 @@ export function planSelectiveTestCommands(
     const rootScript = profile.packageJson.scripts.test ?? "";
     const runsWorkspaceScripts = !rootScript.trim() || /(?:^|\s)(?:-r|--recursive|--filter|-F|--workspaces?|-ws)(?:[\s=]|$)|\b(?:turbo|nx|lerna)\b/.test(rootScript);
     const groups: SelectiveTestCommandGroup[] = [];
+    let outsideSuitePaths: string[] | undefined;
     if (rootPaths.length) {
       const root = planSelectiveTestCommands({ ...profile, workspaceTestPackages: undefined }, rootPaths);
       if (root.refusalReason || root.unroutedPaths.length) return refuse(root.refusalReason ?? "A selected root test has no runner");
       groups.push(...root.groups);
+      outsideSuitePaths = root.outsideSuitePaths;
     }
     for (const suite of suites) {
       const child = suite.profile;
@@ -267,7 +293,9 @@ export function planSelectiveTestCommands(
         if (projectConfigs.length !== 1 || child.testRunnerConfigs?.length !== 1 || !projectConfigs[0]!.projects) return refuse("Vitest projects must be statically declared inline in one configuration");
         const planned = projectGroups(projectConfigs[0]!, paths, wrap, `${suite.packageRoot}:`, `${suite.packageRoot}/`);
         if (typeof planned === "string") return refuse(planned);
-        groups.push(...planned);
+        // The package's test script is plain `vitest` (checked above), so files its projects exclude never run.
+        groups.push(...planned.groups);
+        if (planned.excluded.length) outsideSuitePaths = [...(outsideSuitePaths ?? []), ...planned.excluded];
         continue;
       }
       if (child.testRunnerConfigs?.some(config => config.runtimeSelectionUnsafe)) {
@@ -279,6 +307,7 @@ export function planSelectiveTestCommands(
       }
       const local = planSelectiveTestCommands({ ...child, packageManager: "pnpm" }, paths);
       if (local.refusalReason) return refuse(local.refusalReason);
+      if (local.outsideSuitePaths?.length) outsideSuitePaths = [...(outsideSuitePaths ?? []), ...local.outsideSuitePaths.map(path => `${suite.packageRoot}/${path}`)];
       for (const group of local.groups) {
         const prefix = group.commandSpec.args.slice(0, group.commandSpec.args.length - group.paths.length);
         const batches: string[][] = [[]];
@@ -294,7 +323,7 @@ export function planSelectiveTestCommands(
       if (script?.endsWith(" --typecheck")) groups.push({ runnerId: `${suite.packageRoot}:types`, label: "Full workspace type tests", paths: [], commandSpec: wrap(["run", "--typecheck.only", "--passWithNoTests"]) });
     }
     if (!groups.some(group => group.paths.length)) return refuse("No workspace runtime suite can be safely narrowed; full validation is required");
-    return { commands: groups.map(g => g.commandSpec), groups, unroutedPaths: [] };
+    return { commands: groups.map(g => g.commandSpec), groups, unroutedPaths: [], ...(outsideSuitePaths?.length ? { outsideSuitePaths: outsideSuitePaths.sort() } : {}) };
   }
   if (profile.vueScope) {
     const scope = profile.vueScope;
@@ -360,7 +389,15 @@ export function planSelectiveTestCommands(
     const prefix = execPrefix(profile.packageManager, "vitest");
     const planned = projectGroups(config, paths, args => ({ executable: prefix.executable, args: [...prefix.args, ...args] }), "vitest:", "");
     if (typeof planned === "string") return refuse(planned);
-    return { commands: planned.map(group => group.commandSpec), groups: planned, unroutedPaths: [] };
+    // Files every including project excludes are outside the full suite only when the test script runs
+    // nothing but this config (2026-11-04, LobeHub: `apps/desktop` tests, run by a separate CI job).
+    if (planned.excluded.length && !runsOnlyDefaultVitest(profile.packageJson.scripts)) return refuse("Selected test has no declared Vitest project");
+    return {
+      commands: planned.groups.map(group => group.commandSpec),
+      groups: planned.groups,
+      unroutedPaths: [],
+      ...(planned.excluded.length ? { outsideSuitePaths: planned.excluded } : {}),
+    };
   }
 
   if (frameworks.length === 0 && configs.length === 0) {
