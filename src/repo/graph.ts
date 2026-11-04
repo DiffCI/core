@@ -31,6 +31,28 @@ interface ImportRef {
    * or `import.meta.glob("./x/*.json")`. `base` is the literal directory prefix (a specifier ending in
    * "/"); `regex` matches paths relative to it. Unresolvable patterns keep the load computed. */
   patterns?: { base: string; regex: string; negated: boolean }[];
+  /** `import { type A, type B }` or `export { type A } from`: every specifier is inline `type`, so the
+   * statement is erased unless the importer's tsconfig preserves imports (see `keepsTypeOnlyImports`). */
+  inlineTypeOnly?: boolean;
+  /** A `vi.mock("./x")` / `jest.mock("./x")` target. Vitest counts these as dependencies of the test;
+   * an unresolvable one (a virtual or aliased module) is dropped rather than made unsafe. */
+  mock?: boolean;
+}
+
+/** Test-runner calls whose literal first argument names a module the test depends on. */
+const MOCK_MODULE_CALLS = new Set([
+  "vi.mock", "vi.doMock", "vi.unmock", "vi.doUnmock", "vi.importActual", "vi.importMock",
+  "jest.mock", "jest.doMock", "jest.unmock", "jest.dontMock", "jest.requireActual", "jest.requireMock", "jest.createMockFromModule",
+]);
+
+/** Whether this importer's emit keeps statements whose specifiers are all inline `type`. Without these
+ * options TypeScript, esbuild and oxc drop the whole statement, so it never loads the target. */
+function keepsTypeOnlyImports(options: ts.CompilerOptions): boolean {
+  return Boolean(options.verbatimModuleSyntax || options.preserveValueImports || options.importsNotUsedAsValues === ts.ImportsNotUsedAsValues.Preserve);
+}
+
+function allInlineType(elements: readonly (ts.ImportSpecifier | ts.ExportSpecifier)[]): boolean {
+  return elements.length > 0 && elements.every((element) => element.isTypeOnly);
 }
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -175,9 +197,12 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
     if (ts.isImportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
-        const isTypeOnly = node.importClause?.isTypeOnly ?? false;
+        const clause = node.importClause;
+        const isTypeOnly = clause?.isTypeOnly ?? false;
         const kind: DependencyEdgeKind = isTypeOnly ? "type-import" : "import";
-        refs.push({ specifier: specifier.text, kind, dynamic: false });
+        const inlineTypeOnly = !isTypeOnly && !!clause && !clause.name && !!clause.namedBindings
+          && ts.isNamedImports(clause.namedBindings) && allInlineType(clause.namedBindings.elements);
+        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}) });
       }
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       const specifier = node.moduleReference.expression;
@@ -188,7 +213,8 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
         const kind: DependencyEdgeKind = node.isTypeOnly ? "type-import" : "re-export";
-        refs.push({ specifier: specifier.text, kind, dynamic: false });
+        const inlineTypeOnly = !node.isTypeOnly && !!node.exportClause && ts.isNamedExports(node.exportClause) && allInlineType(node.exportClause.elements);
+        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}) });
       }
     } else if (ts.isCallExpression(node)) {
       const firstArg = node.arguments[0];
@@ -204,6 +230,10 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
           computed: !literal,
           ...(patterns ? { patterns } : {}),
         });
+      } else if (firstArg && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)
+        && MOCK_MODULE_CALLS.has(`${node.expression.expression.text}.${node.expression.name.text}`)
+        && (ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg))) {
+        refs.push({ specifier: firstArg.text, kind: "import", dynamic: false, mock: true });
       } else if (isImportMetaGlob(node.expression) && firstArg) {
         // Vite expands these at build time; without them a file loaded only through a glob had no edge.
         const items = ts.isArrayLiteralExpression(firstArg) ? [...firstArg.elements] : [firstArg];
@@ -834,6 +864,7 @@ export async function buildDependencyGraph(
     ref: ImportRef,
     reason: string,
   ): void {
+    if (ref.mock) return;
     unresolved.push({
       importer: importerRel,
       specifier: ref.specifier,
@@ -849,6 +880,7 @@ export async function buildDependencyGraph(
     importer: string,
     ref: ImportRef,
   ): void {
+    if (ref.mock && resolution === "unresolved") return;
     references.push({
       resolution,
       specifier: ref.specifier,
@@ -953,7 +985,8 @@ export async function buildDependencyGraph(
 
     const importerOptions = optionsFor(sf.fileName);
 
-    const refs = extractImportRefs(sf);
+    const keepsTypeImports = keepsTypeOnlyImports(importerOptions);
+    const refs = extractImportRefs(sf).map((ref) => ref.inlineTypeOnly && !keepsTypeImports ? { ...ref, kind: "type-import" as const } : ref);
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
       // Expression text is not a module name. In particular, import(name) must

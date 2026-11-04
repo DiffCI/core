@@ -226,6 +226,46 @@ describe("DependencyGraph fixtures", () => {
     assert.strictEqual(edge!.kind, "type-import");
   });
 
+  it("classifies imports whose specifiers are all inline type as type-only", async () => {
+    const result = await buildFixture({
+      "src/A.ts": "import { type T, type U } from './types';\nexport { type T } from './types';\n",
+      "src/B.ts": "import { type T, value } from './types';\n",
+      "src/C.ts": "import def, { type T } from './types';\n",
+      "src/types.ts": "export interface T {}\nexport interface U {}\nexport const value = 1;\nexport default 2;\n",
+    });
+
+    const kinds = (from: string) => result.graph.edges.filter((e) => e.from === from).map((e) => e.kind);
+    assert.deepStrictEqual(kinds("src/A.ts"), ["type-import"]);
+    assert.deepStrictEqual(kinds("src/B.ts"), ["import"]);
+    assert.deepStrictEqual(kinds("src/C.ts"), ["import"]);
+    assert.deepStrictEqual(result.graph.transitiveRuntimeDependentsOf!("src/types.ts"), ["src/B.ts", "src/C.ts"]);
+  });
+
+  it("keeps inline type imports as runtime edges under verbatimModuleSyntax", async () => {
+    const result = await buildFixture({
+      "tsconfig.json": JSON.stringify({ compilerOptions: { module: "ESNext", moduleResolution: "Bundler", verbatimModuleSyntax: true, noEmit: true }, include: ["**/*.ts"] }),
+      "src/A.ts": "import { type T } from './types';\n",
+      "src/types.ts": "export interface T {}\n",
+    });
+
+    const edge = result.graph.edges.find((e) => e.from === "src/A.ts");
+    assert.strictEqual(edge?.kind, "import");
+  });
+
+  it("treats vi.mock and jest.mock targets as dependencies of the test", async () => {
+    const result = await buildFixture({
+      "src/api.ts": "export const fetchUser = () => 1;\n",
+      "src/db.ts": "export const query = () => 1;\n",
+      "src/a.test.ts": "import { vi } from 'vitest';\nvi.mock('./api', () => ({ fetchUser: vi.fn() }));\nconst actual = await vi.importActual('./db');\n",
+      "src/b.test.ts": "jest.mock('./api');\njest.mock('./virtual-module', () => ({}), { virtual: true });\n",
+    });
+
+    assert.deepStrictEqual(result.graph.transitiveRuntimeDependentsOf!("src/api.ts"), ["src/a.test.ts", "src/b.test.ts"]);
+    assert.deepStrictEqual(result.graph.transitiveRuntimeDependentsOf!("src/db.ts"), ["src/a.test.ts"]);
+    assert.ok(!result.unresolved.some((u) => u.specifier === "./virtual-module"));
+    assert.strictEqual(result.confidence, "COMPLETE");
+  });
+
   it("supports CommonJS require with string literals", async () => {
     const result = await buildFixture({
       "src/A.ts": "const b = require('./b');\n",
