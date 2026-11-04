@@ -106,6 +106,20 @@ describe("word-level naming", () => {
     assert.equal(contentNamesPath("see ops/cloudflare/src/other.js", "scripts/x.mjs", target, pattern(target), true), false);
     assert.equal(contentNamesPath("`${root}/ops/cloudflare/src/index.js`", "scripts/x.mjs", target, pattern(target), true), true);
   });
+  it("reads a glob as the paths it matches and a leading variable as an unknown directory", () => {
+    const target = "packages/database/migrations/0199.sql";
+    const action = ".github/actions/overlay/action.yml";
+    assert.equal(contentNamesPath("paths:\n  - 'packages/sdk/**'", ".github/workflows/release.yml", target, pattern(target), true), false);
+    assert.equal(contentNamesPath("paths:\n  - 'packages/*/migrations/**'", ".github/workflows/release.yml", target, pattern(target), true), true);
+    assert.equal(contentNamesPath("paths:\n  - 'packages/**'", ".github/workflows/release.yml", target, pattern(target), true), true);
+    assert.equal(contentNamesPath(`bash "$GITHUB_ACTION_PATH/../../packages/sync.sh"`, action, target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`ls "$ROOT/packages/database"`, action, target, pattern(target), true), true);
+    assert.equal(contentNamesPath(`cat "$ROOT/$NAME/migrations"`, action, target, pattern(target), true), true);
+    assert.equal(contentNamesPath("files: '../packages/**'", action, target, pattern(target), true), true);
+    // A bare directory name counts only between quotes or slashes, not in a comment's prose.
+    assert.equal(contentNamesPath(`run: cat "packages/sdk/x.json"\n# onto the overlay packages, and`, action, target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`run: ls "packages"`, action, target, pattern(target), true), true);
+  });
 });
 
 describe("repositoryFileReader", () => {

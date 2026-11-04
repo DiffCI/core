@@ -156,6 +156,9 @@ export interface ReferenceResolutionInput {
   /** Treat a reader that tooling loads implicitly (wrangler config, Dockerfile, `*.config.*`) as
    * unresolvable. Used for code: such a reader can run the file without anything naming it. */
   implicitReadersUnresolvable?: boolean;
+  /** Also match the changed file's ancestor directories (a test listing them finds it). False for a file
+   * gone at HEAD, whose dependents are resolved through the graph instead. Defaults to true. */
+  directories?: boolean;
   /** Resolve a file the root test script runs directly (`node scripts/test-security.js`) to that phase
    * of the script instead of failing closed (ReferenceResolution.phases). Off by default: a caller
    * that does not run the returned phases must keep the fallback. */
@@ -255,7 +258,8 @@ const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
  * matches on the basename, so every `wrangler.jsonc` with `"main": "./src/index.js"` named every
  * `src/index.js` in the repository, and `ops/cloudflare/src/a.js` named `ops/cloudflare/src/b.json` by
  * sharing its directory. A word that resolves - from the reader's directory or the repository root - to
- * a different file names that file. Bare names, globs and variables keep the conservative answer.
+ * a different file names that file, and a glob names only what it matches (2026-11-04). Bare names and
+ * variables inside a path keep the conservative answer.
  */
 export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean): boolean {
   if (!pattern.test(content)) return false;
@@ -264,9 +268,29 @@ export function contentNamesPath(content: string, readerPath: string, target: st
   const names = [target, ...dirs];
   const readerDir = posix.dirname(readerPath);
   for (const match of content.matchAll(CONTENT_PATH_WORD)) {
-    const word = match[0].replace(/[,.]+$/, "");
-    if (!pattern.test(`"${word}"`)) continue;
-    if (!word.includes("/") || /[*?{}[\]!$]/.test(word)) return true;
+    let word = match[0].replace(/[,.]+$/, "");
+    // Judged with the characters around it, so a bare directory name in prose (`the overlay packages,`
+    // in a workflow comment) does not count, as the reference pattern intends (2026-11-04).
+    if (!pattern.test(content.slice(Math.max(0, match.index - 1), match.index + word.length + 1))) continue;
+    // A leading variable is a directory the content does not name (`$GITHUB_ACTION_PATH/../../scripts/x.sh`
+    // names `scripts/x.sh` somewhere, not the repository's `scripts/`), so the rest is a path relative to
+    // an unknown directory (2026-11-04: a LobeHub composite action blocked every changed file under scripts/).
+    const variable = /^\$(?:\{\w+\}|\w+)\/(.+)$/.exec(word);
+    if (variable && !/[*?{}[\]!$]/.test(variable[1]!)) {
+      const rest = variable[1]!.replace(/^(?:\.\.?\/)+/, "").replace(/\/+$/, "");
+      if (names.some((name) => name === rest || name.endsWith(`/${rest}`) || rest.endsWith(`/${name}`))) return true;
+      continue;
+    }
+    if (!word.includes("/") || /[!$]/.test(word)) return true;
+    if (/[*?{}[\]]/.test(word)) {
+      if (word.startsWith("../")) return true;
+      // A glob names what it matches, from the reader's directory, the root, or any directory below the
+      // root; `packages/sdk/**` in a workflow's `paths` filter does not name `packages/database/`.
+      word = word.replace(/\[[^\]]*\]/g, "?").replace(/^\/+/, "");
+      const globs = word.startsWith("./") ? [posix.join(readerDir, word), word.slice(2)] : [word, posix.join(readerDir, word), `**/${word}`];
+      if (names.some((name) => globs.some((glob) => matchesGlob(name, glob)))) return true;
+      continue;
+    }
     const trimmed = word.replace(/\/+$/, "");
     const resolved = [posix.normalize(posix.join(readerDir, trimmed))];
     if (!trimmed.startsWith("../")) resolved.push(posix.normalize(trimmed.replace(/^\/+/, "")));
@@ -409,7 +433,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
       // directory. A reader reached through the changed file (a script, a manifest) matters only if
       // something runs or reads it by name; matching its directories as well made `"tests"` and
       // `"fixtures"` match nearly every file and no generic name (package.json) could resolve.
-      const ancestors = target.path === filePath;
+      const ancestors = target.path === filePath && input.directories !== false;
       const pattern = referencePattern(referenceTokens(target.path, { ancestors }));
       for (const candidate of input.files) {
         if (visited.has(candidate) || candidate === target.path || LOCKFILES.has(posix.basename(candidate))) continue;

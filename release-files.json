@@ -199,6 +199,7 @@
     "tests/repo/impact.test.ts",
     "tests/repo/language-adapters.test.ts",
     "tests/repo/layout.test.ts",
+    "tests/repo/removed-files.test.ts",
     "tests/repo/repo-config.test.ts",
     "tests/repo/runner-universe.test.ts",
     "tests/repo/script-universe.test.ts",

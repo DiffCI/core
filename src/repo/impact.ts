@@ -2,7 +2,7 @@ import { extname, posix } from "node:path";
 import { isGoDiscoveryIgnoredPath } from "./adapters/go.js";
 import { inVuePackage } from "./vue-scope.js";
 import type { ChangedFile, GitDelta } from "../git/types.js";
-import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, EntryPoint, RepositoryProfile } from "./types.js";
+import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, EntryPoint, RepositoryProfile, UnresolvedDependency } from "./types.js";
 import type { ChangedImpact, EntryPointImpact, ImpactEvidence, ImpactEvidencePath, ImpactReason, ImpactResult, ImpactRiskSignal, TestImpact } from "./impact-types.js";
 import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
@@ -70,6 +70,8 @@ function isDatabaseFile(filePath: string): boolean { const DATABASE_DIRS = new S
  */
 function classifyNextEntryPoint(filePath: string, layout: RepositoryLayout): EntryPoint["kind"] | undefined { if (!layout.isNextApp) return undefined; if (!isSourceFilePath(filePath)) return undefined; const base = posix.basename(filePath, extname(filePath)); const lower = base.toLowerCase(); if (lower === "page") return "next-page"; if (lower === "layout") return "next-layout"; if (lower === "route") return "next-route"; if (lower === "api" && filePath.includes("/api/")) return "next-api"; if (lower === "loading") return "next-loading"; if (lower === "error") return "next-error"; if (lower === "template") return "next-template"; if (lower === "not-found") return "next-error"; if (lower === "middleware") return "next-api"; return undefined; }
 function allChangePaths(file: ChangedFile): string[] { return file.oldPath ? [file.path, file.oldPath] : [file.path]; }
+/** The module an extensionless import of `path` names: `a/x.ts` -> `a/x`, `a/x/index.ts` -> `a/x`. */
+function moduleKey(path: string): string { const stem = path.replace(/\.[^./]+$/, ""); return posix.basename(stem) === "index" ? posix.dirname(stem) : stem; }
 function nodeByPath(graph: DependencyGraph, path: string): DependencyGraphNode | undefined { return graph.nodes.find((n) => n.path === path); }
 function hasNode(graph: DependencyGraph, path: string): boolean { return nodeByPath(graph, path) !== undefined; }
 function isEntryPoint(profile: RepositoryProfile, path: string): EntryPoint | undefined { return profile.entryPoints.find((e) => e.path === path); }
@@ -263,6 +265,7 @@ export class ImpactAnalyzer {
   private testPhases = new Set<string>();
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
+  private unresolved: readonly UnresolvedDependency[] = [];
 
   /** Dependents whose tests a change to `path` can affect. When the graph allows runtime selection
    * (DependencyGraphResult.runtimeTestSelection) an `import type` edge selects only type tests. */
@@ -294,6 +297,7 @@ export class ImpactAnalyzer {
     this.testPhases = new Set();
     this.workersOutsideSuite = undefined;
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
+    this.unresolved = graphResult.unresolved ?? [];
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
     this.compiledProjectCache = undefined;
     // One read per file per analysis, however many changed files ask who reads them.
@@ -656,7 +660,9 @@ export class ImpactAnalyzer {
       return;
     }
     if (category === "docs") return;
-    if (isAssetFilePath(changedPath) && !hasNode(graph, changedPath) && changedImpact.file.changeType !== "deleted" && !isDocumentationFile(changedPath, this.layout) && !isLockfile(changedPath)) {
+    // A rename's old path is gone at HEAD like a deleted file (`X.module.css` -> `X.css`).
+    const removed = changedImpact.file.changeType === "deleted" || (changedPath === changedImpact.file.oldPath && changedImpact.file.changeType === "renamed");
+    if (isAssetFilePath(changedPath) && !hasNode(graph, changedPath) && !removed && !isDocumentationFile(changedPath, this.layout) && !isLockfile(changedPath)) {
       // An asset no module imports can still be read from disk by a test. It used to select nothing
       // and require nothing, which is a silent skip; it now needs reader evidence like any other
       // non-code file (2026-10-21).
@@ -668,7 +674,8 @@ export class ImpactAnalyzer {
       return;
     }
     if (isAssetFilePath(changedPath)) {
-      if (changedImpact.file.changeType === "deleted" && !hasNode(graph, changedPath)) {
+      if (removed && !hasNode(graph, changedPath)) {
+        if (this.resolveRemovedFile(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
         const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
         evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
         riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
@@ -708,6 +715,7 @@ export class ImpactAnalyzer {
       return;
     }
     if (changedImpact.file.changeType === "deleted" && !hasNode(graph, changedPath)) {
+      if (this.resolveRemovedFile(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
       const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
       evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
       riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
@@ -715,6 +723,45 @@ export class ImpactAnalyzer {
       return;
     }
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+  }
+
+  /**
+   * A file gone at HEAD that the HEAD graph has no node for (2026-11-04). Its old importers cannot be
+   * listed, but each one is either changed in this delta (its import was edited or removed, so it is
+   * analysed as a changed file), still imports the missing path (an unresolved import), or now resolves
+   * the same specifier to a sibling (`./x` from a deleted `x.ts` to a surviving `x/index.ts`). The last
+   * two are found here; anything else observes the absence only by naming the file, which the reference
+   * resolver checks without its directories. A directory listing is not modelled, as for an added asset
+   * the graph does import, nor is a tsconfig `paths` fallback that now resolves to another directory. Previously every such file fell back: the LobeHub catch replay's StyleX
+   * migration renames `X.module.css` to `X.css` and 16 of 47 verify commits ran the full suite for it.
+   */
+  private resolveRemovedFile(
+    removedPath: string,
+    graph: DependencyGraph,
+    profile: RepositoryProfile,
+    affectedSources: Map<string, ImpactEvidence[]>,
+    affectedEntryPoints: Map<string, EntryPointImpact>,
+    affectedTests: Map<string, TestImpact>,
+    affectedScripts: Map<string, ImpactEvidence[]>,
+    evidence: ImpactEvidence[],
+  ): boolean {
+    if (this.repositoryFiles?.has(removedPath)) return false;
+    const key = moduleKey(removedPath);
+    const names = new Set([posix.basename(removedPath), posix.basename(removedPath.replace(/\.[^./]+$/, "")), posix.basename(key)]);
+    // Conservative: any unresolved import whose last segment could name the file blocks, wherever it is.
+    const importer = this.unresolved.find((ref) => !ref.computed && names.has(posix.basename(ref.specifier.split(/[?#]/)[0]!)));
+    if (importer) {
+      evidence.push(makeEvidence("UNKNOWN_FILE", removedPath, `${importer.importer} imports ${importer.specifier}, which may have resolved to the removed ${removedPath}`));
+      return false;
+    }
+    if (!this.resolveByReference(removedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true, implicitReadersUnresolvable: true, directories: false })) return false;
+    for (const node of graph.nodes) {
+      if (node.path === removedPath || moduleKey(node.path) !== key) continue;
+      evidence.push(makeEvidence("DELETED_FILE_LEGACY_DEPENDENTS", removedPath, `${node.path} may now resolve imports of the removed ${removedPath}`, node.path));
+      this.processSourceChange(node.path, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+    }
+    evidence.push(makeEvidence("DELETED_FILE_LEGACY_DEPENDENTS", removedPath, `No HEAD import can still reach the removed ${removedPath}; its former importers are changed files`));
+    return true;
   }
 
   /** Projects some test compiles (src/repo/compiled-projects.ts), computed once per analysis and only
@@ -763,7 +810,7 @@ export class ImpactAnalyzer {
     affectedTests: Map<string, TestImpact>,
     affectedScripts: Map<string, ImpactEvidence[]>,
     evidence: ImpactEvidence[],
-    { implicitReadersUnresolvable = false, allowNoReaders = false }: { implicitReadersUnresolvable?: boolean; allowNoReaders?: boolean } = {},
+    { implicitReadersUnresolvable = false, allowNoReaders = false, directories = true }: { implicitReadersUnresolvable?: boolean; allowNoReaders?: boolean; directories?: boolean } = {},
   ): boolean {
     if (!this.repositoryFiles || !this.readRepositoryFile) return false;
     if (isImplicitlyLoadedFile(changedPath) && !(isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite())) return false;
@@ -780,6 +827,7 @@ export class ImpactAnalyzer {
       contentCleared: this.contentCleared,
       implicitReadersUnresolvable,
       allowNoReaders,
+      directories,
       testPhases: this.selectTestPhases,
       workerConfigsOutsideSuite: this.workerConfigsOutsideSuite(),
     });
