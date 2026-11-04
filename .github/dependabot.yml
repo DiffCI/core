@@ -10,6 +10,12 @@ updates:
     ignore:
       # Pinned by commit to the Core release the CLI ships with; bumped by hand at release time.
       - dependency-name: "@diffci.com/core"
+      # The engine builds its graph with the TypeScript compiler API; a major version is a migration.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # Types track the oldest supported Node (engines: >=22.5).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
