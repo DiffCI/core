@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix } from "node:path";
+import { isAbsolute, join, posix, relative, sep } from "node:path";
 
 import { measureCommands } from "./command-batches.js";
 
@@ -153,6 +153,45 @@ function installedModuleDirs(repoPath: string): string[] {
 }
 
 /**
+ * Fills `target` with links to the entries of an installed `source` node_modules (2026-11-05). Linking
+ * the whole directory kept the links package managers make to the workspace's own packages
+ * (`node_modules/w -> packages/w`) pointing at head, so the base run loaded head's version of every
+ * workspace package: an error the change introduced in one also failed at the base and read as already
+ * broken. Such an entry now links to the same package in the base tree; every other entry, scoped
+ * packages included, links to the installed one. Plain files (`.modules.yaml`) are copied.
+ */
+function linkModules(source: string, target: string, tree: { repoReal: string; baseTree: string }, links: string[]): void {
+  mkdirSync(target);
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const from = join(source, entry.name);
+    const to = join(target, entry.name);
+    if (entry.name.startsWith("@") && entry.isDirectory()) {
+      linkModules(from, to, tree, links);
+      continue;
+    }
+    if (entry.isFile() || (entry.isSymbolicLink() && statSync(from, { throwIfNoEntry: false })?.isFile())) {
+      copyFileSync(from, to);
+      continue;
+    }
+    let linkTo = from;
+    if (entry.isSymbolicLink()) {
+      let real: string | undefined;
+      try { real = realpathSync(from); } catch { real = undefined; }
+      const inside = real === undefined ? undefined : relative(tree.repoReal, real);
+      if (inside !== undefined && inside !== "" && !inside.startsWith("..") && !isAbsolute(inside) && !inside.split(sep).includes("node_modules")) {
+        const atBase = join(tree.baseTree, inside);
+        // A workspace package the base does not have: the manifests would differ, so this is rare;
+        // without it the base resolves nothing there rather than resolving head.
+        if (!existsSync(atBase)) continue;
+        linkTo = atBase;
+      }
+    }
+    symlinkSync(linkTo, to, process.platform === "win32" ? "junction" : "dir");
+    links.push(to);
+  }
+}
+
+/**
  * Runs `use` in the base commit, exported with `git archive` into a temporary directory with the
  * repository's installed node_modules linked in, the root's and each workspace package's that the base
  * also has. The same declines apply to tests and checks: the dependency manifests differ, or nothing is
@@ -174,10 +213,9 @@ function withBaseTree<T>(input: { repoPath: string; baseSha: string; headSha: st
     const extract = spawnSync("tar", ["-x", "-f", "-", "-C", directory], { input: archive.stdout, maxBuffer: 64 * 1024 * 1024 });
     if (extract.status !== 0) return { ok: false, reason: "the base commit could not be extracted" };
     for (const dir of installedModuleDirs(input.repoPath)) {
-      const link = join(directory, dir, "node_modules");
-      if (!existsSync(join(directory, dir)) || lstatSync(link, { throwIfNoEntry: false })) continue;
-      symlinkSync(join(input.repoPath, dir, "node_modules"), link, process.platform === "win32" ? "junction" : "dir");
-      links.push(link);
+      const target = join(directory, dir, "node_modules");
+      if (!existsSync(join(directory, dir)) || lstatSync(target, { throwIfNoEntry: false })) continue;
+      linkModules(join(input.repoPath, dir, "node_modules"), target, { repoReal: realpathSync(input.repoPath), baseTree: directory }, links);
     }
     return { ok: true, value: use(directory) };
   } catch (error) {

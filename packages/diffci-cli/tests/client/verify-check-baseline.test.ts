@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { checkAtBaseline } from "../../src/client/failure-baseline.js";
 import { verifyRange } from "../../src/client/verify.js";
 
 function git(repo: string, ...args: string[]): string {
@@ -130,6 +131,39 @@ test("a check that needs a workspace package's own node_modules is rerun at the 
     assert.equal(report.checks?.[0]?.status, "failed");
     assert.equal(report.checks?.[0]?.baseline?.status, "introduced", report.checks?.[0]?.baseline?.reason);
     assert.match(report.reason, /gate check check failed.*tests were not run/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a check rerun at the base resolves workspace packages from the base, not from head", async () => {
+  // Package managers install a workspace's own packages as links in node_modules (`node_modules/w ->
+  // packages/w`). Linking the repository's node_modules into the base tree kept those links pointing at
+  // head, so an error the change introduced in a workspace package also showed at the base and read as
+  // already broken (2026-11-05).
+  const repo = mkdtempSync(join(tmpdir(), "diffci-verify-check-baseline-link-"));
+  try {
+    git(repo, "init", "-q");
+    git(repo, "config", "user.email", "test@diffci.local");
+    git(repo, "config", "user.name", "DiffCI test");
+    for (const dir of ["test", "packages/w", "node_modules/dep"]) mkdirSync(join(repo, dir), { recursive: true });
+    writeFileSync(join(repo, ".gitignore"), "node_modules\n");
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", private: true, workspaces: ["packages/*"], scripts: { check: "node check.cjs", test: "node --test test/" } }));
+    writeFileSync(join(repo, "packages/w/package.json"), JSON.stringify({ name: "w", main: "index.js" }));
+    writeFileSync(join(repo, "packages/w/index.js"), "module.exports = 1;\n");
+    writeFileSync(join(repo, "node_modules/dep/index.js"), "module.exports = 0;\n");
+    symlinkSync(join(repo, "packages/w"), join(repo, "node_modules/w"), "junction");
+    writeFileSync(join(repo, "check.cjs"), `require("dep");\nif (require("w") === 3) process.exit(1);\n`);
+    writeFileSync(join(repo, "test", "a.test.js"), `const { test } = require("node:test");\ntest("a", () => {});\n`);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "base");
+    const base = git(repo, "rev-parse", "HEAD");
+    writeFileSync(join(repo, "packages/w/index.js"), "module.exports = 3;\n");
+    git(repo, "commit", "-q", "-am", "change");
+    const baseline = checkAtBaseline({ repoPath: repo, baseSha: base, headSha: git(repo, "rev-parse", "HEAD"), command: "node check.cjs", timeoutMs: 60_000 });
+    assert.equal(baseline.status, "introduced", baseline.reason);
+    assert.equal(lstatSync(join(repo, "node_modules/w")).isSymbolicLink(), true, "the repository's own links are left alone");
+    assert.equal(existsSync(join(repo, "node_modules/dep/index.js")), true);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
