@@ -55,6 +55,7 @@ import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
+import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import {
   findReceipt,
   findWindowStart,
@@ -379,6 +380,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
         policy,
       });
   await recordUsage("verify", report.verification, identity.version, flags, env);
+  if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   if (reportPath) {
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
@@ -389,6 +391,18 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     if (reportPath) console.log(`  receipt: ${reportPath}`);
   }
   return verificationExitCode(report);
+}
+
+function runOutcomesCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  const path = outcomeLogPath(repoPath);
+  if (!path) {
+    console.error(`Not a Git repository: ${repoPath}`);
+    return 2;
+  }
+  const summary = summarizeOutcomes(readOutcomes(path));
+  console.log(flags.json === true ? JSON.stringify({ log: path, ...summary }, null, 2) : formatOutcomeSummary(summary, path));
+  return 0;
 }
 
 async function runGateCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
@@ -1088,7 +1102,7 @@ Usage:
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
-                [--share-usage] [--no-send]
+                [--share-usage] [--no-send] [--no-log]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -1113,6 +1127,7 @@ Usage:
   diffci gate --plan-out <file> [--base <sha> --head <sha>] [--script <name,...>] [--repo <path>]
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
+  diffci outcomes [--repo <path>] [--json]
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
@@ -1152,6 +1167,10 @@ and writes DiffCI's decisions, for a gate that runs without git history; --plan 
 analysing, and --expect-head ignores a plan made for another commit. It sends nothing.
 enforce-misses classifies a full run's failures on main against the enforce dry-run receipts of the pull
 requests merged since the last recorded run, and exits 1 on a miss. It never edits configuration.
+verify appends each run (plan, selection reasons, checks, results, durations, failing tests) to
+.git/diffci/outcomes.jsonl, which is never committed and never sent; --no-log or DIFFCI_OUTCOME_LOG=0 skips it.
+outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
+misses (a selected run that passed and a later full run of the same tree that failed).
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.
 
 The report is sent only when both --api-url and --api-token are given (or DIFFCI_API_URL and
@@ -1232,6 +1251,9 @@ async function main(): Promise<void> {
       return;
     case "enforce-misses":
       process.exitCode = runEnforceMisses(flags, env);
+      return;
+    case "outcomes":
+      process.exitCode = runOutcomesCommand(flags, env);
       return;
     case "version":
       console.log(observerIdentity().version);

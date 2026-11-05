@@ -191,6 +191,12 @@ export interface ObservationBaseline {
   matchedRules: string[];
 }
 
+/** The changed file that selected a test and how it reaches it (IMPORT, FILE_REFERENCE, DEPENDENCY, ...). */
+export interface SelectionReason {
+  reason: string;
+  changed_file: string;
+}
+
 export interface ObservationResult {
   mode: "SELECTIVE" | "FULL";
   changedFileCount: number;
@@ -198,6 +204,9 @@ export interface ObservationResult {
   changedFiles: string[];
   affectedSourceFileCount: number;
   selectedTests: string[];
+  /** Why each selected test was selected: the first piece of engine evidence for it (2026-11-05). Keys
+   * and changed files are redacted like `selectedTests`. Absent from engines that predate it. */
+  selectionReasons?: Record<string, SelectionReason>;
   /** Test files the full test command runs: the denominator for any selection ratio. Every
    * discovered test file when the test script could not be modelled (2026-10-21). */
   totalTestCount: number;

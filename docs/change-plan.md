@@ -34,6 +34,6 @@ A consumer that follows these rules never runs less than the repository's own ga
 
 ## Status
 
-v1 is what DiffCI 0.3.21 and later write. Before Core 1.0 the field set may grow; anything that would break a consumer following the rules above gets a new schema name. Planned additions are an explanation trace (which graph edges selected each test) and build, deploy and promotion decisions.
+v1 is what DiffCI 0.3.21 and later write. Before Core 1.0 the field set may grow; anything that would break a consumer following the rules above gets a new schema name. `tests.selection_reasons` (which changed file selected each test, and how) was added in 0.3.26. Planned additions are build, deploy and promotion decisions.
 
 Other DiffCI receipts, such as `diffci.verification.v1` from `diffci verify` and `diffci.gate.v1` from `diffci gate`, record what ran. They aren't specified here yet.

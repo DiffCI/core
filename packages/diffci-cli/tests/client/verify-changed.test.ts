@@ -110,7 +110,16 @@ describe("verify --changed", () => {
       assert.match(report.snapshot.before_tree_sha, /^[a-f0-9]{40}$/);
       assert.equal(report.snapshot.before_tree_sha, report.snapshot.after_tree_sha);
       assert.match(report.command, /node --test/);
+      // Every selected test says which changed file selected it, and how.
+      assert.deepEqual(Object.keys(report.selection_reasons), report.selected_tests);
+      assert.deepEqual(report.selection_reasons["test/alpha.test.js"], { reason: "DEPENDENCY", changed_file: "src/alpha.js" });
+      // The run is in the outcome log inside .git, which leaves the working tree untouched.
       assert.equal(git(dir, "status", "--porcelain=v1"), beforeStatus);
+      const outcomes = spawnSync(process.execPath, ["--import", "tsx", CLI, "outcomes", "--repo", dir, "--json"], { cwd: ROOT, encoding: "utf8", env: localTestEnv() });
+      const summary = JSON.parse(outcomes.stdout);
+      assert.equal(summary.runs, 1);
+      assert.equal(summary.selected, 1);
+      assert.equal(summary.passed, 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

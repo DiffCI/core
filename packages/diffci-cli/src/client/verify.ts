@@ -8,7 +8,7 @@ import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecisio
 import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
-import type { ObservationCommitRange, ObservationReport } from "./report.js";
+import type { ObservationCommitRange, ObservationReport, SelectionReason } from "./report.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
@@ -36,6 +36,8 @@ export interface VerificationReport {
   selection: "none" | "selected" | "full";
   /** The test files the selected command ran, when `selection` is "selected". The miss detector reads it. */
   selected_tests?: string[];
+  /** Why each selected test was selected (ObservationResult.selectionReasons), when `selection` is "selected". */
+  selection_reasons?: Record<string, SelectionReason>;
   command?: string;
   /** The parts `command` was run as, when one invocation would exceed the shell's command-line limit. */
   commands?: string[];
@@ -342,6 +344,7 @@ async function executeWithPolicy(
     ...(outsideSuite ? { tests_outside_full_suite: outsideSuite } : {}),
     selection,
     ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
+    ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
     command,
     ...(commands.length > 1 ? { commands } : {}),
     execution,

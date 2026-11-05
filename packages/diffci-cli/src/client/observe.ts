@@ -40,6 +40,7 @@ import {
   type ObservationReport,
   type ObservationStage,
   type ObservationStatus,
+  type SelectionReason,
 } from "./report.js";
 import { auditWorkflows } from "./workflow-guard.js";
 import { deriveSharedGraphCacheKey } from "./shared-graph-cache.js";
@@ -104,6 +105,23 @@ export function makeGitRunner(repoPath: string): GitRunner {
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex");
+}
+
+/** The first piece of engine evidence for each selected test: which changed file selected it, and how. */
+function selectionReasons(
+  affected: ReadonlyArray<{ path: string; reasons: readonly string[]; evidence: ReadonlyArray<{ reason: string; changedFile: string }> }>,
+  selected: ReadonlySet<string>,
+  hashPath: (path: string) => string,
+): Record<string, SelectionReason> {
+  const reasons: Record<string, SelectionReason> = {};
+  for (const test of affected) {
+    if (!selected.has(test.path)) continue;
+    const first = test.evidence[0];
+    reasons[hashPath(test.path)] = first
+      ? { reason: first.reason, changed_file: hashPath(first.changedFile) }
+      : { reason: test.reasons[0] ?? "UNKNOWN", changed_file: "" };
+  }
+  return reasons;
 }
 
 /** A digest rather than the porcelain text itself: the point is only whether it changed. */
@@ -317,6 +335,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
         changedFiles: delta.files.map((file) => hashPath(file.path)),
         affectedSourceFileCount: impact.affectedSourceFiles.length,
         selectedTests: selectedTests.map(hashPath),
+        selectionReasons: selectionReasons(impact.affectedTests, new Set(selectedTests), hashPath),
         totalTestCount: impact.fullSuiteTestCount ?? profile.testFilePaths.length,
         discoveredTestCount: profile.testFilePaths.length,
         ...(outsideSuite.length ? {

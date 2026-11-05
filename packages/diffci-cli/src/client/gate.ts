@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { inferFullCommand } from "./full-command.js";
 import { plannedChecks, type PlannedCheck } from "./gate-checks.js";
 import { observe } from "./observe.js";
-import type { ObservationReport } from "./report.js";
+import type { ObservationReport, SelectionReason } from "./report.js";
 import { executableSelection } from "./verify.js";
 import { measureCommand, type CommandMeasurement } from "./verify-savings.js";
 
@@ -143,6 +143,8 @@ export interface GatePlan {
     tests_selected: number;
     tests_available: number;
     selected_commands?: string[];
+    /** Why each selected test was selected (ObservationResult.selectionReasons). */
+    selection_reasons?: Record<string, SelectionReason>;
   };
 }
 
@@ -186,6 +188,7 @@ export async function planGate(options: Omit<GateOptions, "plan" | "expectHead" 
       tests_selected: selection === "selected" ? result?.selectedTests.length ?? 0 : result?.totalTestCount ?? 0,
       tests_available: result?.totalTestCount ?? 0,
       ...(selection === "selected" ? { selected_commands: selected!.commands } : {}),
+      ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
     },
   };
 }

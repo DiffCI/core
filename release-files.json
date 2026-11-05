@@ -284,6 +284,9 @@
     "docs/schemas/diffci.gate-plan.v1.schema.json",
     ".github/dependabot.yml",
     ".github/workflows/codeql.yml",
-    "tests/repo/directory-walkers.test.ts"
+    "tests/repo/directory-walkers.test.ts",
+    "packages/diffci-cli/src/client/outcome-log.ts",
+    "packages/diffci-cli/tests/client/outcome-log.test.ts",
+    ".github/FUNDING.yml"
   ]
 }

@@ -57,7 +57,20 @@
         "reason": { "type": "string" },
         "tests_selected": { "type": "integer", "minimum": 0 },
         "tests_available": { "type": "integer", "minimum": 0 },
-        "selected_commands": { "type": "array", "items": { "type": "string" }, "description": "Present only when selection is selected: the commands that run the selected tests, in order." }
+        "selected_commands": { "type": "array", "items": { "type": "string" }, "description": "Present only when selection is selected: the commands that run the selected tests, in order." },
+        "selection_reasons": {
+          "type": "object",
+          "description": "Present only when selection is selected and the engine reports it: for each selected test file, the changed file that selected it and how (for example DEPENDENCY for an import edge, FILE_REFERENCE for a file the test names).",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["reason", "changed_file"],
+            "additionalProperties": true,
+            "properties": {
+              "reason": { "type": "string" },
+              "changed_file": { "type": "string" }
+            }
+          }
+        }
       }
     }
   }
