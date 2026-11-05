@@ -126,6 +126,8 @@ describe("word-level naming", () => {
     // migration's data files only to ignore them, and every change to those files ran the full suite.
     const target = "scripts/stylexMigration/verification/fixtures/assets/manifest.json";
     assert.equal(contentNamesPath("export default {\n  ignore: [\n    'packages/**',\n    'scripts/**',\n  ],\n};", "knip.ts", target, pattern(target), true), false);
+    // Braces and classes in earlier globs of the same list are balanced, not read as an enclosing object.
+    assert.equal(contentNamesPath("export default {\n  ignore: [\n    'src/**/*.spec.ts{x,}',\n    'src/[!_]*.ts',\n    // Other directories\n    'scripts/**',\n  ],\n};", "knip.ts", target, pattern(target), true), false);
     assert.equal(contentNamesPath(`[[config.group]]\nignores = [ "**/*.test.ts", "**/fixtures/**" ]`, "alint.config.toml", target, pattern(target), true), false);
     assert.equal(contentNamesPath("test: { exclude: ['**/node_modules/**', 'fixtures/**'] }", "packages/alint/vitest.config.mts", target, pattern(target), true), false);
     assert.equal(contentNamesPath(`{ "exclude": ["e2e/**", "scripts/stylexMigration/**"], "include": ["src/**/*.ts"] }`, "tsconfig.json", target, pattern(target), true), false);

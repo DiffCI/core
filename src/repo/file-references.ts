@@ -266,15 +266,18 @@ const EXCLUSION_KEY = /^(?:ignored?|ignores|excluded?|excludes|ignorePatterns|\w
  * and anything not directly inside such a list keep the conservative answer.
  */
 function inExclusionList(content: string, index: number): boolean {
-  let depth = 0;
+  // Closers seen so far, so a balanced `{x,}` or `[!d]` in an earlier glob of the same list is skipped.
+  const open: Record<string, number> = { "[": 0, "{": 0, "(": 0 };
+  const opener: Record<string, string> = { "]": "[", "}": "{", ")": "(" };
   for (let i = index - 1; i >= 0; i--) {
-    const char = content[i];
-    if (char === "]") depth++;
-    else if (char === "[") {
-      if (depth > 0) { depth--; continue; }
-      const key = /["']?([A-Za-z_$][\w$]*)["']?\s*[:=]\s*$/.exec(content.slice(Math.max(0, i - 80), i));
-      return key !== null && EXCLUSION_KEY.test(key[1]!);
-    } else if ((char === "{" || char === "(") && depth === 0) return false;
+    const char = content[i]!;
+    if (char in opener) { open[opener[char]!]!++; continue; }
+    if (!(char in open)) continue;
+    if (open[char]! > 0) { open[char]!--; continue; }
+    // The innermost unclosed bracket: a list, or an object or call the word sits directly inside.
+    if (char !== "[") return false;
+    const key = /["']?([A-Za-z_$][\w$]*)["']?\s*[:=]\s*$/.exec(content.slice(Math.max(0, i - 80), i));
+    return key !== null && EXCLUSION_KEY.test(key[1]!);
   }
   return false;
 }
