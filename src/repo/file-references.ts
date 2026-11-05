@@ -339,11 +339,14 @@ export function loadsWithoutNaming(path: string): boolean {
 
 /** A root dependency manifest that a Dockerfile names only in `COPY`/`ADD` instructions, which put it
  * into the image for a package manager to install from. Any other instruction naming it (a `RUN` that
- * reads it) does not qualify. */
+ * reads it) does not qualify. Comment lines execute nothing and are ignored, so a Dockerfile that names
+ * the file only in comments qualifies too (2026-11-05: two DiffCI.com Dockerfiles' `# ... pinned in
+ * package.json` comments blocked every dependency bump). */
 function copiesOnly(content: string, target: string): boolean {
   if (target.includes("/") || !["package.json", ...LOCKFILES].includes(target)) return false;
-  const lines = content.split(/\r?\n/).filter((line) => new RegExp(`(?:^|[\\s/"'])${target.replace(/[.]/g, "\\.")}(?=$|[\\s"',\\]])`).test(line));
-  return lines.length > 0 && lines.every((line) => /^\s*(?:COPY|ADD)\s/i.test(line));
+  // Any mention at all, so an unusual boundary (`RUN jq .version<package.json`) still counts as a read.
+  const lines = content.split(/\r?\n/).filter((line) => !/^\s*#/.test(line) && line.includes(target));
+  return lines.every((line) => /^\s*(?:COPY|ADD)\s/i.test(line));
 }
 
 /** A Cloudflare Workers deployment config (`wrangler.toml`, `wrangler.product.jsonc`). */

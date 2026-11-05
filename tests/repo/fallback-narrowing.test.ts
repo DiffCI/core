@@ -288,7 +288,7 @@ describe("dependencies nothing imports (2026-11-04)", () => {
   const files = {
     "package.json": manifest("^1"),
     "package-lock.json": lock("1.0.0"),
-    "Dockerfile": "FROM node:22\nCOPY package.json package-lock.json ./\nRUN npm ci\n",
+    "Dockerfile": "FROM node:22\n# Match the SDK version pinned in package.json\nCOPY package.json package-lock.json ./\nRUN npm ci\n",
     "src/a.js": "export const a = 1;\n",
     "src/a.test.js": `import { a } from "./a.js";\nimport test from "node:test";\ntest("a", () => a);\n`,
     "tests/acme.test.js": `import { spawnSync } from "node:child_process";\nimport test from "node:test";\ntest("cli", () => spawnSync("acme", ["--version"]));\n`,
@@ -333,5 +333,10 @@ describe("dependencies nothing imports (2026-11-04)", () => {
   it("keeps a Dockerfile that reads package.json in a RUN step unresolvable", async () => {
     const impact = await bump({ "Dockerfile": "FROM node:22\nCOPY package.json ./\nRUN node -p \"require('./package.json').version\"\n" });
     assert.ok(impact.fallbackReasons.includes("Unknown changed file: package.json"));
+  });
+
+  it("ignores a Dockerfile that names package.json only in comments", async () => {
+    const impact = await bump({ "ops/runner/Dockerfile": "FROM ubuntu:24.04\n# Node 22, matching this repo's package.json engines requirement\nRUN apt-get update\n" });
+    assert.deepEqual(impact.fallbackReasons, []);
   });
 });
