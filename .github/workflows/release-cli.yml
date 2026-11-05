@@ -57,32 +57,42 @@ jobs:
             -f event_type=diffci-core-release-preflight \
             -f "client_payload[core_run_id]=$GITHUB_RUN_ID" >/dev/null
 
-  require-gitlab-catalog-token:
+  require-gitlab-catalog-key:
     name: Require GitLab catalog publisher
     runs-on: ubuntu-26.04
     steps:
-      - name: Require a working token for gitlab.com/diffci/diffci
+      - name: Require a working deploy key for gitlab.com/diffci/diffci
         shell: bash
         env:
-          GITLAB_TOKEN: ${{ secrets.DIFFCI_GITLAB_CATALOG_TOKEN }}
+          GITLAB_DEPLOY_KEY: ${{ secrets.DIFFCI_GITLAB_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          test -n "$GITLAB_TOKEN" || {
-            echo "DIFFCI_GITLAB_CATALOG_TOKEN is required before publishing a release." >&2
-            echo "Use a project access token on gitlab.com/diffci/diffci with the Maintainer role and write_repository scope." >&2
+          test -n "$GITLAB_DEPLOY_KEY" || {
+            echo "DIFFCI_GITLAB_DEPLOY_KEY is required before publishing a release." >&2
+            echo "Use the private half of a deploy key on gitlab.com/diffci/diffci with write access, allowed to push to main." >&2
             exit 1
           }
+          # Deploy keys are free on GitLab.com; project access tokens need Premium.
+          key="$RUNNER_TEMP/gitlab_deploy_key"
+          printf '%s\n' "$GITLAB_DEPLOY_KEY" > "$key"
+          chmod 0600 "$key"
+          # gitlab.com's published ED25519 host key (SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8).
+          echo "gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf" > "$RUNNER_TEMP/gitlab_known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/gitlab_known_hosts"
           # Checked before npm, tags, or registry state can advance, like the product dispatch token.
-          access=$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-            "https://gitlab.com/api/v4/projects/diffci%2Fdiffci" | jq '.permissions.project_access.access_level // 0')
-          test "$access" -ge 40 || {
-            echo "DIFFCI_GITLAB_CATALOG_TOKEN needs the Maintainer role to push release tags (has $access)." >&2
+          # A throwaway branch proves write access; the catalog pipeline runs on tags only.
+          git clone --quiet --depth 1 git@gitlab.com:diffci/diffci.git "$RUNNER_TEMP/catalog"
+          cd "$RUNNER_TEMP/catalog"
+          probe="refs/heads/release-preflight-$GITHUB_RUN_ID"
+          git push --quiet origin "HEAD:$probe" || {
+            echo "DIFFCI_GITLAB_DEPLOY_KEY can read but not write gitlab.com/diffci/diffci; enable its write access." >&2
             exit 1
           }
+          git push --quiet origin --delete "$probe"
 
   publish:
     name: Publish @diffci.com/diffci
-    needs: [require-product-dispatch, require-gitlab-catalog-token, verify-muse-plugin-integrity]
+    needs: [require-product-dispatch, require-gitlab-catalog-key, verify-muse-plugin-integrity]
     runs-on: ubuntu-26.04
     permissions:
       # Creates the GitHub Release and publishes to npm with provenance.
@@ -264,22 +274,26 @@ jobs:
       - name: Push integrations/gitlab and tag the catalog version
         shell: bash
         env:
-          GITLAB_TOKEN: ${{ secrets.DIFFCI_GITLAB_CATALOG_TOKEN }}
+          GITLAB_DEPLOY_KEY: ${{ secrets.DIFFCI_GITLAB_DEPLOY_KEY }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           version=$(node -p "require('./packages/diffci-cli/package.json').version")
           grep -Fq "default: \"$version\"" integrations/gitlab/templates/observe/template.yml
-          auth="Authorization: Basic $(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 -w0)"
-          git_gl() { git -c "http.https://gitlab.com/.extraheader=$auth" "$@"; }
-          remote=https://gitlab.com/diffci/diffci.git
+          key="$RUNNER_TEMP/gitlab_deploy_key"
+          printf '%s\n' "$GITLAB_DEPLOY_KEY" > "$key"
+          chmod 0600 "$key"
+          # gitlab.com's published ED25519 host key (SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8).
+          echo "gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf" > "$RUNNER_TEMP/gitlab_known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/gitlab_known_hosts"
+          remote=git@gitlab.com:diffci/diffci.git
           catalog="$RUNNER_TEMP/catalog"
           # Tags are immutable releases in the catalog; a rerun of the same version does nothing.
-          if git_gl ls-remote --exit-code --tags "$remote" "refs/tags/$version" >/dev/null; then
+          if git ls-remote --exit-code --tags "$remote" "refs/tags/$version" >/dev/null; then
             echo "Catalog tag $version already exists"
             exit 0
           fi
-          git_gl clone --quiet "$remote" "$catalog"
+          git clone --quiet "$remote" "$catalog"
           # The catalog project holds exactly integrations/gitlab/ plus the licence, nothing else.
           find "$catalog" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -R integrations/gitlab/. "$catalog/"
@@ -293,7 +307,7 @@ jobs:
             git commit --quiet -m "DiffCI components $version" -m "From DiffCI/core@$RELEASE_COMMIT"
           fi
           git tag -a "$version" -m "DiffCI components $version (DiffCI/core@$RELEASE_COMMIT)"
-          git_gl push --quiet origin main "refs/tags/$version"
+          git push --quiet origin main "refs/tags/$version"
           # The tag pipeline in the catalog project creates the GitLab release that publishes the version.
           echo "Pushed catalog tag $version; release: https://gitlab.com/diffci/diffci/-/releases/$version"
 
