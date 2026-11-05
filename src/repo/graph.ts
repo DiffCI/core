@@ -945,6 +945,18 @@ export async function buildDependencyGraph(
     // aliases. Any other diagnostic remains a hard blocker.
     return errors.every(error => error.code === 18003 || error.code === 5083 || error.code === 6053);
   }
+  // The bundled TypeScript (5.9) rejects `target`/`lib` values that newer compilers accept, such as
+  // TypeScript 6's "es2025" (jshttp/cookie, first GitLab run 2026-11-05: every plan FULL). Neither
+  // option names a file or alias, so the rejection does not change what an import resolves to - with
+  // one exception: an unset `module` defaults from `target`, and `moduleResolution` from `module`.
+  // The diagnostic is therefore ignored only when the project states `module` or `moduleResolution`
+  // itself. Every other 6046 (an unknown `module` or `moduleResolution` value) stays fatal.
+  function isNewerTargetOrLibValue(error: ts.Diagnostic, parsedOptions: ts.CompilerOptions): boolean {
+    if (error.code !== 6046) return false;
+    if (parsedOptions.module === undefined && parsedOptions.moduleResolution === undefined) return false;
+    const text = ts.flattenDiagnosticMessageText(error.messageText, "\n");
+    return /'--(?:target|lib)'/.test(text);
+  }
   // Nearest tsconfig.json per importer directory. Probing the disk for every importer walked to the
   // repository root once per file: about a third of graph build time on a 2,000-file repository (2026-10-21).
   const nearestConfig = new Map<string, ts.CompilerOptions>();
@@ -962,13 +974,18 @@ export async function buildDependencyGraph(
         if (!projectOptions.has(config)) {
           const read = ts.readConfigFile(toPosix(config), ts.sys.readFile);
           const parsed = read.error ? undefined : ts.parseJsonConfigFileContent(read.config, ts.sys, directory, undefined, config);
+          const errors = parsed ? parsed.errors.filter(error => !isNewerTargetOrLibValue(error, parsed.options)) : [];
           // No-input diagnostics do not invalidate module-resolution options.
-          const invalid = !parsed || parsed.errors.some(error => error.code !== 18003)
-            && !hasUnavailableExternalBase(read.config, parsed.errors);
+          const invalid = !parsed || errors.some(error => error.code !== 18003)
+            && !hasUnavailableExternalBase(read.config, errors);
           if (invalid) {
             adapterBlockers.push(`Invalid importer TypeScript configuration: ${toRelativeInternal(repoPath, config)}`);
             projectOptions.set(config, compilerOptions);
-          } else projectOptions.set(config, parsed.options);
+          } else {
+            // A target newer than the bundled compiler knows is at least its newest one.
+            const droppedTarget = parsed.errors.some(error => !errors.includes(error) && /'--target'/.test(ts.flattenDiagnosticMessageText(error.messageText, "\n")));
+            projectOptions.set(config, droppedTarget && parsed.options.target === undefined ? { ...parsed.options, target: ts.ScriptTarget.ESNext } : parsed.options);
+          }
         }
         return projectOptions.get(config)!;
       }
