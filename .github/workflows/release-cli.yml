@@ -57,9 +57,32 @@ jobs:
             -f event_type=diffci-core-release-preflight \
             -f "client_payload[core_run_id]=$GITHUB_RUN_ID" >/dev/null
 
+  require-gitlab-catalog-token:
+    name: Require GitLab catalog publisher
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Require a working token for gitlab.com/diffci/diffci
+        shell: bash
+        env:
+          GITLAB_TOKEN: ${{ secrets.DIFFCI_GITLAB_CATALOG_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$GITLAB_TOKEN" || {
+            echo "DIFFCI_GITLAB_CATALOG_TOKEN is required before publishing a release." >&2
+            echo "Use a project access token on gitlab.com/diffci/diffci with the Maintainer role and write_repository scope." >&2
+            exit 1
+          }
+          # Checked before npm, tags, or registry state can advance, like the product dispatch token.
+          access=$(curl --fail --silent --show-error --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+            "https://gitlab.com/api/v4/projects/diffci%2Fdiffci" | jq '.permissions.project_access.access_level // 0')
+          test "$access" -ge 40 || {
+            echo "DIFFCI_GITLAB_CATALOG_TOKEN needs the Maintainer role to push release tags (has $access)." >&2
+            exit 1
+          }
+
   publish:
     name: Publish @diffci.com/diffci
-    needs: [require-product-dispatch, verify-muse-plugin-integrity]
+    needs: [require-product-dispatch, require-gitlab-catalog-token, verify-muse-plugin-integrity]
     runs-on: ubuntu-26.04
     permissions:
       # Creates the GitHub Release and publishes to npm with provenance.
@@ -230,6 +253,49 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/verify-release.mjs --surfaces=npm,github-release,tags
+
+  publish-gitlab-component:
+    name: Publish the GitLab CI/CD component
+    needs: publish
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Push integrations/gitlab and tag the catalog version
+        shell: bash
+        env:
+          GITLAB_TOKEN: ${{ secrets.DIFFCI_GITLAB_CATALOG_TOKEN }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./packages/diffci-cli/package.json').version")
+          grep -Fq "default: \"$version\"" integrations/gitlab/templates/observe/template.yml
+          auth="Authorization: Basic $(printf 'oauth2:%s' "$GITLAB_TOKEN" | base64 -w0)"
+          git_gl() { git -c "http.https://gitlab.com/.extraheader=$auth" "$@"; }
+          remote=https://gitlab.com/diffci/diffci.git
+          catalog="$RUNNER_TEMP/catalog"
+          # Tags are immutable releases in the catalog; a rerun of the same version does nothing.
+          if git_gl ls-remote --exit-code --tags "$remote" "refs/tags/$version" >/dev/null; then
+            echo "Catalog tag $version already exists"
+            exit 0
+          fi
+          git_gl clone --quiet "$remote" "$catalog"
+          # The catalog project holds exactly integrations/gitlab/ plus the licence, nothing else.
+          find "$catalog" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R integrations/gitlab/. "$catalog/"
+          cp LICENSE "$catalog/LICENSE"
+          cd "$catalog"
+          git config user.name "DiffCI release"
+          git config user.email "release@diffci.com"
+          git checkout --quiet -B main
+          git add --all
+          if ! git diff --cached --quiet; then
+            git commit --quiet -m "DiffCI components $version" -m "From DiffCI/core@$RELEASE_COMMIT"
+          fi
+          git tag -a "$version" -m "DiffCI components $version (DiffCI/core@$RELEASE_COMMIT)"
+          git_gl push --quiet origin main "refs/tags/$version"
+          # The tag pipeline in the catalog project creates the GitLab release that publishes the version.
+          echo "Pushed catalog tag $version; release: https://gitlab.com/diffci/diffci/-/releases/$version"
 
   publish-mcp-registry:
     name: Publish matching MCP Registry listing

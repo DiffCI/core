@@ -1,0 +1,36 @@
+# Pipeline of the catalog project gitlab.com/diffci/diffci. Core's release workflow pushes
+# integrations/gitlab/ there and tags it with the CLI version; the tag pipeline publishes that
+# version to the GitLab CI/CD Catalog. Source: https://github.com/DiffCI/core/tree/main/integrations/gitlab
+stages:
+  - check
+  - release
+
+# The component version must equal the CLI version it pins, so one number means one thing.
+check-version:
+  stage: check
+  image: registry.gitlab.com/gitlab-org/cli:v1.128.0@sha256:00884510ffcbb6b03c0abc5dd058d7728a646cab2a419de4a7108d073ce90a03
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - |
+      set -eu
+      echo "$CI_COMMIT_TAG" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+        echo "Catalog tags must be exact versions such as 0.3.27" >&2
+        exit 1
+      }
+      grep -Fq "default: \"$CI_COMMIT_TAG\"" templates/observe/template.yml || {
+        echo "templates/observe/template.yml must default cli-version to $CI_COMMIT_TAG" >&2
+        exit 1
+      }
+
+create-release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:v1.128.0@sha256:00884510ffcbb6b03c0abc5dd058d7728a646cab2a419de4a7108d073ce90a03
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "Publishing DiffCI components $CI_COMMIT_TAG to the CI/CD Catalog"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: DiffCI $CI_COMMIT_TAG
+    description: "DiffCI components $CI_COMMIT_TAG, pinned to @diffci.com/diffci@$CI_COMMIT_TAG. Changelog: https://github.com/DiffCI/core/releases"

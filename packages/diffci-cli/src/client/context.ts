@@ -28,7 +28,7 @@ export interface ObservationEnvironment {
 }
 
 export interface CiEnvironmentFacts {
-  provider: "github-actions" | "local" | "unknown";
+  provider: "github-actions" | "gitlab-ci" | "local" | "unknown";
   ownerName?: string;
   providerRepositoryId?: string;
   defaultBranch?: string;
@@ -72,7 +72,27 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/** GitLab pipeline sources with no change of their own to analyse (2026-11-05). */
+const GITLAB_SYNTHETIC_SOURCES = new Set(["schedule", "web", "api", "trigger", "pipeline", "parent_pipeline", "chat", "webide"]);
+
+function readGitlabEnvironment(env: ObservationEnvironment): CiEnvironmentFacts {
+  const event = asString(env.CI_PIPELINE_SOURCE);
+  return {
+    provider: "gitlab-ci",
+    ownerName: asString(env.CI_PROJECT_PATH),
+    providerRepositoryId: asString(env.CI_PROJECT_ID),
+    defaultBranch: asString(env.CI_DEFAULT_BRANCH),
+    runId: asString(env.CI_PIPELINE_ID),
+    workflow: asString(env.CI_CONFIG_PATH),
+    job: asString(env.CI_JOB_NAME),
+    event,
+    ref: asString(env.CI_COMMIT_REF_NAME),
+    syntheticTrigger: event !== undefined && GITLAB_SYNTHETIC_SOURCES.has(event),
+  };
+}
+
 export function readCiEnvironment(env: ObservationEnvironment): CiEnvironmentFacts {
+  if (env.GITLAB_CI === "true") return readGitlabEnvironment(env);
   if (env.GITHUB_ACTIONS !== "true") {
     return { provider: env.CI === "true" ? "unknown" : "local" };
   }
@@ -138,6 +158,78 @@ function mergeBase(git: GitRunner, a: string, b: string): string | undefined {
 const DEEPEN_HINT =
   "the commit is not in this checkout - add `fetch-depth: 0` to the actions/checkout step in the job that runs DiffCI (this does not affect any other job)";
 
+/** GitLab clones 20 commits deep by default, so a long merge request loses its base (2026-11-05). */
+const GITLAB_DEEPEN_HINT =
+  "the commit is not in this checkout - set `GIT_DEPTH: \"0\"` in the variables of the job that runs DiffCI (this does not affect any other job)";
+
+function deepenHint(env: ObservationEnvironment): string {
+  return env.GITLAB_CI === "true" ? GITLAB_DEEPEN_HINT : DEEPEN_HINT;
+}
+
+/**
+ * GitLab's version of the GitHub event handling below (2026-11-05). The traps have different names:
+ *
+ *   - In a merged-results pipeline `CI_COMMIT_SHA` is a merge commit GitLab created, like GitHub's
+ *     merge ref. The source branch head is `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA`, which GitLab sets
+ *     only in merged-results pipelines; in a plain merge request pipeline `CI_COMMIT_SHA` is the head.
+ *   - `CI_COMMIT_BEFORE_SHA` is forty zeros in every merge request pipeline and on a branch's first
+ *     push, so it is read only for pushes and never trusted when zero.
+ *
+ * Returns undefined for pipeline sources that carry no range (schedule, web, api, ...), which then
+ * take the generic HEAD^ path with `syntheticTrigger` recorded, exactly as a GitHub schedule does.
+ */
+function resolveGitlabRange(env: ObservationEnvironment, git: GitRunner): CommitRangeResolution | undefined {
+  const hint = GITLAB_DEEPEN_HINT;
+  const source = env.CI_PIPELINE_SOURCE;
+
+  if (source === "merge_request_event") {
+    const headSha = asString(env.CI_MERGE_REQUEST_SOURCE_BRANCH_SHA) ?? asString(env.CI_COMMIT_SHA);
+    const baseSha = asString(env.CI_MERGE_REQUEST_DIFF_BASE_SHA);
+    if (!headSha || !baseSha) {
+      return { ok: false, reason: "merge request pipeline carried no CI_MERGE_REQUEST_DIFF_BASE_SHA or head commit" };
+    }
+    if (!commitExists(git, headSha)) {
+      return { ok: false, reason: `merge request head ${headSha.slice(0, 12)} is not present locally: ${hint}` };
+    }
+    if (!commitExists(git, baseSha)) {
+      return { ok: false, reason: `merge request base ${baseSha.slice(0, 12)} is not present locally: ${hint}` };
+    }
+    // The diff base is already the merge base when the pipeline was created. Recomputing it guards
+    // against a retried job whose source branch was rebased since; a different answer is recorded.
+    const common = mergeBase(git, baseSha, headSha);
+    return {
+      ok: true,
+      range: {
+        baseSha: common ?? baseSha,
+        headSha,
+        source: "pull-request-event",
+        mergeBaseSha: common && common !== baseSha ? common : undefined,
+      },
+    };
+  }
+
+  if (source === "push") {
+    const headSha = asString(env.CI_COMMIT_SHA) ?? resolveSha(git, "HEAD");
+    if (!headSha) return { ok: false, reason: "could not determine the head commit of this push" };
+    const before = asString(env.CI_COMMIT_BEFORE_SHA);
+    if (before && before !== ZERO_SHA && commitExists(git, before)) {
+      return { ok: true, range: { baseSha: before, headSha, source: "push-event" } };
+    }
+    const parent = resolveSha(git, `${headSha}^`);
+    if (!parent) {
+      return {
+        ok: false,
+        reason: before === ZERO_SHA || before === undefined
+          ? `this push created the branch and its head commit has no parent in this checkout: ${hint}`
+          : `no usable base commit for this push: ${hint}`,
+      };
+    }
+    return { ok: true, range: { baseSha: parent, headSha, source: "head-parent" } };
+  }
+
+  return undefined;
+}
+
 export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRangeResolution {
   const { env, git, baseOverride, headOverride } = options;
 
@@ -147,9 +239,14 @@ export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRa
     }
     const base = resolveSha(git, baseOverride);
     const head = resolveSha(git, headOverride);
-    if (!base) return { ok: false, reason: `base revision ${baseOverride} could not be resolved: ${DEEPEN_HINT}` };
-    if (!head) return { ok: false, reason: `head revision ${headOverride} could not be resolved: ${DEEPEN_HINT}` };
+    if (!base) return { ok: false, reason: `base revision ${baseOverride} could not be resolved: ${deepenHint(env)}` };
+    if (!head) return { ok: false, reason: `head revision ${headOverride} could not be resolved: ${deepenHint(env)}` };
     return { ok: true, range: { baseSha: base, headSha: head, source: "explicit-flags" } };
+  }
+
+  if (env.GITLAB_CI === "true") {
+    const gitlab = resolveGitlabRange(env, git);
+    if (gitlab) return gitlab;
   }
 
   const payload = readEventPayload(env);
@@ -217,7 +314,7 @@ export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRa
   if (!parent) {
     return {
       ok: false,
-      reason: `HEAD has no parent commit in this checkout, so there is no range to analyse: ${DEEPEN_HINT}`,
+      reason: `HEAD has no parent commit in this checkout, so there is no range to analyse: ${deepenHint(env)}`,
     };
   }
   return { ok: true, range: { baseSha: parent, headSha: head, source: "head-parent" } };

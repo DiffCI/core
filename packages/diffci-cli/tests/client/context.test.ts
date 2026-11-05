@@ -168,3 +168,130 @@ describe("commit range resolution", () => {
     assert.match(result.reason, /not a git repository/);
   });
 });
+
+// GitLab (2026-11-05). Same traps as GitHub under different variable names; see resolveGitlabRange.
+describe("GitLab CI context", () => {
+  const MERGE = "d".repeat(40);
+  const gitlab = (vars: Record<string, string>) => ({ GITLAB_CI: "true", CI: "true", ...vars });
+
+  it("reads GitLab's predefined variables into the CI facts", () => {
+    const facts = readCiEnvironment(gitlab({
+      CI_PROJECT_PATH: "group/project", CI_PROJECT_ID: "42", CI_DEFAULT_BRANCH: "main", CI_PIPELINE_ID: "7",
+      CI_JOB_NAME: "diffci-observe", CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_REF_NAME: "feature",
+      CI_CONFIG_PATH: ".gitlab-ci.yml",
+    }));
+    assert.deepEqual(facts, {
+      provider: "gitlab-ci", ownerName: "group/project", providerRepositoryId: "42", defaultBranch: "main", runId: "7",
+      workflow: ".gitlab-ci.yml", job: "diffci-observe", event: "merge_request_event", ref: "feature", syntheticTrigger: false,
+    });
+  });
+
+  it("marks schedule, web and API pipelines as synthetic triggers", () => {
+    for (const source of ["schedule", "web", "api", "trigger", "parent_pipeline"]) {
+      assert.equal(readCiEnvironment(gitlab({ CI_PIPELINE_SOURCE: source })).syntheticTrigger, true, source);
+    }
+    assert.equal(readCiEnvironment(gitlab({ CI_PIPELINE_SOURCE: "push" })).syntheticTrigger, false);
+  });
+
+  it("diffs a merge request pipeline from the diff base to the head", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_SHA: HEAD, CI_MERGE_REQUEST_DIFF_BASE_SHA: BASE, CI_COMMIT_BEFORE_SHA: ZERO }),
+      git: fakeGit({ known: [HEAD, BASE], mergeBase: BASE }),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(
+      { base: result.range.baseSha, head: result.range.headSha, source: result.range.source, mergeBase: result.range.mergeBaseSha },
+      { base: BASE, head: HEAD, source: "pull-request-event", mergeBase: undefined },
+    );
+  });
+
+  it("uses the source branch head, not GitLab's merge commit, in a merged-results pipeline", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_SHA: MERGE, CI_MERGE_REQUEST_SOURCE_BRANCH_SHA: HEAD, CI_MERGE_REQUEST_DIFF_BASE_SHA: BASE }),
+      git: fakeGit({ known: [HEAD, BASE, MERGE], mergeBase: BASE }),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.range.headSha, HEAD);
+    assert.equal(result.range.baseSha, BASE);
+  });
+
+  it("records a recomputed merge base when the source branch moved since the pipeline was created", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_SHA: HEAD, CI_MERGE_REQUEST_DIFF_BASE_SHA: BASE }),
+      git: fakeGit({ known: [HEAD, BASE], mergeBase: MERGE_BASE }),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.range.baseSha, MERGE_BASE);
+    assert.equal(result.range.mergeBaseSha, MERGE_BASE);
+  });
+
+  it("refuses a merge request whose base is missing from a shallow clone, with the GitLab fix", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_SHA: HEAD, CI_MERGE_REQUEST_DIFF_BASE_SHA: BASE }),
+      git: fakeGit({ known: [HEAD] }),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /GIT_DEPTH: "0"/);
+    assert.doesNotMatch(result.reason, /fetch-depth/);
+  });
+
+  it("refuses a merge request pipeline with no diff base rather than reading the zero before-SHA", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "merge_request_event", CI_COMMIT_SHA: HEAD, CI_COMMIT_BEFORE_SHA: ZERO }),
+      git: fakeGit({ known: [HEAD] }),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /CI_MERGE_REQUEST_DIFF_BASE_SHA/);
+  });
+
+  it("uses CI_COMMIT_BEFORE_SHA on a push when it is real and present", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "push", CI_COMMIT_SHA: HEAD, CI_COMMIT_BEFORE_SHA: BASE }),
+      git: fakeGit({ known: [HEAD, BASE] }),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.range.baseSha, BASE);
+    assert.equal(result.range.source, "push-event");
+  });
+
+  it("falls back to the head's parent on a new branch's first push, and labels it", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "push", CI_COMMIT_SHA: HEAD, CI_COMMIT_BEFORE_SHA: ZERO }),
+      git: fakeGit({ known: [HEAD], revs: { [`${HEAD}^`]: BASE } }),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.range.baseSha, BASE);
+    assert.equal(result.range.source, "head-parent");
+  });
+
+  it("refuses a first push whose head has no parent in the clone", () => {
+    const result = resolveCommitRange({
+      env: gitlab({ CI_PIPELINE_SOURCE: "push", CI_COMMIT_SHA: HEAD, CI_COMMIT_BEFORE_SHA: ZERO }),
+      git: fakeGit({ known: [HEAD] }),
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /no parent.*GIT_DEPTH/);
+  });
+
+  it("gives a scheduled pipeline the generic HEAD^ range, with the GitLab hint when that fails", () => {
+    const ok = resolveCommitRange({ env: gitlab({ CI_PIPELINE_SOURCE: "schedule" }), git: fakeGit({ revs: { HEAD, "HEAD^": BASE } }) });
+    assert.equal(ok.ok, true);
+    if (ok.ok) assert.equal(ok.range.source, "head-parent");
+    const refused = resolveCommitRange({ env: gitlab({ CI_PIPELINE_SOURCE: "schedule" }), git: fakeGit({ revs: { HEAD } }) });
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.match(refused.reason, /GIT_DEPTH/);
+  });
+
+  it("does not read GitLab variables outside GitLab", () => {
+    const facts = readCiEnvironment({ CI_PIPELINE_SOURCE: "push", CI_PROJECT_PATH: "group/project" });
+    assert.equal(facts.provider, "local");
+  });
+});

@@ -50,6 +50,12 @@ assert(action.includes(`default: "${version}"`), "GitHub Action must default to 
 assert(action.includes("DIFFCI_CLI_VERSION: ${{ inputs.cli-version }}"), "GitHub Action must pass its version through an environment variable.");
 assert(action.includes('"@diffci.com/diffci@$DIFFCI_CLI_VERSION"'), "GitHub Action must use the validated CLI version.");
 
+const gitlabComponent = readText("integrations/gitlab/templates/observe/template.yml");
+assert(gitlabComponent.includes(`default: "${version}"`), "GitLab component must default to the CLI package version.");
+assert(gitlabComponent.includes('"@diffci.com/diffci@$DIFFCI_CLI_VERSION"'), "GitLab component must use the validated CLI version.");
+assert(gitlabComponent.includes("--no-send"), "GitLab component must not send reports while Cloud is GitHub-only.");
+assert(readText("integrations/gitlab/README.md").includes(`observe@${version}`), "GitLab component README must show the CLI package version.");
+
 const codexMarketplace = readJson(".agents/plugins/marketplace.json");
 const codexCatalogEntry = codexMarketplace.plugins?.find((entry) => entry.name === "diffci");
 assert(codexCatalogEntry?.source?.source === "local" && codexCatalogEntry.source.path === "./integrations/agent-plugin", "Codex marketplace must install the release-tracked agent plugin.");

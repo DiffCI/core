@@ -196,7 +196,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
         platform: process.platform,
       },
       repository: {
-        provider: ci.provider === "github-actions" ? "github" : "unknown",
+        provider: ci.provider === "github-actions" ? "github" : ci.provider === "gitlab-ci" ? "gitlab" : "unknown",
         ownerName: owner && name ? `${owner}/${name}` : undefined,
         defaultBranch: ci.defaultBranch,
         providerRepositoryId: ci.providerRepositoryId,

@@ -49,7 +49,7 @@ export interface ObservationCommitRange {
 }
 
 export interface ObservationRepository {
-  provider: "github" | "unknown";
+  provider: "github" | "gitlab" | "unknown";
   /** "owner/name". The only repository identifier sent; never a URL carrying a token. */
   ownerName?: string;
   defaultBranch?: string;
@@ -58,7 +58,7 @@ export interface ObservationRepository {
 }
 
 export interface ObservationCi {
-  provider: "github-actions" | "local" | "unknown";
+  provider: "github-actions" | "gitlab-ci" | "local" | "unknown";
   runId?: string;
   runAttempt?: string;
   workflow?: string;

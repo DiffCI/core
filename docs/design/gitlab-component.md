@@ -1,6 +1,6 @@
 # Design: GitLab CI/CD component
 
-Status: proposal (2026-11-05). This is the GitLab version of the observer Action (`action.yml`,
+Status: phase 0 shipped in CLI 0.3.26; phase 1 code and component in Core, not yet run on GitLab (2026-11-05). This is the GitLab version of the observer Action (`action.yml`,
 [github-action-observer.md](../github-action-observer.md)). It is the first integration outside GitHub.
 
 ## Goal
@@ -10,7 +10,7 @@ that GitHub users get from `DiffCI/core@<release>`:
 
 ```yaml
 include:
-  - component: gitlab.com/diffci/diffci/observe@0.3.25
+  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.26
 ```
 
 What this does not do (same as the Action): it does not skip, cancel or reorder jobs, comment on
@@ -21,7 +21,8 @@ Done means:
 1. The component is listed in the GitLab CI/CD Catalog and is released by the same CI run that
    releases the CLI.
 2. On a GitLab test project, merge-request, default-branch push and new-branch pipelines each produce
-   `OBSERVED` with the correct range. Schedule, web and API pipelines produce `REFUSED` with a reason.
+   `OBSERVED` with the correct range. The component does not run on schedule, web or API pipelines;
+   run by hand there, the CLI uses HEAD^ and records `syntheticTrigger`, as it does for a GitHub schedule.
 3. A change to `.gitlab-ci.yml` or to a file it includes never gets a selective plan.
 
 ## What has to change in Core first
@@ -40,10 +41,11 @@ refuse, so these come before the component.
 | `providerRepositoryId` | `CI_PROJECT_ID` |
 | `defaultBranch` | `CI_DEFAULT_BRANCH` |
 | `runId` | `CI_PIPELINE_ID` |
+| `workflow` | `CI_CONFIG_PATH` |
 | `job` | `CI_JOB_NAME` |
 | `event` | `CI_PIPELINE_SOURCE` |
 | `ref` | `CI_COMMIT_REF_NAME` |
-| `syntheticTrigger` | `CI_PIPELINE_SOURCE` in `schedule`, `web`, `api`, `trigger`, `pipeline`, `chat` |
+| `syntheticTrigger` | `CI_PIPELINE_SOURCE` in `schedule`, `web`, `api`, `trigger`, `pipeline`, `parent_pipeline`, `chat`, `webide` |
 
 `resolveCommitRange` gets a GitLab branch. It has the same traps as GitHub, under different names:
 
@@ -51,10 +53,11 @@ refuse, so these come before the component.
 |---|---|---|
 | Merge request (`merge_request_event`) | base `CI_MERGE_REQUEST_DIFF_BASE_SHA`, head `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` (fall back to `CI_COMMIT_SHA` only when the source SHA is empty) | In merged-results pipelines `CI_COMMIT_SHA` is a merge commit GitLab created, the same trap as GitHub's merge ref. Diff the source branch head, not HEAD. `CI_COMMIT_BEFORE_SHA` is all zeros in MR pipelines, so never read it here. |
 | Branch push (`push`) | base `CI_COMMIT_BEFORE_SHA`, head `CI_COMMIT_SHA` | All zeros on the first push to a new branch. Use the existing merge-base-with-default-branch logic, or `head-parent`, as GitHub does. |
-| Anything synthetic | none | Refuse with "no change to analyse", as GitHub `schedule` does. |
+| Anything synthetic | HEAD^..HEAD, `syntheticTrigger: true` | Same as a GitHub `schedule` today, which is not refused. The component's `rules` keep it off these pipelines. |
 
-Use new `source` values (`merge-request-pipeline`, `push-pipeline`) so a receipt says which
-provider produced its range.
+As built, the existing `source` values are reused (`pull-request-event`, `push-event`, `head-parent`).
+`ci.provider` already says which provider produced the range, and new values would ripple into
+Cloud's merge-gate code for no gain.
 
 `DEEPEN_HINT` names `actions/checkout`. Make it depend on the provider. On GitLab the fix is
 `GIT_DEPTH: 0` on the DiffCI job. GitLab clones with a shallow depth of 20 by default, so a long
@@ -112,61 +115,19 @@ number means one thing.
 
 ### Template
 
-```yaml
-spec:
-  inputs:
-    stage:
-      default: test
-    job-name:
-      default: diffci-observe
-    image:
-      default: node:22          # Debian-based: has git and bash. Alpine images have neither.
-    cli-version:
-      default: "0.3.25"
-    redact-paths:
-      type: boolean
-      default: false
-    api-url:
-      default: ""
-    artifact-expire-in:
-      default: 7 days
----
-"$[[ inputs.job-name ]]":
-  stage: $[[ inputs.stage ]]
-  image: $[[ inputs.image ]]
-  needs: []                     # start at once; depend on nothing and block nothing
-  allow_failure: true
-  variables:
-    GIT_DEPTH: "0"
-    DIFFCI_CLI_VERSION: $[[ inputs.cli-version ]]
-    DIFFCI_REDACT: $[[ inputs.redact-paths ]]
-    DIFFCI_API_URL: $[[ inputs.api-url ]]
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
-  script:
-    - |
-      set -euo pipefail
-      # exact-semver check, same regex as action.yml
-      out="$(mktemp -d)/diffci-observation.json"
-      args=(observe --repo "$CI_PROJECT_DIR" --out "$out")
-      if [ "$DIFFCI_REDACT" = "true" ]; then args+=(--redact-paths); fi
-      (cd /tmp && npx --yes --ignore-scripts --no-audit --fund=false \
-        --package "@diffci.com/diffci@$DIFFCI_CLI_VERSION" diffci "${args[@]}")
-      mkdir -p "$CI_PROJECT_DIR/.diffci" && cp "$out" "$CI_PROJECT_DIR/.diffci/"
-  artifacts:
-    when: always
-    expose_as: DiffCI observation  # shows a link in the merge request widget
-    paths: [.diffci/]
-    expire_in: $[[ inputs.artifact-expire-in ]]
-```
+As built: [`integrations/gitlab/templates/observe/template.yml`](../../integrations/gitlab/templates/observe/template.yml),
+with its [README](../../integrations/gitlab/README.md). `scripts/check-agent-packaging.mjs` fails
+when its `cli-version` default or README example differs from the CLI package version, as it does
+for `action.yml`.
 
 Choices that differ from the Action, and why:
 
-- **No `api-token` input.** Inputs are interpolated into the pipeline config, so a token passed as
-  an input would sit in plain text in the merged YAML. The CLI reads `DIFFCI_TOKEN` from the
-  environment, so users set it as a masked, protected CI/CD variable. Nothing is sent unless both
-  `api-url` and that variable are set, as on GitHub.
+- **Sends nothing (`--no-send`), with no `api-url` or `api-token` input.** Cloud accepts GitHub
+  repositories only, so a GitLab report has nowhere to go yet. When it does, the token must come
+  from a masked, protected CI/CD variable, never an input: inputs are interpolated into the
+  pipeline config, so a token passed as one would sit in plain text in the merged YAML.
+- **`DIFFCI_STATUS` through a dotenv report**, in place of the Action's `status` output, so later
+  jobs that `needs` the observer can read it.
 - **No `fail-on-error` input.** `allow_failure: true` already keeps a DiffCI problem from failing
   the pipeline. Someone debugging can override the job with `allow_failure: false`.
 - **`rules` are built in** so the job runs only where a range exists, and doesn't run twice when a
@@ -179,7 +140,7 @@ Choices that differ from the Action, and why:
 | Phase | Work | Check before the next phase |
 |---|---|---|
 | 0. Safety | The `.gitlab-ci.yml` fallback check and fix (section 2). Ship on its own. | A fixture that changes only `.gitlab-ci.yml` runs the full suite in `plan`, `verify` and enforce. |
-| 1. Observer | Context (section 1), report copy, the component, the catalog project, the release step. Tests in `context.test.ts` for each row of the range table, merged-results pipeline included. | "Done means" 1–3 on a GitLab test project. |
+| 1. Observer | Context (section 1), report copy, the component, the catalog project, the release step. Done 2026-11-05: context, report copy, component and packaging check; the public catalog project `gitlab.com/diffci/diffci` (catalog resource on, no version yet); its tag pipeline (`integrations/gitlab/.gitlab-ci.yml`); and the `publish-gitlab-component` release job with its token preflight. Left: the `DIFFCI_GITLAB_CATALOG_TOKEN` secret, the first CLI release with the GitLab context (the first catalog version), and a real run. Tests in `context.test.ts` for each row of the range table, merged-results pipeline included. | "Done means" 1–3 on a GitLab test project. |
 | 2. GitLab pipeline inference | Parse `.gitlab-ci.yml` in `src/ci-inference`: `include`, `extends`, `!reference`, `needs`, `rules:changes`, `parallel:matrix`. Then affected checks and the pipeline-impact plan work for GitLab repositories. | `plan` on a few public GitLab repositories names their real jobs, with blockers where config is dynamic. |
 | 3. Enforcement | GitLab has a native way to run only some jobs: a job writes a generated child pipeline and a `trigger: include: artifact:` job runs it. DiffCI writes the child pipeline from its plan and falls back to the full parent pipeline on any blocker. GitHub has no equivalent, so this could be the strongest enforcement integration DiffCI has. | A design partner on GitLab keeps it on. |
 

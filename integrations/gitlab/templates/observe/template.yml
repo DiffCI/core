@@ -1,0 +1,78 @@
+# DiffCI Core observer: the GitLab CI/CD component version of action.yml.
+# Observation only. Runs nothing, skips nothing, changes nothing, sends nothing.
+spec:
+  inputs:
+    stage:
+      description: Stage the observer job runs in. It starts at once (needs: []) whatever the stage.
+      default: test
+    job-name:
+      description: Name of the observer job. Override `rules` or `allow_failure` by redefining this job.
+      default: diffci-observe
+    image:
+      description: >-
+        Image with Node 22+, git and bash. Debian-based node images qualify; Alpine ones lack bash.
+        Pin it by digest in production.
+      default: node:22
+    cli-version:
+      description: Exact published DiffCI CLI version to run.
+      default: "0.3.26"
+    redact-paths:
+      description: Replace every file path in the report with a stable 12-character digest.
+      type: boolean
+      default: false
+    artifact-expire-in:
+      description: How long GitLab keeps the report artifact.
+      default: 7 days
+---
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  needs: []
+  # A DiffCI problem must never become the pipeline result.
+  allow_failure: true
+  variables:
+    # GitLab clones 20 commits deep by default, which can drop a merge request's base commit.
+    GIT_DEPTH: "0"
+    DIFFCI_CLI_VERSION: $[[ inputs.cli-version ]]
+    DIFFCI_REDACT: $[[ inputs.redact-paths ]]
+  rules:
+    # Only where a commit range exists, and once per change in projects with both branch and MR pipelines.
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+  script:
+    - |
+      set -euo pipefail
+      if [[ ! "$DIFFCI_CLI_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+        echo "DiffCI CLI version must be an exact semver version" >&2
+        exit 2
+      fi
+      # The report is written outside the checkout while observing, so the observed tree stays clean,
+      # and the CLI is installed outside it, so the project's lockfile and node_modules are untouched.
+      work="$(mktemp -d)"
+      report="$work/diffci-observation.json"
+      args=(observe --no-send --repo "$CI_PROJECT_DIR" --out "$report")
+      if [ "$DIFFCI_REDACT" = "true" ]; then args+=(--redact-paths); fi
+      (
+        cd "$work"
+        npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@$DIFFCI_CLI_VERSION" diffci "${args[@]}"
+      )
+      # GitLab uploads artifacts only from inside the checkout. Copying after observation has finished
+      # is safe: this job runs nothing else, and runners clean the checkout between jobs.
+      mkdir -p "$CI_PROJECT_DIR/.diffci"
+      if [ -f "$report" ]; then
+        cp "$report" "$CI_PROJECT_DIR/.diffci/"
+        status="$(node -p 'require(process.argv[1]).status' "$report")"
+      else
+        status="ERROR"
+      fi
+      echo "DIFFCI_STATUS=$status" > "$CI_PROJECT_DIR/.diffci/diffci.env"
+      echo "DiffCI observation: $status"
+  artifacts:
+    when: always
+    expose_as: DiffCI observation
+    paths:
+      - .diffci/diffci-observation.json
+    reports:
+      # Later jobs that `needs` this one can read $DIFFCI_STATUS (OBSERVED, REFUSED or ERROR).
+      dotenv: .diffci/diffci.env
+    expire_in: $[[ inputs.artifact-expire-in ]]
