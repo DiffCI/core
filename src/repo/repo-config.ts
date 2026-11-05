@@ -24,9 +24,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/**
+ * A declared edge (2026-11-05): when a changed path matches `files`, the tests matching `tests` are
+ * selected. For edges static analysis cannot see - fixtures loaded by name, env files, codegen inputs,
+ * schemas - the way Nx `namedInputs` and Turborepo `inputs` let a repository say what a task reads.
+ */
+export interface DeclaredInput {
+  files: string[];
+  tests: string[];
+}
+
 export interface DiffCiRepositoryConfig {
   /** Globs for tests that must be selected on every analysed change, regardless of reachability. */
   alwaysRunTests?: string[];
+  /** Edges the repository declares about itself; see DeclaredInput and ImpactAnalyzer.declaredTests. */
+  inputs?: DeclaredInput[];
   /** Explicitly limit Go selection to the root module's `go test ./...` universe. */
   go?: { scope: "root-module" };
   /** One package's default Vitest suite; paths are relative to the repository/package respectively. */
@@ -62,8 +74,18 @@ function parseConfig(raw: unknown): DiffCiRepositoryConfig {
   const safePath = (value: unknown): value is string => typeof value === "string" && /^(?:[A-Za-z0-9_][A-Za-z0-9_.-]*)(?:\/[A-Za-z0-9_][A-Za-z0-9_.-]*)*$/.test(value) && !value.split("/").some(part => part === "." || part === "..");
   const validVue = vue && (vue.packageRoot === "." || safePath(vue.packageRoot)) && safePath(vue.testConfig) && /^vitest\.config\.[cm]?[jt]s$/.test(vue.testConfig);
   const validMaven = maven && (maven.goal === "test" || maven.goal === "verify") && (maven.profiles === undefined || Array.isArray(maven.profiles) && maven.profiles.every((profile: unknown) => typeof profile === "string" && /^[A-Za-z0-9_.-]+$/.test(profile)));
+  // Unlike a malformed file, a malformed `inputs` block is an error: dropping one entry would turn a
+  // declared edge into a silent skip, so the analysis falls back instead (graph.ts, adapterBlockers).
+  const globs = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0
+    && value.every((entry) => typeof entry === "string" && entry.trim() !== "");
+  const inputs = record.inputs;
+  const validInputs = Array.isArray(inputs) && inputs.every((entry: unknown) => entry !== null && typeof entry === "object"
+    && globs((entry as Record<string, unknown>).files) && globs((entry as Record<string, unknown>).tests));
   return {
     ...(alwaysRunTests && alwaysRunTests.length > 0 ? { alwaysRunTests } : {}),
+    ...(validInputs && inputs.length > 0
+      ? { inputs: (inputs as DeclaredInput[]).map(({ files, tests }) => ({ files: [...files], tests: [...tests] })) }
+      : inputs !== undefined && !validInputs ? { configurationError: "Invalid inputs: each entry needs non-empty files and tests glob lists" } : {}),
     ...(go?.scope === "root-module" ? { go: { scope: "root-module" as const } } : {}),
     ...(validVue ? { vue: { packageRoot: vue.packageRoot as string, testConfig: vue.testConfig as string } } : record.vue !== undefined ? { configurationError: "Invalid Vue package/suite scope" } : {}),
     ...(validMaven ? { maven: { goal: maven.goal as "test" | "verify", ...(maven.profiles ? { profiles: maven.profiles as string[] } : {}) } } : record.maven !== undefined ? { configurationError: "Invalid Maven lifecycle goal or profiles" } : {}),
@@ -78,7 +100,7 @@ export function readRepositoryConfig(repoPath: string, packageJson?: Record<stri
   const dedicated = readJsonFile(join(repoPath, "diffci.json"));
   if (dedicated) {
     const parsed = parseConfig(dedicated);
-    if (parsed.alwaysRunTests || parsed.go || parsed.vue || parsed.maven || parsed.configurationError) return parsed;
+    if (parsed.alwaysRunTests || parsed.inputs || parsed.go || parsed.vue || parsed.maven || parsed.configurationError) return parsed;
   }
   const pkg = packageJson ?? readJsonFile(join(repoPath, "package.json"));
   return parseConfig(pkg?.diffci);

@@ -155,6 +155,23 @@ Dependency graph confidence is UNSAFE; full validation required
 
 Run `npm test` for this revision. Even though the report lists one selected test out of one discovered test, that count is not a runtime measurement or a savings claim. The computed import could reach modules static analysis did not discover, so only the repository's normal full validation remains authoritative. CLI behavior may evolve after version 0.3.2; keep the pinned version when reproducing this exact output.
 
+## Declare inputs the graph can't see
+
+Some files reach tests without an import: fixtures loaded by name, `.env.test`, a Prisma schema that generates the client, a migration a test applies. DiffCI looks for tests that name such a file and runs the full suite when it finds none. Declare the edge in `diffci.json` (or the `diffci` key in `package.json`) instead:
+
+```json
+{
+  "inputs": [
+    { "files": ["prisma/schema.prisma", "migrations/**"], "tests": ["src/db/**/*.test.ts"] },
+    { "files": ["fixtures/**", ".env.test"], "tests": ["tests/integration/**"] }
+  ]
+}
+```
+
+When a changed file matches `files`, every test matching `tests` is selected, with the reason `DECLARED_INPUT`. Declared tests are always added to what the dependency graph selects. For an unknown file, an unread asset or fixture, code under `ops/` outside the graph, a deleted file, and a database or infrastructure definition, a declaration that selects at least one test also replaces the full-suite fallback.
+
+Some changes still run the full suite whatever `inputs` says, because they change how every test runs: test-runner and tool configuration, `package.json` and workspace manifests, lockfiles and CI workflows. So does a declaration whose `tests` match no test file, and so does any edit to `diffci.json` itself, so a change cannot narrow its own selection.
+
 ## Interpret the result
 
 - A full-validation fallback means DiffCI could not justify a smaller selection for that change. Run the repository's normal tests.
@@ -175,11 +192,11 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency or edit `scripts` or `exports` in `packages/a/package.json` (a `version` bump is narrowed) | No |
 | `Lockfile changed; full validation required` | Regenerate `pnpm-lock.yaml` after changing its `settings` | No |
 | `CI workflow definition(s) changed; full validation required` | Change a step in `.github/workflows/ci.yml` that runs `npm test` | No |
-| `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | No |
-| `Database definition(s) changed; full validation required` | Add a file under `migrations/` | No |
+| `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | Yes: declare it in `inputs` |
+| `Database definition(s) changed; full validation required` | Add a file under `migrations/` | Yes: declare it in `inputs` |
 | `Language/framework configuration changed: …` | Edit `go.mod` or `pom.xml` | No |
-| `Unknown changed file: …` | Change a file type no adapter models, such as `data.bin` read at runtime | No |
-| `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | No |
+| `Unknown changed file: …` | Change a file type no adapter models, such as `data.bin` read at runtime | Yes: declare it in `inputs` |
+| `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | Yes: declare it in `inputs` |
 | `Lockfile readers could not be resolved: …; full validation required` | Change `yarn.lock` while repository code reads it in a way DiffCI cannot trace | No |
 
 ### Dependencies
@@ -204,7 +221,9 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | `Repository declares … but no test files were discovered; full validation required` | `jest` is a dependency but every test lives under a directory DiffCI does not search | No |
 | `Changed test selection invariant violated: … directly changed test(s) not selected (…)` | Edit a test file DiffCI could not attach to the suite (an internal error) | No |
 | `Deleted test …; legacy coverage/dependents cannot be established safely` | Delete `src/a.test.ts` | No |
-| `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.ts` | No |
+| `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.ts` | Yes: declare it in `inputs` |
+| `Declared input … selects no tests; full validation required` | `inputs` names the changed file, but its `tests` globs match no test file | Fix: point `tests` at existing tests |
+| `Invalid inputs: each entry needs non-empty files and tests glob lists` | `"inputs": [{ "files": ["fixtures/**"] }]` | Fix: give every entry `files` and `tests` |
 | `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json` | No |
 | `Unsupported … …; root-relative test discovery requires full validation` | Set `root: "./src"` in `vitest.config.ts` or `rootDir` in `jest.config.js` | No |
 | `Multiple runner configurations require completely understood explicit test includes; full validation required` | Keep both `vitest.config.ts` and `jest.config.js` without explicit `include`/`testMatch` | No |

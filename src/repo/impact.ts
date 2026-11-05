@@ -267,6 +267,33 @@ export class ImpactAnalyzer {
   private runtimeTestSelection = false;
   private unresolved: readonly UnresolvedDependency[] = [];
   private walkerTests: string[] | undefined;
+  private knownTests: string[] | undefined;
+  private declaredCovered = new Set<string>();
+
+  /** Test files known to the graph: nodes matching the profile's test globs or the test-file matcher. */
+  private knownTestPaths(profile: RepositoryProfile, graph: DependencyGraph): string[] {
+    if (this.knownTests) return this.knownTests;
+    const known = new Set<string>();
+    for (const testLocation of profile.tests) {
+      for (const node of graph.nodes) {
+        if (matchesTestGlob(node.path, testLocation.glob) || this.isTestFile(node.path)) known.add(node.path);
+      }
+    }
+    this.knownTests = [...known].sort();
+    return this.knownTests;
+  }
+
+  /**
+   * The tests the repository's declared inputs (src/repo/repo-config.ts, `inputs`) select for a changed
+   * path, or undefined when no declaration names the path (2026-11-05). An empty array means a declaration
+   * names it but its `tests` globs match nothing: a stale declaration, which must not stand in for evidence.
+   */
+  private declaredTests(path: string, profile: RepositoryProfile, graph: DependencyGraph): string[] | undefined {
+    const inputs = (profile.diffciConfig?.inputs ?? []).filter((input) => input.files.some((glob) => matchesTestGlob(path, glob)));
+    if (inputs.length === 0) return undefined;
+    const globs = inputs.flatMap((input) => input.tests);
+    return this.knownTestPaths(profile, graph).filter((test) => globs.some((glob) => matchesTestGlob(test, glob)));
+  }
 
   /** Dependents whose tests a change to `path` can affect. When the graph allows runtime selection
    * (DependencyGraphResult.runtimeTestSelection) an `import type` edge selects only type tests. */
@@ -298,6 +325,8 @@ export class ImpactAnalyzer {
     this.testPhases = new Set();
     this.workersOutsideSuite = undefined;
     this.walkerTests = undefined;
+    this.knownTests = undefined;
+    this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
     this.unresolved = graphResult.unresolved ?? [];
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
@@ -345,6 +374,18 @@ export class ImpactAnalyzer {
       if (allChangePaths(file).some((path) => /(?:^|\/)(?:diffci\.json|go\.(?:mod|sum|work)|go\.work\.sum|(?:vite|vue|nuxt)\.config\.[^/]+)$/.test(path))) {
         fallbackReasons.push(`Language/framework configuration changed: ${file.path}`);
       }
+    }
+
+    // Declared inputs (2026-11-05): a changed path a declaration names, with at least one test behind it,
+    // is covered - its tests are selected below instead of the unknown-file or database/infrastructure
+    // fallback. A declaration whose tests match nothing is stale and falls back.
+    for (const path of new Set(delta.files.flatMap(allChangePaths))) {
+      const tests = this.declaredTests(path, profile, graph);
+      if (tests === undefined) continue;
+      if (tests.length > 0) { this.declaredCovered.add(path); continue; }
+      const message = `Declared input ${path} selects no tests; full validation required`;
+      riskSignals.push({ level: "critical", reason: "DECLARED_INPUT", message, paths: [path] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
     }
 
     this.applyGlobalRiskRules(delta, riskSignals, fallbackReasons);
@@ -472,6 +513,12 @@ export class ImpactAnalyzer {
           // A wrangler config cannot reach a suite that never runs a Worker; processChangedPath resolves
           // its readers instead (2026-10-29).
           paths = paths.filter((path) => !isWorkerConfig(path));
+          if (paths.length === 0) continue;
+        }
+        if ((rule.signal === "infrastructure" || rule.signal === "database") && paths.length > 0) {
+          // A database or deployment definition the repository declared inputs for selects those tests in
+          // processChangedPath. Configuration, manifests, lockfiles and workflows stay global (2026-11-05).
+          paths = paths.filter((path) => !this.declaredCovered.has(path));
           if (paths.length === 0) continue;
         }
         const message = paths.length === 0 ? rule.message
@@ -673,6 +720,12 @@ export class ImpactAnalyzer {
     riskSignals: ImpactRiskSignal[],
     fallbackReasons: string[],
   ): void {
+    // Declared inputs add their tests to whatever the graph finds. For a covered path they also stand in
+    // for the reader evidence whose absence would otherwise fall back below (2026-11-05).
+    for (const test of this.declaredTests(changedPath, profile, graph) ?? []) {
+      this.addAffectedTest(changedPath, test, graph, affectedTests, "DECLARED_INPUT", evidence);
+    }
+    const covered = this.declaredCovered.has(changedPath);
     // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
     // Traverse it before generic unknown/docs classification can discard the dependency.
     if (this.goEmbedPaths.has(changedPath)) {
@@ -731,6 +784,7 @@ export class ImpactAnalyzer {
       const specifiersOnly = changedPath === "package.json" && this.packageJsonSpecifiersOnly;
       const options = specifiersOnly ? { allowNoReaders: true, implicitReadersUnresolvable: true } : {};
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)) return;
+      if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -745,6 +799,7 @@ export class ImpactAnalyzer {
       // and require nothing, which is a silent skip; it now needs reader evidence like any other
       // non-code file (2026-10-21).
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -754,6 +809,7 @@ export class ImpactAnalyzer {
     if (isAssetFilePath(changedPath)) {
       if (removed && !hasNode(graph, changedPath)) {
         if (this.resolveRemovedFile(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+        if (covered) return;
         const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
         evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
         riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
@@ -765,6 +821,7 @@ export class ImpactAnalyzer {
     }
     if (category === "infrastructure" && isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite()) {
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -782,6 +839,7 @@ export class ImpactAnalyzer {
       // its readers are resolved like any other non-code file. A deployment definition that names it
       // (wrangler.*, Dockerfile) runs it without naming anything a test would, so that stays global.
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { implicitReadersUnresolvable: true })) return;
+      if (covered) return;
       const message = `Infrastructure code ${changedPath} is outside the dependency graph; full validation required`;
       evidence.push(makeEvidence("INFRASTRUCTURE_GLOBAL", changedPath, message));
       riskSignals.push({ level: "critical", reason: "INFRASTRUCTURE_GLOBAL", message, paths: [changedPath] });
@@ -794,6 +852,7 @@ export class ImpactAnalyzer {
     }
     if (changedImpact.file.changeType === "deleted" && !hasNode(graph, changedPath)) {
       if (this.resolveRemovedFile(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (covered) return;
       const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
       evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
       riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
@@ -1213,16 +1272,8 @@ export class ImpactAnalyzer {
     graphRuntimeTests: readonly string[],
   ): void {
     const alwaysRunPaths = new Set<string>([...(profile.vueTypeTestPaths ?? []), ...(profile.vueRuntimeAlwaysRunPaths ?? []), ...graphRuntimeTests]);
-    const knownTestPaths = new Set<string>();
-    for (const testLocation of profile.tests) {
-      for (const node of graph.nodes) {
-        if (matchesTestGlob(node.path, testLocation.glob) || this.isTestFile(node.path)) {
-          knownTestPaths.add(node.path);
-        }
-      }
-    }
     for (const check of [...this.alwaysRunChecks, ...alwaysRunChecksFromProfile(profile)]) {
-      for (const path of knownTestPaths) {
+      for (const path of this.knownTestPaths(profile, graph)) {
         if (check.patterns.some((pattern) => pattern.test(path))) { alwaysRunPaths.add(path); continue; }
         if (check.globs?.some((glob) => matchesTestGlob(path, glob))) alwaysRunPaths.add(path);
       }
