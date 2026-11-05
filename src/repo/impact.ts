@@ -783,18 +783,9 @@ export class ImpactAnalyzer {
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       return;
     }
-    if (category === "test-fixture") {
-      // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
-      // degrades to the unknown-file fallback below rather than being silently dropped.
-      const ownership = resolveTestFixtureOwners(changedPath, this.isTestFile, this.repositoryFiles);
-      if (ownership) {
-        for (const owner of ownership.owners) {
-          this.addAffectedTest(changedPath, owner, graph, affectedTests, "TEST_FIXTURE_OWNER", evidence);
-        }
-        evidence.push(makeEvidence("TEST_FIXTURE_OWNER", changedPath, `Test fixture ${changedPath} under ${ownership.fixtureDir} is owned by ${ownership.owners.length} test(s) in ${ownership.testsDir} (${ownership.scope})`));
-        return;
-      }
-    }
+    // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
+    // degrades to the unknown-file fallback below rather than being silently dropped.
+    if (category === "test-fixture" && this.claimFixture(changedPath, graph, affectedTests, evidence)) return;
     if (category === "unknown" || category === "test-fixture") {
       // A package.json edit limited to dependency requests is covered by dependency selection, like
       // the lockfile above, so finding no reader is not a gap. Tooling that loads a file naming it
@@ -815,7 +806,10 @@ export class ImpactAnalyzer {
     if (isAssetFilePath(changedPath) && !hasNode(graph, changedPath) && !removed && !isDocumentationFile(changedPath, this.layout) && !isLockfile(changedPath)) {
       // An asset no module imports can still be read from disk by a test. It used to select nothing
       // and require nothing, which is a silent skip; it now needs reader evidence like any other
-      // non-code file (2026-10-21).
+      // non-code file (2026-10-21). Assets (`.json`, `.txt`) are classified before fixture ownership is
+      // tried, so a fixture no module imports is claimed here (2026-11-05: LobeHub's
+      // src/spawn/__fixtures__/copilotAcp/handshake.json beside the spawn tests).
+      if (this.claimFixture(changedPath, graph, affectedTests, evidence)) return;
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
       if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
@@ -878,6 +872,15 @@ export class ImpactAnalyzer {
       return;
     }
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+  }
+
+  /** Selects the tests that own `path` as a test fixture (src/repo/test-fixture-ownership.ts), if any do. */
+  private claimFixture(path: string, graph: DependencyGraph, affectedTests: Map<string, TestImpact>, evidence: ImpactEvidence[]): boolean {
+    const ownership = resolveTestFixtureOwners(path, this.isTestFile, this.repositoryFiles);
+    if (!ownership) return false;
+    for (const owner of ownership.owners) this.addAffectedTest(path, owner, graph, affectedTests, "TEST_FIXTURE_OWNER", evidence);
+    evidence.push(makeEvidence("TEST_FIXTURE_OWNER", path, `Test fixture ${path} under ${ownership.fixtureDir} is owned by ${ownership.owners.length} test(s) in ${ownership.testsDir} (${ownership.scope})`));
+    return true;
   }
 
   /**

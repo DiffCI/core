@@ -119,3 +119,18 @@ describe("files gone at HEAD", () => {
     assert.deepEqual(selected(impact), ["tests/button.test.ts", "tests/styles.test.ts"]);
   });
 });
+
+describe("asset fixtures", () => {
+  it("claims a JSON fixture beside its tests before resolving readers", async () => {
+    const start = {
+      ...base,
+      "src/spawn/run.ts": "export const run = 1;\n",
+      "src/spawn/run.test.ts": "import { run } from './run';\nexport { run };\n",
+      "src/spawn/__fixtures__/acp/handshake.json": "{ \"v\": 1 }\n",
+      ".github/actions/build/action.yml": "runs:\n  using: composite\n  steps:\n    - run: ls ./src/\n      shell: bash\n",
+    };
+    const impact = await analyzeChange({ "src/spawn/__fixtures__/acp/handshake.json": "{ \"v\": 2 }\n" }, start);
+    assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("\n"));
+    assert.deepEqual(selected(impact), ["src/spawn/run.test.ts"]);
+  });
+});
