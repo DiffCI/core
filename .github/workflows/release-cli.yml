@@ -74,11 +74,18 @@ jobs:
           }
           # Deploy keys are free on GitLab.com; project access tokens need Premium.
           key="$RUNNER_TEMP/gitlab_deploy_key"
-          printf '%s\n' "$GITLAB_DEPLOY_KEY" > "$key"
+          # A key pasted on Windows carries CRs, which OpenSSH rejects as an invalid key.
+          printf '%s\n' "$GITLAB_DEPLOY_KEY" | tr -d '\r' > "$key"
           chmod 0600 "$key"
           # gitlab.com's published ED25519 host key (SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8).
           echo "gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf" > "$RUNNER_TEMP/gitlab_known_hosts"
           export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/gitlab_known_hosts"
+          # The public fingerprint is safe to log and must match the deploy key's in GitLab's settings.
+          fingerprint=$(ssh-keygen -y -f "$key" | ssh-keygen -lf - | awk '{print $2}') || {
+            echo "DIFFCI_GITLAB_DEPLOY_KEY is not a valid unencrypted OpenSSH private key." >&2
+            exit 1
+          }
+          echo "Deploy key fingerprint: $fingerprint"
           # Checked before npm, tags, or registry state can advance, like the product dispatch token.
           # A throwaway branch proves write access; the catalog pipeline runs on tags only.
           git clone --quiet --depth 1 git@gitlab.com:diffci/diffci.git "$RUNNER_TEMP/catalog"
@@ -281,7 +288,8 @@ jobs:
           version=$(node -p "require('./packages/diffci-cli/package.json').version")
           grep -Fq "default: \"$version\"" integrations/gitlab/templates/observe/template.yml
           key="$RUNNER_TEMP/gitlab_deploy_key"
-          printf '%s\n' "$GITLAB_DEPLOY_KEY" > "$key"
+          # A key pasted on Windows carries CRs, which OpenSSH rejects as an invalid key.
+          printf '%s\n' "$GITLAB_DEPLOY_KEY" | tr -d '\r' > "$key"
           chmod 0600 "$key"
           # gitlab.com's published ED25519 host key (SHA256:eUXGGm1YGsMAS7vkcx6JOJdOGHPem5gQp4taiCfCLB8).
           echo "gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAfuCHKVTjquxvt6CM6tdG4SLp1Btn/nOeHHE5UOzRdf" > "$RUNNER_TEMP/gitlab_known_hosts"
