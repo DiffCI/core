@@ -31,10 +31,16 @@
     "url": "https://github.com/DiffCI/core/issues"
   },
   "homepage": "https://diffci.com/",
-  "funding": {
-    "type": "github",
-    "url": "https://github.com/sponsors/DiffCI"
-  },
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/DiffCI"
+    },
+    {
+      "type": "thanks.dev",
+      "url": "https://thanks.dev/u/gh/diffci"
+    }
+  ],
   "private": false,
   "publishConfig": {
     "access": "public"

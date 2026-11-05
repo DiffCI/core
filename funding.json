@@ -39,6 +39,18 @@
   "funding": {
     "channels": [
       {
+        "guid": "github-sponsors",
+        "type": "payment-provider",
+        "address": "https://github.com/sponsors/DiffCI",
+        "description": "One-time or monthly sponsorship through GitHub Sponsors."
+      },
+      {
+        "guid": "thanks-dev",
+        "type": "payment-provider",
+        "address": "https://thanks.dev/u/gh/diffci",
+        "description": "Dependency-based funding through thanks.dev for organisations that use DiffCI."
+      },
+      {
         "guid": "grant",
         "type": "other",
         "address": "",
