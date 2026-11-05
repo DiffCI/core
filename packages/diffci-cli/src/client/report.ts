@@ -222,6 +222,9 @@ export interface ObservationResult {
    * are commands and are not redacted. */
   testPhases?: string[];
   fallbackReasons: string[];
+  /** For each changed file whose readers could not be resolved, every blocker with the readers leading to it.
+   * Like `fallbackReasons`, these name repository paths. Present only on a fallback. */
+  fallbackDetails?: Record<string, string[]>;
   /** The command DiffCI would have run. Present even in observe mode - it is the claim being tested. */
   proposedCommands: string[];
   /** Workspace execution can widen affected files to whole state-sharing suites. */

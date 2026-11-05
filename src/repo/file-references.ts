@@ -173,6 +173,10 @@ export interface ReferenceResolution {
   code: string[];
   /** Why the file cannot be narrowed; empty when it can. */
   unresolvable: string[];
+  /** Each unresolvable reason with the readers leading to it, from the changed file to the file it was
+   * found through. Every blocker of the level where the first one appeared is reported, not only the first,
+   * so one run explains a fallback that used to take one fix per blocker to uncover (2026-11-05). */
+  blockers: Array<{ reason: string; chain: string[] }>;
   /** Every reader found, for evidence. */
   readers: Array<{ path: string; kind: ReaderKind; via: string }>;
   /** Phases of the root test script, verbatim, that run a reader directly; the caller must run them.
@@ -483,7 +487,10 @@ function packageJsonNames(content: string, pattern: RegExp, target: string, ance
 
 /** Resolves who reads `filePath`. See the module comment for the rule and its limits. */
 export function resolveFileReferences(filePath: string, input: ReferenceResolutionInput): ReferenceResolution {
-  const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], readers: [], phases: [] };
+  const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], blockers: [], readers: [], phases: [] };
+  const parent = new Map<string, string>();
+  const chainOf = (path: string) => { const chain = [path]; while (parent.has(chain[0]!)) chain.unshift(parent.get(chain[0]!)!); return chain; };
+  const block = (reason: string, through: string) => { resolution.unresolvable.push(reason); resolution.blockers.push({ reason, chain: chainOf(through) }); };
   const phases = new Set<string>();
   const tests = new Set<string>();
   const code = new Set<string>();
@@ -508,23 +515,23 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         if (base === "package.json") {
           const content = read(candidate);
           if (content === undefined) {
-            if (input.allowNoReaders) resolution.unresolvable.push(`${candidate} could not be read`);
+            if (input.allowNoReaders) block(`${candidate} could not be read`, target.path);
             continue;
           }
           const named = packageJsonNames(content, pattern, target.path, ancestors, posix.dirname(candidate));
           if (named === "no") continue;
           visited.add(candidate);
-          if (named === "unparseable") { resolution.unresolvable.push(`${candidate} could not be parsed`); continue; }
+          if (named === "unparseable") { block(`${candidate} could not be parsed`, target.path); continue; }
           resolution.readers.push({ path: candidate, kind: "package-script", via: target.path });
           const direct = input.testPhases && candidate === "package.json" ? directTestPhases(content, target.path, pattern, ancestors) : undefined;
           if (direct) { for (const phase of direct) phases.add(phase); continue; }
-          resolution.unresolvable.push(`${candidate} runs ${target.path} as part of its test script`);
+          block(`${candidate} runs ${target.path} as part of its test script`, target.path);
           continue;
         }
         if (input.isDocumentation(candidate)) continue;
         const content = read(candidate);
         if (content === undefined && input.allowNoReaders && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate) || isImplicitlyLoadedFile(candidate))) {
-          resolution.unresolvable.push(`${candidate} could not be read`);
+          block(`${candidate} could not be read`, target.path);
           continue;
         }
         if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors)) continue;
@@ -536,7 +543,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           resolution.readers.push({ path: candidate, kind: "documentation", via: target.path });
         } else if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
           resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
-          resolution.unresolvable.push(`${candidate} is loaded by tooling and names ${target.path}`);
+          block(`${candidate} is loaded by tooling and names ${target.path}`, target.path);
         } else if (candidate.startsWith(".github/")) {
           // A workflow step that comes before a test step in its job, or a composite action, may feed
           // the file to the suite's environment; issue templates and standalone CI checks do not.
@@ -546,7 +553,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
             || (/^\.github\/workflows\//.test(candidate) && !input.contentCleared?.has(target.path) && input.workflowFeedsTests(content, (text) => contentNamesPath(text, candidate, target.path, pattern, ancestors)));
           if (!executes) continue;
           resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
-          resolution.unresolvable.push(`${candidate} names ${target.path}`);
+          block(`${candidate} names ${target.path}`, target.path);
         } else if (input.isCodeFile(candidate) && input.isTestFile(candidate)) {
           resolution.readers.push({ path: candidate, kind: "test", via: target.path });
           tests.add(candidate);
@@ -555,7 +562,8 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           code.add(candidate);
         } else if (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate)) {
           resolution.readers.push({ path: candidate, kind: "transitive", via: target.path });
-          if (++transitiveCount > MAX_TRANSITIVE_READERS) { resolution.unresolvable.push(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`); break; }
+          if (++transitiveCount > MAX_TRANSITIVE_READERS) { block(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`, target.path); break; }
+          parent.set(candidate, target.path);
           next.push({ path: candidate, via: target.path });
         } else {
           // Markup, prose, images and licences name paths in links and URLs but execute nothing and
@@ -563,20 +571,20 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           resolution.readers.push({ path: candidate, kind: "documentation", via: target.path });
         }
       }
-      if (resolution.unresolvable.length > 0) break;
+      if (transitiveCount > MAX_TRANSITIVE_READERS) break;
     }
     if (resolution.unresolvable.length > 0) break;
     frontier = next;
   }
   if (resolution.unresolvable.length === 0 && frontier.length > 0) {
-    resolution.unresolvable.push(`reference chain from ${filePath} is deeper than ${MAX_DEPTH} files`);
+    block(`reference chain from ${filePath} is deeper than ${MAX_DEPTH} files`, filePath);
   }
   // Found readers that something could run (check scripts, manifests), none of which any test, test
   // script or test-feeding workflow step reaches: the suite cannot observe the file. Finding no such
   // reader at all is different - the file's reader is unknown, so it stays unknown.
   const executableReaders = resolution.readers.some((reader) => reader.kind === "transitive");
   if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !input.allowNoReaders && !input.removed && !loadedOnlyOutsideTests(filePath, input, read)) {
-    resolution.unresolvable.push(`no test or source file names ${filePath}`);
+    block(`no test or source file names ${filePath}`, filePath);
   }
   resolution.phases = resolution.unresolvable.length === 0 ? [...phases].sort() : [];
   resolution.tests = [...tests].sort();

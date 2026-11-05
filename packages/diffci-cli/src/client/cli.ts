@@ -570,6 +570,10 @@ function summarise(report: ObservationReport, executionFollows = false): string 
     lines.push(`  graph: ${result.graph.nodes} nodes, confidence ${result.graph.effectiveConfidence ?? result.graph.confidence}`);
     if (result.fallbackReasons.length > 0) {
       lines.push(`  fallback: ${result.fallbackReasons.join("; ")}`);
+      for (const [path, blockers] of Object.entries(result.fallbackDetails ?? {})) {
+        lines.push(`  why ${path} is unknown:`);
+        for (const blocker of blockers) lines.push(`    - ${blocker}`);
+      }
     }
     for (const command of result.proposedCommands) lines.push(`  would have run: ${command}`);
     if (result.commandRefusalReason) lines.push(`  no command: ${result.commandRefusalReason}`);

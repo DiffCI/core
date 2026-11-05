@@ -222,6 +222,8 @@ Some changes still run the full suite whatever `inputs` says, because they chang
 
 Each reason below is a message `check`, `observe` and `plan` can print when they fall back to the full suite. `…` stands for the part that changes per run, usually a path, package name or count. A reason that comes from a test-runner config or a workspace package starts with that file or package path. **Narrow** says whether a `diffci.json` (or `diffci` key in `package.json`) setting can avoid the fallback. "Fix" means the fallback comes from an invalid setting, and correcting it removes the fallback.
 
+For `Unknown changed file` and `Deleted source/asset`, `observe --json` also returns `fallbackDetails`: for each such file, every reader DiffCI could not resolve, with the files that lead to it (`.github/actions/a/action.yml names scripts/load.sh (via scripts/load.sh)` means the action runs a script that reads the changed file). The human report prints them under `why … is unknown`.
+
 ### Repository-wide changes
 
 | Reason | Example change | Narrow |
@@ -260,7 +262,7 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | `Repository declares … but no test files were discovered; full validation required` | `jest` is a dependency but every test lives under a directory DiffCI does not search | No |
 | `Changed test selection invariant violated: … directly changed test(s) not selected (…)` | Edit a test file DiffCI could not attach to the suite (an internal error) | No |
 | `Deleted test …; legacy coverage/dependents cannot be established safely` | Delete `src/a.test.ts` | No |
-| `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.ts` | Yes: declare it in `inputs` |
+| `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.css` while an unchanged `src/app.tsx` still imports it, or while a workflow step names it (renamed or deleted files whose importers all changed are narrowed) | Yes: declare it in `inputs` |
 | `Declared input … selects no tests; full validation required` | `inputs` names the changed file, but its `tests` globs match no test file | Fix: point `tests` at existing tests |
 | `Invalid inputs: each entry needs non-empty files and tests glob lists` | `"inputs": [{ "files": ["fixtures/**"] }]` | Fix: give every entry `files` and `tests` |
 | `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json` | No |

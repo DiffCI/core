@@ -267,6 +267,8 @@ export class ImpactAnalyzer {
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
   private unresolved: readonly UnresolvedDependency[] = [];
+  /** Why each changed file the reference resolver could not narrow is unresolvable, for fallbackDetails. */
+  private referenceBlockers = new Map<string, string[]>();
   private walkerTests: string[] | undefined;
   private knownTests: string[] | undefined;
   private declaredCovered = new Set<string>();
@@ -330,6 +332,7 @@ export class ImpactAnalyzer {
     this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
     this.unresolved = graphResult.unresolved ?? [];
+    this.referenceBlockers = new Map();
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
     this.compiledProjectCache = undefined;
     // One read per file per analysis, however many changed files ask who reads them.
@@ -489,11 +492,22 @@ export class ImpactAnalyzer {
       riskSignals: dedupedRiskSignals,
       fallbackRequired,
       fallbackReasons,
+      ...(fallbackRequired && this.referenceBlockers.size ? { fallbackDetails: this.fallbackDetails(fallbackReasons) } : {}),
       analysisStatus,
       effectiveGraphConfidence,
       evidence: evidence.sort((a, b) => { const c = a.changedFile.localeCompare(b.changedFile); if (c !== 0) return c; return a.message.localeCompare(b.message); }),
       performance: { durationMs: Number(process.hrtime.bigint() - start) / 1_000_000 },
     };
+  }
+
+  /** Blockers of each file a fallback reason names, at most 20 files and 10 blockers each. */
+  private fallbackDetails(fallbackReasons: readonly string[]): Record<string, string[]> {
+    const details: Record<string, string[]> = {};
+    for (const [path, blockers] of [...this.referenceBlockers].sort(([a], [b]) => a.localeCompare(b))) {
+      if (Object.keys(details).length >= 20) break;
+      if (fallbackReasons.some((reason) => reason.includes(path))) details[path] = blockers.slice(0, 10);
+    }
+    return details;
   }
 
   private applyGlobalRiskRules(delta: GitDelta, riskSignals: ImpactRiskSignal[], fallbackReasons: string[]): void {
@@ -890,7 +904,9 @@ export class ImpactAnalyzer {
     // Conservative: any unresolved import whose last segment could name the file blocks, wherever it is.
     const importer = this.unresolved.find((ref) => !ref.computed && names.has(posix.basename(ref.specifier.split(/[?#]/)[0]!)));
     if (importer) {
-      evidence.push(makeEvidence("UNKNOWN_FILE", removedPath, `${importer.importer} imports ${importer.specifier}, which may have resolved to the removed ${removedPath}`));
+      const blocker = `${importer.importer} imports ${importer.specifier}, which may have resolved to the removed ${removedPath}`;
+      evidence.push(makeEvidence("UNKNOWN_FILE", removedPath, blocker));
+      this.referenceBlockers.set(removedPath, [blocker]);
       return false;
     }
     if (!this.resolveByReference(removedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { implicitReadersUnresolvable: true, removed: true })) return false;
@@ -971,7 +987,9 @@ export class ImpactAnalyzer {
       workerConfigsOutsideSuite: this.workerConfigsOutsideSuite(),
     });
     if (resolution.unresolvable.length > 0) {
-      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, `References to ${changedPath} could not be resolved: ${resolution.unresolvable[0]}`));
+      const blockers = resolution.blockers.map(({ reason, chain }) => chain.length > 1 ? `${reason} (via ${chain.slice(1).join(" <- ")})` : reason);
+      this.referenceBlockers.set(changedPath, blockers);
+      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, `References to ${changedPath} could not be resolved: ${blockers.slice(0, 5).join("; ")}${blockers.length > 5 ? `; and ${blockers.length - 5} more` : ""}`));
       return false;
     }
     for (const reader of resolution.readers) {

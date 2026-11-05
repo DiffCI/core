@@ -328,6 +328,8 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
     const outsidePlan = outsideSuite.length ? planSelectiveTestCommands(profile, outsideSuite) : undefined;
 
     markPhase("impactAndCommands");
+    // Newer than some bundled engines, which never return it.
+    const fallbackDetails = (impact as { fallbackDetails?: Record<string, string[]> }).fallbackDetails;
     return finish("OBSERVED", "complete", {
       result: {
         mode: impact.fallbackRequired ? "FULL" : "SELECTIVE",
@@ -343,6 +345,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
           outsideSuiteCommands: outsidePlan?.refusalReason ? [] : (outsidePlan?.commands ?? []).map(commandSpecToString),
         } : {}),
         fallbackReasons: impact.fallbackReasons,
+        ...(fallbackDetails ? { fallbackDetails } : {}),
         proposedCommands: (commandPlan?.commands ?? []).map(commandSpecToString),
         ...(impact.testPhases?.length ? { testPhases: [...impact.testPhases] } : {}),
         workspaceCommands: Boolean(profile.workspaceTestPackages?.length),

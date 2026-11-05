@@ -165,6 +165,24 @@ describe("resolveFileReferences", () => {
   });
 });
 
+describe("fallback blockers", () => {
+  it("reports every blocker of the level where the first appeared, each with the readers leading to it", () => {
+    const action = (line: string) => `runs:\n  using: composite\n  steps:\n    - run: ${line}\n      shell: bash\n`;
+    const resolution = resolveFileReferences("data/seed.json", input({
+      "data/seed.json": "{}",
+      "scripts/load.sh": "cat data/seed.json",
+      "tools/list.json": `{ "files": ["data/seed.json"] }`,
+      ".github/actions/a/action.yml": action("bash scripts/load.sh"),
+      ".github/actions/b/action.yml": action("jq . tools/list.json"),
+    }));
+    assert.deepEqual(resolution.blockers.map((b) => [b.reason, b.chain]).sort(), [
+      [".github/actions/a/action.yml names scripts/load.sh", ["data/seed.json", "scripts/load.sh"]],
+      [".github/actions/b/action.yml names tools/list.json", ["data/seed.json", "tools/list.json"]],
+    ]);
+    assert.deepEqual(resolution.unresolvable.sort(), resolution.blockers.map((b) => b.reason).sort());
+  });
+});
+
 describe("workflowFeedsTests", () => {
   const names = /data\.json/;
   const job = (steps: string, extra = "") => `on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n${extra}    steps:\n${steps}`;

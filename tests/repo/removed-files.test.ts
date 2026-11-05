@@ -52,6 +52,20 @@ async function analyzeChange(head: Record<string, string | null>, start: Record<
 
 const selected = (impact: ImpactResult) => impact.affectedTests.map((test) => test.path).sort();
 
+describe("fallback details", () => {
+  it("explains an unknown file with every blocker and the readers leading to it", async () => {
+    const action = "runs:\n  using: composite\n  steps:\n    - run: bash scripts/load.sh\n      shell: bash\n";
+    const impact = await analyzeChange({ "data/seed.json": "{ \"v\": 2 }\n" }, {
+      ...base,
+      "data/seed.json": "{ \"v\": 1 }\n",
+      "scripts/load.sh": "cat data/seed.json\n",
+      ".github/actions/load/action.yml": action,
+    });
+    assert.equal(impact.fallbackRequired, true);
+    assert.deepEqual(impact.fallbackDetails, { "data/seed.json": [".github/actions/load/action.yml names scripts/load.sh (via scripts/load.sh)"] });
+  });
+});
+
 describe("files gone at HEAD", () => {
   it("narrows a CSS module renamed to plain CSS when its importer moved to the new name", async () => {
     // A composite action naming `src` is an unresolvable reader of every file below it, so the old path
