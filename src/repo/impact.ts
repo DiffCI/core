@@ -258,6 +258,7 @@ export class ImpactAnalyzer {
   private contentCleared: ReadonlySet<string> = new Set();
   private dependencyLockfile: string | undefined;
   private packageJsonSpecifiersOnly = false;
+  private specifiersOnlyManifests: ReadonlySet<string> = new Set();
   private readRepositoryFile: ((path: string) => string | undefined) | undefined;
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
@@ -346,6 +347,7 @@ export class ImpactAnalyzer {
     this.contentCleared = referenceResolved;
     this.dependencyLockfile = delta.analysis.dependencyLockfile;
     this.packageJsonSpecifiersOnly = delta.analysis.packageJsonSpecifiersOnly === true;
+    this.specifiersOnlyManifests = new Set(delta.analysis.specifiersOnlyManifests ?? []);
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
@@ -797,7 +799,7 @@ export class ImpactAnalyzer {
       // A package.json edit limited to dependency requests is covered by dependency selection, like
       // the lockfile above, so finding no reader is not a gap. Tooling that loads a file naming it
       // still is (2026-11-02).
-      const specifiersOnly = changedPath === "package.json" && this.packageJsonSpecifiersOnly;
+      const specifiersOnly = (changedPath === "package.json" && this.packageJsonSpecifiersOnly) || this.specifiersOnlyManifests.has(changedPath);
       const options = specifiersOnly ? { allowNoReaders: true, implicitReadersUnresolvable: true } : {};
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)) return;
       if (covered) return;

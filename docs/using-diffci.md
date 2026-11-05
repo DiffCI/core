@@ -230,7 +230,7 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | --- | --- | --- |
 | `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts` or `.babelrc` | No |
 | `Dependency manifest changed; full validation required` | Add `peerDependencies` or `engines` to `package.json` | No |
-| `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency or edit `scripts` or `exports` in `packages/a/package.json` (a `version` bump is narrowed) | No |
+| `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency in `packages/a/package.json` while a lockfile governs it, or edit its `scripts` or `exports` (a `version` bump, and a dependency bump in a repository that commits no lockfile, are narrowed) | No |
 | `Lockfile changed; full validation required` | Regenerate `pnpm-lock.yaml` after changing its `settings` | No |
 | `CI workflow definition(s) changed; full validation required` | Change a step in `.github/workflows/ci.yml` that runs `npm test` | No |
 | `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | Yes: declare it in `inputs` |

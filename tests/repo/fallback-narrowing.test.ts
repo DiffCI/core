@@ -285,7 +285,8 @@ describe("workspace package manifests (LobeHub, 2026-11-03)", () => {
       const version = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released" }) });
       assert.deepEqual(version.fallbackReasons, []);
       const dependency = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" } }) });
-      assert.deepEqual(dependency.fallbackReasons, ["Workspace package manifest changed dependencies, scripts or resolution fields: packages/a/package.json; full validation required"]);
+      // No lockfile is committed, so the bump is attributed to `left`, which nothing imports.
+      assert.deepEqual(dependency.fallbackReasons, ["Dependency left changed and no repository source imports it; full validation required"]);
       const script = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" }, scripts: { build: "tsc -b" } }) });
       assert.equal(script.fallbackReasons.length, 1);
     } finally { rmSync(dir, { recursive: true, force: true }); }

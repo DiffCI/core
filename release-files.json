@@ -205,6 +205,7 @@
     "tests/repo/impact.test.ts",
     "tests/repo/language-adapters.test.ts",
     "tests/repo/layout.test.ts",
+    "tests/repo/lockfile-free-dependencies.test.ts",
     "tests/repo/removed-files.test.ts",
     "tests/repo/repo-config.test.ts",
     "tests/repo/runner-universe.test.ts",

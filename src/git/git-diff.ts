@@ -333,6 +333,7 @@ export function testListEdit(oldBody: string, newBody: string): { added: string[
 }
 
 const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
+const PACKAGE_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
 
 /** Exact root requests for the supported Classic layout. Unlike scriptRecord, never discard an
  * invalid dependency value: an omitted root would make the lockfile attribution incomplete. */
@@ -761,6 +762,53 @@ export async function analyzeGitDelta(
           if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
           if (packageChange!.specifiersOnly) analysis.packageJsonSpecifiersOnly = true;
         }
+      }
+    }
+    // 2026-11-05: without a committed lockfile every install resolves each request afresh, so an edit
+    // limited to dependency requests reaches only the packages whose request changed and what they
+    // install; importers of those packages are selected like a lockfile-attributed change. LobeHub ignores
+    // pnpm-lock.yaml, and each of its workspace dependency bumps ran the full suite. A lockfile that governs
+    // any changed manifest, a local (`workspace:`, `link:`, `file:`) request, a scripts edit, any other
+    // behavioral field, or a package-manager configuration change keeps the global signal.
+    const manifests = filesWithBinary.filter((f) => f.changeType === "modified" && posix.basename(f.path) === "package.json" && !f.path.split("/").includes("node_modules"));
+    const managerConfiguration = allPaths.some((path) => posix.basename(path) !== "package.json"
+      && (LOCKFILE.test(posix.basename(path)) || /^(?:\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|\.pnpmfile\.cjs|bunfig\.toml)$/.test(posix.basename(path))));
+    if (manifests.length > 0 && !manifests.some((f) => narrowed.has(f)) && !analysis.lockfileChanged && !managerConfiguration) {
+      const lockfileGoverns = (path: string) => {
+        for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
+          const prefix = dir === "." ? "" : `${dir}/`;
+          if (PACKAGE_LOCKFILES.some((name) => [baseSha, headSha].some((sha) => readFileAtSha(sha, prefix + name, repoPath) !== undefined))) return true;
+          if (dir === ".") return false;
+        }
+      };
+      const edits = manifests.map((file) => {
+        const before = readFileAtSha(baseSha, file.path, repoPath);
+        const after = readFileAtSha(headSha, file.path, repoPath);
+        const change = packageJsonChange(before, after);
+        const localChanged = change.changedDependencies.some((name) => [before, after].some((content) => {
+          try {
+            const json = JSON.parse(content ?? "") as Record<string, unknown>;
+            return [...DEPENDENCY_FIELDS].some((field) => /^(?:workspace|link|file|portal):/.test(scriptRecord(json[field])?.[name] ?? ""));
+          } catch { return true; }
+        }));
+        const eligible = change.kind !== "behavioral" && !localChanged
+          && JSON.stringify(parsePackageScripts(before)) === JSON.stringify(parsePackageScripts(after));
+        return { file, change, eligible };
+      });
+      if (edits.some((edit) => edit.change.kind === "dependencies") && edits.every((edit) => edit.eligible) && !manifests.some((f) => lockfileGoverns(f.path))) {
+        const names = new Set(analysis.changedDependencies ?? []);
+        const specifiersOnly: string[] = [];
+        for (const { file, change } of edits) {
+          for (const name of change.changedDependencies) names.add(name);
+          narrowed.add(file);
+          if (change.kind !== "metadata" && !referenceResolvedPaths.includes(file.path)) referenceResolvedPaths.push(file.path);
+          if (change.kind === "dependencies" && change.specifiersOnly) specifiersOnly.push(file.path);
+          if (file.path === "package.json" && change.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = change.testScriptAddedPaths;
+        }
+        analysis.dependencyManifestChanged = false;
+        analysis.changedDependencies = [...names].sort();
+        if (specifiersOnly.includes("package.json")) analysis.packageJsonSpecifiersOnly = true;
+        if (specifiersOnly.length > 0) analysis.specifiersOnlyManifests = specifiersOnly.sort();
       }
     }
     // 2026-11-03: a workspace package's package.json used to be an unknown file and a full run. One whose
