@@ -1,6 +1,6 @@
 # Design: GitLab CI/CD component
 
-Status: phase 0 shipped in CLI 0.3.26; phase 1 code and component in Core, not yet run on GitLab (2026-11-05). This is the GitLab version of the observer Action (`action.yml`,
+Status: phase 0 shipped in CLI 0.3.26; phase 1 shipped in CLI 0.3.28, listed in the GitLab CI/CD Catalog, and run on a GitLab test project with 0.3.29 (2026-11-05, see [First GitLab run](#first-gitlab-run-2026-11-05)). This is the GitLab version of the observer Action (`action.yml`,
 [github-action-observer.md](../github-action-observer.md)). It is the first integration outside GitHub.
 
 ## Goal
@@ -10,7 +10,7 @@ that GitHub users get from `DiffCI/core@<release>`:
 
 ```yaml
 include:
-  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.28
+  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.29
 ```
 
 What this does not do (same as the Action): it does not skip, cancel or reorder jobs, comment on
@@ -140,7 +140,7 @@ Choices that differ from the Action, and why:
 | Phase | Work | Check before the next phase |
 |---|---|---|
 | 0. Safety | The `.gitlab-ci.yml` fallback check and fix (section 2). Ship on its own. | A fixture that changes only `.gitlab-ci.yml` runs the full suite in `plan`, `verify` and enforce. |
-| 1. Observer | Context (section 1), report copy, the component, the catalog project, the release step. Done 2026-11-05: context, report copy, component and packaging check; the public catalog project `gitlab.com/diffci/diffci` (catalog resource on, no version yet); its tag pipeline (`integrations/gitlab/.gitlab-ci.yml`); and the `publish-gitlab-component` release job with its deploy-key preflight. Left: the `DIFFCI_GITLAB_DEPLOY_KEY` secret (a write deploy key; project access tokens need Premium on GitLab.com), the first CLI release with the GitLab context (the first catalog version), and a real run. Tests in `context.test.ts` for each row of the range table, merged-results pipeline included. | "Done means" 1–3 on a GitLab test project. |
+| 1. Observer | Context (section 1), report copy, the component, the catalog project, the release step. Done 2026-11-05: context, report copy, component and packaging check; the public catalog project `gitlab.com/diffci/diffci`; its tag pipeline (`integrations/gitlab/.gitlab-ci.yml`); the `publish-gitlab-component` release job with its deploy-key preflight (`DIFFCI_GITLAB_DEPLOY_KEY`, a write deploy key; project access tokens need Premium on GitLab.com); catalog version 0.3.28; and the first GitLab run below. Tests in `context.test.ts` for each row of the range table, merged-results pipeline included. | "Done means" 1–3 on a GitLab test project. |
 | 2. GitLab pipeline inference | Parse `.gitlab-ci.yml` in `src/ci-inference`: `include`, `extends`, `!reference`, `needs`, `rules:changes`, `parallel:matrix`. Then affected checks and the pipeline-impact plan work for GitLab repositories. | `plan` on a few public GitLab repositories names their real jobs, with blockers where config is dynamic. |
 | 3. Enforcement | GitLab has a native way to run only some jobs: a job writes a generated child pipeline and a `trigger: include: artifact:` job runs it. DiffCI writes the child pipeline from its plan and falls back to the full parent pipeline on any blocker. GitHub has no equivalent, so this could be the strongest enforcement integration DiffCI has. | A design partner on GitLab keeps it on. |
 
@@ -148,11 +148,35 @@ The Alliance Partner application comes after phase 1, with the catalog listing a
 as evidence. Phases 2 and 3 wait for a GitLab design partner, under the same rule as any other
 expansion in the strategy.
 
+## First GitLab run (2026-11-05)
+
+`jshttp/cookie` (MIT, a Stage 0 repository, Vitest, 4 spec files) imported into the private project
+`gitlab.com/diffci/observer-test-cookie`, with the four-line `include:` of `observe@0.3.29` on gitlab.com
+shared runners, with no dependency install. Each observer job took 34–40 s.
+
+| Check | Pipeline | Result |
+|---|---|---|
+| Push to the default branch changing `.gitlab-ci.yml` | 3031565112 | `OBSERVED`, event `push`, range `ddd20eb..c413958`, graph `COMPLETE`, FULL with "CI workflow definition(s) changed" ("done means" 3) |
+| Pushes to two non-default branches | none | No pipeline, as the component's `rules` intend |
+| Merge request !2, spec-only change | 3031568952 | `OBSERVED`, event `merge_request_event`, range `c413958..b5fe441` (target tip to source head), SELECTIVE: 1 of 4 specs (`src/stringify-cookie.spec.ts`) |
+| Merge request !3, `src/index.ts` change | 3031569095 | `OBSERVED`, event `merge_request_event`, range `c413958..c2e11e1`, SELECTIVE: 4 of 4 specs, since every spec imports `src/index.ts` |
+| Merge of !2 (default-branch push) | 3031572211 | `OBSERVED`, event `push`, range `c413958..07fb145`, SELECTIVE: 1 of 4 specs |
+
+"Done means" 1–3 hold, and every selective plan had no fallback reason. Two findings:
+
+- **0.3.28 planned FULL on every change** because its bundled TypeScript (5.9.3) rejected the repository's
+  TS 6 options (`"target": "es2025"`, `"lib": ["es2025"]`) and marked the graph `UNSAFE`. Core a5f1c26
+  (CLI 0.3.29) ignores that diagnostic when the project sets `module` or `moduleResolution`, which is
+  what turned this run selective. The 0.3.28 pipelines (3031262663, 3031284067, 3031290187) are in the
+  same project.
+- The merge request range reports `source: "pull-request-event"`, GitHub's term, on GitLab.
+
+The publish path also found three release problems, all fixed: a deploy key with a passphrase (generate
+it in Git Bash; PowerShell drops `-N ""`), GitLab account verification before any pipeline runs, and a
+422 on the catalog release from invalid component YAML (`tests/gitlab-component.test.ts` now parses it).
+
 ## Open questions
 
-1. **Test project.** DiffCI has no GitLab repository of its own. Options: import DentalPresence into a
-   private GitLab project, or import one of the Stage 0 public repositories. An import gives real
-   history to replay against.
-2. **Namespace.** Is `gitlab.com/diffci` free to register?
-3. **Self-managed GitLab.** Components work on self-managed instances, but the catalog is per
+1. **Namespace.** Settled: `gitlab.com/diffci` is DiffCI's group.
+2. **Self-managed GitLab.** Components work on self-managed instances, but the catalog is per
    instance. Document "copy the project" for now; not a release goal.
