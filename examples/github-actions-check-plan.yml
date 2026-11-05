@@ -28,7 +28,7 @@ jobs:
           ref: main # Pin to a reviewed revision containing check-plan.
           path: core
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
 
@@ -64,16 +64,19 @@ jobs:
           DIFFCI_JUNIT_FILE: ${{ runner.temp }}/junit.xml
         run: npm run test:junit
 
+      # No base report is supplied: skipped failures are possibleMisses, not proven new failures.
+      # Set --root to the runner root relative to target if it is not the repository root.
       - name: Compare failures even when the full suite failed
         if: ${{ !cancelled() && steps.plan.outcome == 'success' && (steps.full.outcome == 'success' || steps.full.outcome == 'failure') }}
         run: |
           node core/packages/diffci-cli/dist-client/src/client/cli.js check-plan \
+            --repo "$GITHUB_WORKSPACE/target" --root . \
             --plan "$RUNNER_TEMP/plan.json" --results "$RUNNER_TEMP/junit.xml" \
             > "$RUNNER_TEMP/comparison.json"
 
       - name: Retain comparison evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: diffci-plan-comparison
           path: |

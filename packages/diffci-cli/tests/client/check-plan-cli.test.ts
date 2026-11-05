@@ -80,8 +80,8 @@ describe("check-plan CLI", () => {
       assert.equal(report.schemaVersion, 1);
       assert.equal(report.mode, "SELECTIVE");
       assert.equal(report.fullFallback, false);
-      assert.deepEqual(report.summary, { failedTests: 3, missed: 1, selected: 1, unattributed: 1 });
-      assert.equal(report.missed.length, 1);
+      assert.deepEqual(report.summary, { failedTests: 3, missed: 0, preExisting: 0, possibleMisses: 1, selected: 1, unattributed: 1 });
+      assert.equal(report.possibleMisses.length, 1);
       assert.equal(report.selected.length, 1);
       assert.equal(report.unattributed.length, 1);
     });
@@ -94,7 +94,7 @@ describe("check-plan CLI", () => {
       assert.ifError(result.error);
       assert.equal(result.status, 0, result.stdout + result.stderr);
       assert.equal(result.stderr, "");
-      assert.deepEqual(JSON.parse(result.stdout).summary, { failedTests: 1, missed: 0, selected: 1, unattributed: 0 });
+      assert.deepEqual(JSON.parse(result.stdout).summary, { failedTests: 1, missed: 0, preExisting: 0, possibleMisses: 0, selected: 1, unattributed: 0 });
     });
   });
 
@@ -114,7 +114,7 @@ describe("check-plan CLI", () => {
         assert.ifError(result.error);
         assert.equal(result.status, 1, `${file}: ${result.stdout}${result.stderr}`);
         assert.equal(result.stderr, "", file);
-        assert.deepEqual(JSON.parse(result.stdout).summary, { failedTests: missed + unattributed, missed, selected: 0, unattributed }, file);
+        assert.deepEqual(JSON.parse(result.stdout).summary, { failedTests: missed + unattributed, missed: 0, preExisting: 0, possibleMisses: missed, selected: 0, unattributed }, file);
       }
     });
   });
@@ -130,8 +130,8 @@ describe("check-plan CLI", () => {
       const report = JSON.parse(result.stdout);
       assert.equal(report.mode, "FULL");
       assert.equal(report.fullFallback, true);
-      assert.deepEqual(report.summary, { failedTests: 2, missed: 0, selected: 1, unattributed: 1 });
-      assert.deepEqual(report.missed, []);
+      assert.deepEqual(report.summary, { failedTests: 2, missed: 0, preExisting: 0, possibleMisses: 0, selected: 1, unattributed: 1 });
+      assert.deepEqual(report.possibleMisses, []);
     });
   });
 
@@ -149,8 +149,49 @@ describe("check-plan CLI", () => {
         assert.equal(result.stderr, "");
         const report = JSON.parse(result.stdout);
         assert.equal(report.summary.unattributed, 0);
-        assert.equal(report.summary.missed, expected);
+        assert.equal(report.summary.possibleMisses, expected);
       }
+    });
+  });
+
+  it("supports help, equals arguments, root mapping and base results through the public CLI", () => {
+    fixture((directory, planPath, resultsPath) => {
+      const help = run(directory, ["--help"]);
+      assert.equal(help.status, 0, help.stderr);
+      assert.match(help.stdout, /--base-results/);
+      const basePath = join(directory, "base.xml");
+      const nestedPlan = { ...selection(), skippedTests: ["packages/web/tests/skipped.test.ts"] };
+      writeFileSync(planPath, JSON.stringify(nestedPlan));
+      writeFileSync(resultsPath, junit(failure("tests/skipped.test.ts")));
+      writeFileSync(basePath, junit(failure("tests/skipped.test.ts")));
+      const args = [`--plan=${planPath}`, `--results=${resultsPath}`, "--root=packages/web", `--repo=${directory}`, `--base-results=${basePath}`];
+      const old = run(directory, args);
+      assert.equal(old.status, 0, old.stderr);
+      assert.equal(JSON.parse(old.stdout).summary.preExisting, 1);
+      writeFileSync(basePath, junit('<testcase name="fails" file="tests/skipped.test.ts"/>'));
+      const introduced = run(directory, args);
+      assert.equal(introduced.status, 1, introduced.stderr);
+      assert.equal(JSON.parse(introduced.stdout).missed[0].file, nestedPlan.skippedTests[0]);
+      writeFileSync(basePath, "<testsuite>");
+      invalid(directory, args);
+      for (const root of ["../web", "/web", "packages/../web", "packages\\web"]) {
+        invalid(directory, ["--plan", planPath, "--results", resultsPath, "--root", root]);
+      }
+    });
+  });
+
+  it("rejects input growth after fstat instead of parsing a truncated prefix", () => {
+    fixture((directory, planPath, resultsPath) => {
+      const guard = join(directory, "growth.cjs");
+      writeFileSync(guard, `
+const fs = require('node:fs');
+const stat = fs.fstatSync;
+fs.fstatSync = (...args) => { const info = stat(...args); info.size -= 1; return info; };
+require('node:module').syncBuiltinESMExports();
+`);
+      const result = run(directory, ["--plan", planPath, "--results", resultsPath], guard);
+      assert.equal(result.status, 2, result.stdout + result.stderr);
+      assert.match(JSON.parse(result.stderr).error, /grew while being read/);
     });
   });
 
@@ -162,7 +203,6 @@ describe("check-plan CLI", () => {
         ["--plan", planPath], ["--results", resultsPath],
         [...valid, "--plan", planPath], [...valid, "--results", resultsPath],
         [...valid, "--json"], [...valid, "--open-issue"], [...valid, "extra"],
-        ["--plan=" + planPath, "--results", resultsPath],
       ]) invalid(directory, args);
     });
   });
@@ -255,7 +295,7 @@ process.on('exit', () => {
           assert.equal(JSON.parse(result.stderr).schemaVersion, 1);
         } else {
           assert.equal(result.stderr, "");
-          assert.deepEqual(JSON.parse(result.stdout).summary, { failedTests: 1, missed: expected, selected: 1 - expected, unattributed: 0 });
+          assert.deepEqual(JSON.parse(result.stdout).summary, { failedTests: 1, missed: 0, preExisting: 0, possibleMisses: expected, selected: 1 - expected, unattributed: 0 });
         }
         assert.deepEqual(readdirSync(directory).sort().map((path) => [path, readFileSync(join(directory, path), "utf8")]), before);
       }

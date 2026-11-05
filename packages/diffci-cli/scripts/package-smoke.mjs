@@ -178,12 +178,16 @@ try {
   const commandEnv = { ...process.env };
   delete commandEnv.NODE_TEST_CONTEXT;
   for (const scenario of [
-    { name: "mixed", cases: selectedFailure + missedFailure + unknownFailure, exitCode: 1, summary: { failedTests: 3, missed: 1, selected: 1, unattributed: 1 } },
-    { name: "selected-only", cases: selectedFailure, exitCode: 0, summary: { failedTests: 1, missed: 0, selected: 1, unattributed: 0 } },
-    { name: "unattributed-only", cases: unknownFailure, exitCode: 1, summary: { failedTests: 1, missed: 0, selected: 0, unattributed: 1 } },
+    { name: "mixed", cases: selectedFailure + missedFailure + unknownFailure, exitCode: 1, summary: { failedTests: 3, missed: 0, possibleMisses: 1, preExisting: 0, selected: 1, unattributed: 1 } },
+    { name: "pre-existing", cases: missedFailure, base: missedFailure, exitCode: 0, summary: { failedTests: 1, missed: 0, possibleMisses: 0, preExisting: 1, selected: 0, unattributed: 0 } },
+    { name: "new-miss", cases: missedFailure, base: '<testcase name="missed" file="test/beta.test.js"/>', exitCode: 1, summary: { failedTests: 1, missed: 1, possibleMisses: 0, preExisting: 0, selected: 0, unattributed: 0 } },
+    { name: "selected-only", cases: selectedFailure, exitCode: 0, summary: { failedTests: 1, missed: 0, possibleMisses: 0, preExisting: 0, selected: 1, unattributed: 0 } },
+    { name: "unattributed-only", cases: unknownFailure, exitCode: 1, summary: { failedTests: 1, missed: 0, possibleMisses: 0, preExisting: 0, selected: 0, unattributed: 1 } },
   ]) {
     write(resultsPath, `<testsuites><testsuite name="package smoke">${scenario.cases}</testsuite></testsuites>`);
-    const comparison = spawnSync(process.execPath, [installedCli, "check-plan", "--plan", planPath, "--results", resultsPath], {
+    const basePath = join(temp, "base-junit.xml");
+    if (scenario.base) write(basePath, `<testsuites><testsuite name="package smoke">${scenario.base}</testsuite></testsuites>`);
+    const comparison = spawnSync(process.execPath, [installedCli, "check-plan", "--plan", planPath, "--results", resultsPath, ...(scenario.base ? ["--base-results", basePath] : [])], {
       cwd: consumer, encoding: "utf8", env: commandEnv, timeout: 30_000,
     });
     assert(!comparison.error, `installed check-plan failed to run: ${comparison.error?.message}`);
@@ -194,7 +198,7 @@ try {
     for (const [field, expected] of Object.entries(scenario.summary)) {
       assert(checked.summary?.[field] === expected, `installed check-plan ${scenario.name} ${field}: expected ${expected}, got ${checked.summary?.[field]}`);
     }
-    assert(checked.missed.length === scenario.summary.missed && checked.selected.length === scenario.summary.selected && checked.unattributed.length === scenario.summary.unattributed, "installed check-plan groups disagree with the summary");
+    for (const group of ["missed", "possibleMisses", "preExisting", "selected", "unattributed"]) assert(checked[group].length === scenario.summary[group], `installed check-plan ${group} disagrees with the summary`);
     console.log(`Installed check-plan smoke: ${JSON.stringify({ scenario: scenario.name, exitCode: comparison.status, summary: checked.summary })}`);
   }
   assert(git(fixture.repo, ["status", "--porcelain"]).trim() === "", "installed check-plan changed the fixture checkout");

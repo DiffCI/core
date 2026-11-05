@@ -96,32 +96,65 @@ be canonical repository-relative paths, and the two lists must not overlap.
 Observation reports and verification receipts are different formats.
 
 The JSON result has `schemaVersion: 1`, `mode`, `fullFallback`, a `summary`, and
-three arrays of failed testcases:
+five arrays of failures, plus `baselineProvided`:
 
 | Group | Meaning |
 | --- | --- |
-| `missed` | The failure maps to a file in `skippedTests`. |
+| `missed` | A skipped failure not present in the supplied base report. |
+| `possibleMisses` | A skipped failure with no base report or an ambiguous base identity; it may already have existed. |
+| `preExisting` | The same testcase failed in the supplied base report. |
 | `selected` | The failure maps to a file in `selectedTests`. |
 | `unattributed` | The file is missing, unknown or ambiguous; `reason` explains why. |
 
-Exit **1** means at least one missed or unattributed failure. Exit **2** means
+Exit **1** means at least one missed, possible-miss or unattributed failure. Exit **2** means
 invalid arguments, unreadable inputs, an invalid plan or an invalid report; a JSON
-error goes to stderr and no comparison goes to stdout. Exit **0** means neither
-group contains failures. Selected tests may still have failed: retain the full
+error goes to stderr and no comparison goes to stdout. Exit **0** means all three
+groups are empty. Selected tests may still have failed: retain the full
 test runner's exit status as the authority on suite success.
 
 A `FULL` plan must have no skipped tests. Its result explicitly sets
-`fullFallback: true` and has no missed failures. Known failures remain selected;
+`fullFallback: true` and has no missed failures. Known failures are selected or pre-existing;
 unattributed failures still exit 1, and invalid XML still exits 2.
 
 ### Reporter configuration
 
-Use repository-relative file metadata. The comparison first checks testcase or
-suite `file` attributes, then JS/TS file paths in classname or suite names.
-Conflicting metadata stays unattributed. It normalizes Windows separators and
-leading `./`, but does not guess from test titles, stack traces, basenames or
-absolute-path suffixes. Absolute paths require a checkout root that these inputs
-do not establish, so they remain unattributed.
+Run the command from the repository root, or supply `--repo /absolute/checkout`.
+Set `--root packages/web` when the reporter writes paths relative to that nested
+runner root. The default is `--root .`; neither root is guessed from report paths.
+For example:
+
+```sh
+diffci check-plan --plan plan.json --results junit.xml --repo /checkout --root packages/web
+```
+
+Testcase `file` takes precedence over inherited suite files. Without it, suite
+files are checked, then JS/TS paths in classname or suite names. Conflicting
+metadata stays unattributed. Windows separators and leading `./` are normalized;
+absolute paths inside the explicit checkout root map to repository-relative paths.
+Paths outside it, parent traversal, unknown files, test titles and stack traces
+are never matched by suffix. Reports from multiple runner roots must be compared
+separately with their corresponding roots.
+
+To distinguish old failures from new ones, pass `--base-results base-junit.xml`:
+
+```sh
+diffci check-plan --plan plan.json --results head-junit.xml --base-results base-junit.xml
+```
+
+Produce the base report from the plan's base revision using the same full-suite
+scope, reporter configuration and checkout path (or relative file metadata).
+Base failures match by mapped file, enclosing suite names, classname and testcase
+name, only when that identity occurs once in each report. Duplicate or missing
+testcase names cannot prove an old failure and stay possible misses when skipped.
+Unknown identities and
+suite-level errors remain unattributed even if they appear at base. Renamed tests
+or changed reporter labels do not match. The command cannot verify report
+provenance, completeness or whether a failure is flaky; `missed` means absent
+from the supplied base failures, not proven causation. With no base report,
+skipped failures are `possibleMisses`, never confirmed new misses.
+
+Both `--flag value` and `--flag=value` work. `check-plan --help` prints usage and
+exits 0 without reading inputs.
 
 Vitest's default JUnit classname and suite-name conventions normally identify the
 file. Explicit file attributes also work with custom labels. For example, merge
@@ -163,16 +196,24 @@ test:junit` in full, and compares the report even if that test step fails. Confi
 `test:junit` to run the project's normal complete suite with one of the reporters
 above. Pin the DiffCI checkout to a reviewed revision containing `check-plan`.
 The example leaves full-suite failures visible and also runs the full suite when
-plan creation fails.
+plan creation fails. It supplies no base report, so skipped failures are possible
+misses. To classify existing failures, retain a full report for the plan's base
+revision and pass it with `--base-results`; do not substitute an unrelated green run.
 
-Both inputs must come from the same revision and complete test scope. Standard
+The plan and head report must describe the same head revision and complete test
+scope; the optional base report must describe the plan's base revision. Standard
 JUnit does not prove either condition; a passing comparison cannot establish
 report completeness or the absence of missed failures beyond the supplied report.
 In particular, an error omitted by a reporter cannot be recovered. Each UTF-8 input
-is limited to 16 MiB. XML must contain at least one testcase; malformed XML,
-DOCTYPE declarations, namespaces, excessive nesting/tags, more than 16 MiB of
+is limited to 16 MiB. XML must contain a testcase or a suite-level failure. Suite-level failures/errors
+are retained as unattributed evidence alongside ordinary testcase failures. Both
+`check-plan` and `enforce-misses` use the same strict XML reader and file mapping.
+Malformed XML, DOCTYPE declarations, namespaced elements, unsupported qualified
+metadata, excessive nesting/tags, more than 16 MiB of
 accumulated failure metadata and headers claiming
-more evidence than the report contains are rejected. Duplicate failed testcases
+more evidence than the report contains are rejected. Namespace declarations,
+`xml:` attributes and schema-location hints
+are ignored; they do not provide file identity. Duplicate failed testcases
 remain distinct, while multiple failure/error elements within one testcase count
 as one failed testcase.
 

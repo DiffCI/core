@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** Compare one advisory selection with failures in the supplied full-suite JUnit report. */
-import { parseJunitFailures, type JunitFailure } from "./check-plan-junit.js";
+import { parseJunitFailures, readJunit, junitFile, type JunitFailure } from "./check-plan-junit.js";
 
 interface PlanSelection {
   mode: "SELECTIVE" | "FULL";
@@ -25,7 +25,10 @@ export interface PlanCheckReport {
   schemaVersion: 1;
   mode: "SELECTIVE" | "FULL";
   fullFallback: boolean;
-  summary: { failedTests: number; missed: number; selected: number; unattributed: number };
+  baselineProvided: boolean;
+  summary: { failedTests: number; missed: number; possibleMisses: number; preExisting: number; selected: number; unattributed: number };
+  possibleMisses: PlanCheckFailure[];
+  preExisting: PlanCheckFailure[];
   missed: PlanCheckFailure[];
   selected: PlanCheckFailure[];
   unattributed: UnattributedPlanFailure[];
@@ -76,57 +79,48 @@ function readSelection(input: unknown): PlanSelection {
   return { mode: plan.mode, selected, skipped };
 }
 
-/** Reporter paths may use Windows separators; their repository-relative identity must be exact. */
-function reporterPath(value: string): string | undefined {
-  if (!value || /[\x00-\x1f\x7f]/.test(value)) return undefined;
-  const slash = value.replace(/\\/g, "/");
-  // Neither input supplies a trusted checkout root. A unique suffix is not proof of identity:
-  // /repo/packages/new/tests/a.test.js could otherwise be mistaken for selected tests/a.test.js.
-  if (slash.startsWith("/") || /^[a-z][a-z\d+.-]*:/i.test(slash)) return undefined;
-  if (slash.endsWith("/") || slash.endsWith("/.")) return undefined;
-  const parts = slash.split("/");
-  if (parts.includes("..")) return undefined;
-  const path = parts.filter((part) => part !== "" && part !== ".").join("/");
-  if (!path) return undefined;
-  return path;
+export interface PlanCheckOptions {
+  /** JUnit results from the plan's base revision, produced with the same reporter configuration. */
+  baseResults?: string;
+  /** Absolute checkout root for absolute reporter paths. Defaults to the current directory. */
+  repoRoot?: string;
+  /** Reporter root, relative to the repository root. */
+  root?: string;
 }
 
-function isJavascriptPath(value: string): boolean {
-  return /\.[cm]?[jt]sx?$/.test(value.replace(/\\/g, "/"));
-}
-
-type Attribution = { file: string } | { reason: string; candidates?: string[] };
-
-function attribute(failure: JunitFailure, known: ReadonlySet<string>): Attribution {
-  // File attributes carry identity; reporter titles/classnames are only a fallback convention.
-  const explicit = [...(failure.file === undefined ? [] : [failure.file]), ...failure.suiteFiles];
-  const values = explicit.length > 0 ? explicit
-    : [...(failure.classname === undefined ? [] : [failure.classname]), ...failure.suiteNames].filter(isJavascriptPath);
-  if (values.length === 0) return { reason: "No file attribute or recognizable JavaScript test-file convention" };
-  const candidates = new Set<string>();
-  let unmatched = false;
-  for (const value of values) {
-    const path = reporterPath(value);
-    if (!path || !known.has(path)) unmatched = true;
-    else candidates.add(path);
-  }
-  if (unmatched) return {
-    reason: "File metadata is invalid or does not identify a file in the supplied plan",
-    ...(candidates.size ? { candidates: [...candidates].sort() } : {}),
-  };
-  if (candidates.size !== 1) return {
-    reason: "File metadata identifies multiple planned files",
-    candidates: [...candidates].sort(),
-  };
-  return { file: [...candidates][0]! };
+function identity(test: JunitFailure, file: string): string {
+  return JSON.stringify([file, test.suiteNames, test.classname ?? "", test.name]);
 }
 
 /** This checks selection against supplied results, not suite success or report/revision provenance. */
-export function checkPlan(planInput: unknown, junitXml: string): PlanCheckReport {
+export function checkPlan(planInput: unknown, junitXml: string, options: PlanCheckOptions = {}): PlanCheckReport {
+  const root = options.root ?? ".";
+  if (root !== ".") planPaths([root], "reporter root");
+  const repoRoot = options.repoRoot ?? process.cwd();
   const plan = readSelection(planInput);
-  const results = parseJunitFailures(junitXml);
   const known = new Set([...plan.selected, ...plan.skipped]);
+  const headCounts = new Map<string, number>();
+  const baseCounts = new Map<string, number>();
+  const baseline = new Set<string>();
+  function count(test: JunitFailure, counts: Map<string, number>): string | undefined {
+    const file = junitFile(test, repoRoot, root);
+    // Missing names and ambiguous file identities cannot establish an old failure.
+    if (!known.has(file) || !test.name || test.name === "(unnamed testcase)") return undefined;
+    const key = identity(test, file);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    return key;
+  }
+  const results = options.baseResults === undefined ? parseJunitFailures(junitXml)
+    : readJunit(junitXml, (test) => { count(test, headCounts); });
+  if (options.baseResults !== undefined) {
+    readJunit(options.baseResults, (test, failed) => {
+      const key = count(test, baseCounts);
+      if (key !== undefined && failed) baseline.add(key);
+    });
+  }
   const missed: PlanCheckFailure[] = [];
+  const possibleMisses: PlanCheckFailure[] = [];
+  const preExisting: PlanCheckFailure[] = [];
   const selected: PlanCheckFailure[] = [];
   const unattributed: UnattributedPlanFailure[] = [];
   for (const failure of results.failures) {
@@ -136,20 +130,29 @@ export function checkPlan(planInput: unknown, junitXml: string): PlanCheckReport
       ...(failure.suite === undefined ? {} : { suite: failure.suite }),
       ...(failure.file === undefined ? {} : { reportedFile: failure.file }),
     };
-    const attribution = attribute(failure, known);
-    if (!("file" in attribution)) {
-      unattributed.push({ ...details, ...attribution });
-    } else if (plan.mode === "SELECTIVE" && plan.skipped.has(attribution.file)) {
-      missed.push({ ...details, file: attribution.file });
-    } else {
-      selected.push({ ...details, file: attribution.file });
+    const file = junitFile(failure, repoRoot, root);
+    if (!known.has(file)) {
+      unattributed.push({ ...details, reason: failure.suiteLevel ? "Suite-level failure has no testcase file identity"
+        : "File metadata is missing, conflicting, invalid or absent from the supplied plan" });
+      continue;
     }
+    const key = identity(failure, file);
+    if (baseline.has(key) && baseCounts.get(key) === 1 && headCounts.get(key) === 1) {
+      preExisting.push({ ...details, file });
+    } else if (plan.mode === "SELECTIVE" && plan.skipped.has(file)) {
+      // Repeated or unnamed identities cannot tell whether the failing occurrence changed.
+      const uncertain = options.baseResults === undefined || (headCounts.get(key) ?? 0) > 1
+        || (baseCounts.get(key) ?? 0) > 1
+        || !failure.name || failure.name === "(unnamed testcase)";
+      (uncertain ? possibleMisses : missed).push({ ...details, file });
+    } else selected.push({ ...details, file });
   }
   return {
     schemaVersion: 1,
     mode: plan.mode,
     fullFallback: plan.mode === "FULL",
-    summary: { failedTests: results.failures.length, missed: missed.length, selected: selected.length, unattributed: unattributed.length },
-    missed, selected, unattributed,
+    baselineProvided: options.baseResults !== undefined,
+    summary: { failedTests: results.failures.length, missed: missed.length, possibleMisses: possibleMisses.length, preExisting: preExisting.length, selected: selected.length, unattributed: unattributed.length },
+    missed, possibleMisses, preExisting, selected, unattributed,
   };
 }

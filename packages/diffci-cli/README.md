@@ -24,9 +24,13 @@ diffci check-plan --plan plan.json --results junit.xml
 ```
 
 This local command compares a saved Core execution plan with a full-suite JUnit
-report from the same revision. It prints JSON groups for missed, selected and
-unattributed failures. Missed or unattributed failures exit 1; invalid inputs exit
-2. Exit 0 describes the comparison, not whether the full suite passed. The command
+report from the same revision. Without `--base-results base.xml`, skipped failures
+are `possibleMisses`. With a
+base report, matching failures are `preExisting` and new skipped failures are
+`missed`. Selected and unattributed failures are also reported. Missed, possible
+misses or unattributed failures exit 1; invalid inputs exit 2. Use `--root packages/web`
+for a nested reporter root and `--repo /checkout` for absolute paths. Exit 0
+describes the comparison, not whether the full suite passed. The command
 runs no tests, writes no files and sends nothing.
 
 See the [reporter configuration and scheduled-job example](https://github.com/DiffCI/core/blob/main/docs/using-diffci.md#compare-a-plan-with-a-full-suite-junit-report)

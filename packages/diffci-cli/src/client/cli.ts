@@ -106,7 +106,7 @@ function readCheckPlanInput(path: string): string {
     const info = fstatSync(descriptor);
     if (!info.isFile()) throw new Error(`Input must be a regular file: ${path}`);
     if (info.size > CHECK_PLAN_MAX_INPUT_BYTES) throw new Error(`Input exceeds the 16 MiB limit: ${path}`);
-    const bytes = Buffer.allocUnsafe(CHECK_PLAN_MAX_INPUT_BYTES + 1);
+    const bytes = Buffer.allocUnsafe(Math.min(info.size, CHECK_PLAN_MAX_INPUT_BYTES) + 1);
     let length = 0;
     while (length < bytes.length) {
       const read = readSync(descriptor, bytes, length, bytes.length - length, null);
@@ -114,6 +114,7 @@ function readCheckPlanInput(path: string): string {
       length += read;
     }
     if (length > CHECK_PLAN_MAX_INPUT_BYTES) throw new Error(`Input exceeds the 16 MiB limit: ${path}`);
+    if (length > info.size) throw new Error(`Input grew while being read: ${path}`);
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
   } finally {
     closeSync(descriptor);
@@ -123,11 +124,17 @@ function readCheckPlanInput(path: string): string {
 function runCheckPlanCommand(args: readonly string[]): number {
   try {
     const files = new Map<string, string>();
-    for (let index = 0; index < args.length; index += 2) {
-      const flag = args[index]!;
-      if (flag !== "--plan" && flag !== "--results") throw new Error(`Unsupported check-plan argument: ${flag}`);
+    if (args.length === 1 && args[0] === "--help") {
+      console.log("Usage: diffci check-plan --plan <file> --results <file> [--base-results <file>] [--root <reporter-root>] [--repo <checkout-root>]\nAccepts --flag=value. Without base results, skipped failures are possibleMisses. Exit 1: missed, possibleMisses or unattributed; exit 2: invalid input.");
+      return 0;
+    }
+    for (let index = 0; index < args.length; index += 1) {
+      const token = args[index]!;
+      const equals = token.indexOf("=");
+      const flag = equals < 0 ? token : token.slice(0, equals);
+      if (!["--plan", "--results", "--base-results", "--root", "--repo"].includes(flag)) throw new Error(`Unsupported check-plan argument: ${flag}`);
       if (files.has(flag)) throw new Error(`Repeated check-plan argument: ${flag}`);
-      const value = args[index + 1];
+      const value = equals < 0 ? args[++index] : token.slice(equals + 1);
       if (!value || value.startsWith("--")) throw new Error(`Missing file path for ${flag}`);
       files.set(flag, value);
     }
@@ -135,9 +142,13 @@ function runCheckPlanCommand(args: readonly string[]): number {
     const resultsPath = files.get("--results");
     if (!planPath || !resultsPath) throw new Error("check-plan requires --plan <file> and --results <file>");
     const plan: unknown = JSON.parse(readCheckPlanInput(planPath));
-    const report = checkPlan(plan, readCheckPlanInput(resultsPath));
+    const basePath = files.get("--base-results");
+    const report = checkPlan(plan, readCheckPlanInput(resultsPath), {
+      root: files.get("--root"), repoRoot: resolve(files.get("--repo") ?? process.cwd()),
+      baseResults: basePath === undefined ? undefined : readCheckPlanInput(basePath),
+    });
     console.log(JSON.stringify(report));
-    return report.summary.missed > 0 || report.summary.unattributed > 0 ? 1 : 0;
+    return report.summary.missed > 0 || report.summary.possibleMisses > 0 || report.summary.unattributed > 0 ? 1 : 0;
   } catch (error: unknown) {
     console.error(JSON.stringify({ schemaVersion: 1, error: error instanceof Error ? error.message : "Invalid check-plan input" }));
     return 2;

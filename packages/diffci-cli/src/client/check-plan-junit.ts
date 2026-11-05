@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { posix, win32 } from "node:path";
 import { SaxesParser } from "saxes";
 
 export interface JunitFailure {
@@ -8,6 +9,7 @@ export interface JunitFailure {
   file?: string;
   suiteFiles: string[];
   suiteNames: string[];
+  suiteLevel?: boolean;
 }
 
 export interface JunitFailures {
@@ -28,7 +30,8 @@ interface Suite {
 }
 
 interface TestCase {
-  failure: JunitFailure;
+  failure: Omit<JunitFailure, "suiteFiles" | "suiteNames">;
+  skipped: boolean;
   failed: boolean;
   errored: boolean;
 }
@@ -42,6 +45,11 @@ interface Frame {
 const MAX_BYTES = 16 * 1024 * 1024;
 const MAX_DEPTH = 128;
 const MAX_TAGS = 100_000;
+const IGNORED_ATTRIBUTE_URIS = new Set([
+  "http://www.w3.org/2000/xmlns/",
+  "http://www.w3.org/2001/XMLSchema-instance",
+  "http://www.w3.org/XML/1998/namespace",
+]);
 
 function invalid(message: string): never {
   throw new Error(`Invalid JUnit report: ${message}`);
@@ -57,7 +65,7 @@ function declaredCount(value: string | undefined, name: string): number | undefi
 }
 
 /** Read only structural failure evidence; logs, comments and CDATA are never tags. */
-export function parseJunitFailures(xml: string): JunitFailures {
+export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boolean, skipped: boolean) => void): JunitFailures {
   if (Buffer.byteLength(xml, "utf8") > MAX_BYTES) {
     invalid("XML exceeds the 16 MiB limit.");
   }
@@ -68,6 +76,24 @@ export function parseJunitFailures(xml: string): JunitFailures {
   let tags = 0;
   let metadataBytes = 0;
   const parser = new SaxesParser({ xmlns: true });
+
+  function emit(failure: JunitFailure, failed: boolean, skipped: boolean): void {
+    // Bound inherited metadata for both consumers, including passing cases in enforce-misses.
+    for (const value of [failure.name, failure.classname, failure.file, failure.suite,
+      ...failure.suiteFiles, ...failure.suiteNames]) {
+      metadataBytes += value === undefined ? 0 : Buffer.byteLength(value, "utf8");
+      if (metadataBytes > MAX_BYTES) invalid("Failure metadata exceeds the 16 MiB limit.");
+    }
+    if (failed) result.failures.push(failure);
+    onCase?.(failure, failed, skipped);
+  }
+  function inherited(): Pick<JunitFailure, "suite" | "suiteFiles" | "suiteNames"> {
+    return {
+      suite: [...suites].reverse().find((suite) => suite.element === "testsuite")?.name,
+      suiteFiles: suites.flatMap((suite) => suite.file === undefined ? [] : [suite.file]),
+      suiteNames: suites.flatMap((suite) => suite.element !== "testsuite" || suite.name === undefined ? [] : [suite.name]),
+    };
+  }
 
   // Keep the parser's default throwing error handler: partial XML is not evidence.
   parser.on("doctype", () => invalid("DOCTYPE declarations are not supported."));
@@ -85,11 +111,13 @@ export function parseJunitFailures(xml: string): JunitFailures {
     const name = tag.name;
     const parent = frames[frames.length - 1];
     if (tag.uri !== "") invalid("Namespaced JUnit elements are not supported.");
-    if (Object.values(tag.attributes).some((attribute) => attribute.uri !== "")) {
-      invalid("Namespaced JUnit attributes and namespace declarations are not supported.");
+    // Namespace declarations and schema hints carry no testcase identity. Unknown qualified
+    // metadata is still refused so x:file/x:failures cannot silently disappear.
+    if (Object.values(tag.attributes).some((attribute) => attribute.uri !== "" && !IGNORED_ATTRIBUTE_URIS.has(attribute.uri))) {
+      invalid("Unsupported namespaced JUnit attribute.");
     }
     const attributes = Object.fromEntries(
-      Object.entries(tag.attributes).map(([key, attribute]) => [key, attribute.value]),
+      Object.entries(tag.attributes).filter(([, attribute]) => attribute.uri === "").map(([key, attribute]) => [key, attribute.value]),
     );
     const frame: Frame = { name };
 
@@ -114,25 +142,31 @@ export function parseJunitFailures(xml: string): JunitFailures {
       frame.suite = suite;
       suites.push(suite);
     } else if (name === "testcase") {
-      if (parent?.name !== "testsuite") invalid("A testcase must be inside a testsuite.");
-      const testSuites = suites.filter((suite) => suite.element === "testsuite");
+      if (parent?.name !== "testsuite" && parent?.name !== "testsuites") invalid("A testcase must be inside a testsuite.");
       frame.testCase = {
-        failed: false,
+        skipped: false,
+        failed: attributes.failure !== undefined,
         errored: false,
         failure: {
           name: attributes.name ?? "(unnamed testcase)",
           classname: attributes.classname,
           file: attributes.file,
-          suite: testSuites[testSuites.length - 1]?.name,
-          suiteFiles: suites.flatMap((suite) => suite.file === undefined ? [] : [suite.file]),
-          suiteNames: suites.flatMap((suite) => suite.name === undefined ? [] : [suite.name]),
         },
       };
       result.testCases += 1;
     } else if (name === "failure" || name === "error") {
-      if (!parent?.testCase) invalid("Failure evidence must be a direct testcase child.");
-      if (name === "failure") parent.testCase.failed = true;
-      else parent.testCase.errored = true;
+      if (parent?.testCase) {
+        if (name === "failure") parent.testCase.failed = true;
+        else parent.testCase.errored = true;
+      } else if (parent?.suite) {
+        emit({ name: attributes.message ?? `(suite ${name})`, suiteLevel: true, ...inherited() }, true, false);
+        for (const suite of suites) {
+          if (name === "failure") suite.failures += 1;
+          else suite.errors += 1;
+        }
+      } else invalid("Failure evidence must be a direct testcase or suite child.");
+    } else if (name === "skipped" && parent?.testCase) {
+      parent.testCase.skipped = true;
     }
     frames.push(frame);
   });
@@ -140,15 +174,8 @@ export function parseJunitFailures(xml: string): JunitFailures {
     const frame = frames.pop()!;
     if (frame.testCase) {
       const testCase = frame.testCase;
-      if (testCase.failed || testCase.errored) {
-        const failure = testCase.failure;
-        // Inherited names/files repeat across cases; bound that expansion before mapping/output.
-        for (const value of [failure.name, failure.classname, failure.file, failure.suite,
-          ...failure.suiteFiles, ...failure.suiteNames]) {
-          metadataBytes += value === undefined ? 0 : Buffer.byteLength(value, "utf8");
-          if (metadataBytes > MAX_BYTES) invalid("Failure metadata exceeds the 16 MiB limit.");
-        }
-        result.failures.push(failure);
+      if (testCase.failed || testCase.errored || onCase) {
+        emit({ ...testCase.failure, ...inherited() }, testCase.failed || testCase.errored, testCase.skipped);
       }
       for (const suite of suites) {
         suite.testCases += 1;
@@ -169,6 +196,36 @@ export function parseJunitFailures(xml: string): JunitFailures {
     }
   });
   parser.write(xml).close();
-  if (result.testCases === 0) invalid("The report contains no testcases.");
+  if (result.testCases === 0 && result.failures.length === 0) invalid("The report contains no testcases.");
   return result;
+}
+
+export function parseJunitFailures(xml: string): JunitFailures {
+  return readJunit(xml);
+}
+
+/** Lexical mapping only: never guess the checkout root from a suffix or access the filesystem. */
+export function normalizeTestPath(value: string, repoRoot: string, root = "."): string {
+  const slashed = value.replace(/\\/g, "/");
+  if (!slashed || /[\x00-\x1f\x7f]/.test(slashed) || slashed.endsWith("/") || slashed.endsWith("/.")
+    || slashed.split("/").includes("..")) return "";
+  const windows = /^[a-z]:\//i.test(slashed) || slashed.startsWith("//");
+  const path = windows ? win32 : posix;
+  if (path.isAbsolute(slashed)) {
+    const checkout = repoRoot.replace(/\\/g, "/");
+    if (!path.isAbsolute(checkout) || (windows && !win32.isAbsolute(repoRoot))) return slashed;
+    const inside = path.relative(checkout, slashed).replace(/\\/g, "/");
+    return inside && inside !== ".." && !inside.startsWith("../") && !path.isAbsolute(inside) ? inside : slashed;
+  }
+  if (/^[a-z][a-z\d+.-]*:/i.test(slashed)) return "";
+  return posix.normalize(posix.join(root, slashed));
+}
+
+export function junitFile(test: JunitFailure, repoRoot: string, root = "."): string {
+  if (test.suiteLevel) return "";
+  const explicit = test.file !== undefined ? [test.file] : test.suiteFiles;
+  const values = explicit.length ? explicit : [test.classname, ...test.suiteNames]
+    .filter((value): value is string => value !== undefined && /\.[cm]?[jt]sx?$/.test(value));
+  const candidates = values.map(value => normalizeTestPath(value, repoRoot, root));
+  return candidates.length && candidates.every(value => value !== "" && value === candidates[0]) ? candidates[0]! : "";
 }

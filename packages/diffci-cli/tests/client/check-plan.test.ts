@@ -24,33 +24,33 @@ describe("checkPlan failure attribution", () => {
     assert.equal(result.schemaVersion, 1);
     assert.equal(result.mode, "SELECTIVE");
     assert.equal(result.fullFallback, false);
-    assert.deepEqual(result.summary, { failedTests: 2, missed: 1, selected: 1, unattributed: 0 });
-    assert.equal(result.missed[0].file, missedFile);
+    assert.deepEqual(result.summary, { failedTests: 2, missed: 0, preExisting: 0, possibleMisses: 1, selected: 1, unattributed: 0 });
+    assert.equal(result.possibleMisses[0].file, missedFile);
     assert.equal(result.selected[0].file, selectedFile);
   });
 
   it("accepts the analyzeCheckout wrapper and a passing report", () => {
     const wrapped = { advisoryOnly: true, base: "base-revision", head: "head-revision", plan: plan() };
-    assert.deepEqual(checkPlan(wrapped, passingReport).summary, { failedTests: 0, missed: 0, selected: 0, unattributed: 0 });
+    assert.deepEqual(checkPlan(wrapped, passingReport).summary, { failedTests: 0, missed: 0, preExisting: 0, possibleMisses: 0, selected: 0, unattributed: 0 });
   });
 
   it("prefers the explicit file over a classname that names a selected file", () => {
     const result = checkPlan(plan(), report(`<testcase name="explicit file wins" file="${missedFile}" classname="${selectedFile}"><failure/></testcase>`));
-    assert.equal(result.missed[0]?.file, missedFile);
+    assert.equal(result.possibleMisses[0]?.file, missedFile);
     assert.equal(result.summary.unattributed, 0);
   });
 
   it("inherits an enclosing suite file through nested suites", () => {
     const xml = `<testsuites><testsuite file="${missedFile}" errors="1"><testsuite name="nested"><testcase name="nested failure"><error/></testcase></testsuite></testsuite></testsuites>`;
     const result = checkPlan(plan(), xml);
-    assert.equal(result.missed[0]?.file, missedFile);
+    assert.equal(result.possibleMisses[0]?.file, missedFile);
     assert.equal(result.summary.failedTests, 1);
   });
 
   it("uses path-valued classname and suite names when explicit file attributes are absent", () => {
     const xml = `<testsuites><testsuite name="${missedFile}"><testcase name="suite path"><failure/></testcase></testsuite><testsuite name="label"><testcase classname="${selectedFile}" name="class path"><failure/></testcase></testsuite></testsuites>`;
     const result = checkPlan(plan(), xml);
-    assert.deepEqual(result.summary, { failedTests: 2, missed: 1, selected: 1, unattributed: 0 });
+    assert.deepEqual(result.summary, { failedTests: 2, missed: 0, preExisting: 0, possibleMisses: 1, selected: 1, unattributed: 0 });
   });
 
   it("does not choose between conflicting classname and suite paths", () => {
@@ -73,7 +73,7 @@ describe("checkPlan failure attribution", () => {
     const result = checkPlan(plan(["tests/a.test.js"], ["packages/ui/tests/a.test.js"]), report(failingCase("C:\\agent\\repo\\packages\\ui\\tests\\a.test.js")));
     assert.equal(result.summary.unattributed, 1);
     assert.equal(result.summary.selected, 0);
-    assert.equal(result.summary.missed, 0);
+    assert.equal(result.summary.possibleMisses, 0);
   });
 
   for (const file of ["selected.test.js", "another/tests/selected.test.js", "../tests/selected.test.js", "tests/../tests/selected.test.js", "https://example.test/tests/selected.test.js", "tests/unknown.test.js", "/agent/repository/tests/selected.test.js", "C:\\agent\\repository\\tests\\selected.test.js", "/repo/packages/new/tests/selected.test.js", "tests/selected.test.js/", "tests/selected.test.js/.", "tests/selected.test.js//"]) {
@@ -93,28 +93,28 @@ describe("checkPlan failure attribution", () => {
     const file = "tests/a & b.test.js";
     const name = 'handles <xml> & "quotes"';
     const result = checkPlan(plan([], [file]), report(failingCase(file, name)));
-    assert.equal(result.missed[0]?.file, file);
-    assert.equal(result.missed[0]?.name, name);
+    assert.equal(result.possibleMisses[0]?.file, file);
+    assert.equal(result.possibleMisses[0]?.name, name);
   });
 
   it("preserves distinct duplicate-name cases while counting each failing case once", () => {
     const one = `<testcase file="${missedFile}" name="same"><failure/><failure/><error/></testcase>`;
     const result = checkPlan(plan(), report(one, one));
-    assert.deepEqual(result.summary, { failedTests: 2, missed: 2, selected: 0, unattributed: 0 });
-    assert.equal(result.missed.length, 2);
+    assert.deepEqual(result.summary, { failedTests: 2, missed: 0, preExisting: 0, possibleMisses: 2, selected: 0, unattributed: 0 });
+    assert.equal(result.possibleMisses.length, 2);
   });
 
   it("does not let a skipped marker hide a failure on the same case", () => {
     const result = checkPlan(plan(), report(`<testcase name="contradictory" file="${missedFile}"><skipped/><failure/></testcase>`));
-    assert.equal(result.summary.missed, 1);
+    assert.equal(result.summary.possibleMisses, 1);
   });
 
   it("states FULL fallback explicitly while retaining unattributed failures", () => {
     const result = checkPlan(plan([selectedFile, missedFile], [], "FULL"), report(failingCase(selectedFile), failingCase(missedFile), failingCase("tests/unknown.test.js")));
     assert.equal(result.mode, "FULL");
     assert.equal(result.fullFallback, true);
-    assert.deepEqual(result.missed, []);
-    assert.deepEqual(result.summary, { failedTests: 3, missed: 0, selected: 2, unattributed: 1 });
+    assert.deepEqual(result.possibleMisses, []);
+    assert.deepEqual(result.summary, { failedTests: 3, missed: 0, preExisting: 0, possibleMisses: 0, selected: 2, unattributed: 1 });
   });
 });
 
@@ -126,13 +126,13 @@ describe("checkPlan XML validation", () => {
   });
 
   it("finds failures even when aggregate headers are missing or undercount them", () => {
-    assert.equal(checkPlan(plan(), report(failingCase(missedFile))).summary.missed, 1);
-    assert.equal(checkPlan(plan(), `<testsuite tests="0" failures="0" errors="0">${failingCase(missedFile)}</testsuite>`).summary.missed, 1);
+    assert.equal(checkPlan(plan(), report(failingCase(missedFile))).summary.possibleMisses, 1);
+    assert.equal(checkPlan(plan(), `<testsuite tests="0" failures="0" errors="0">${failingCase(missedFile)}</testsuite>`).summary.possibleMisses, 1);
   });
 
   it("counts descendant testcases when checking nested suite totals", () => {
     const xml = `<testsuites tests="2"><testsuite tests="2"><testsuite tests="1">${failingCase(missedFile)}</testsuite><testcase name="passes"/></testsuite></testsuites>`;
-    assert.equal(checkPlan(plan(), xml).summary.missed, 1);
+    assert.equal(checkPlan(plan(), xml).summary.possibleMisses, 1);
   });
 
   it("bounds inherited failure metadata before it can expand a small report", () => {
@@ -155,12 +155,9 @@ describe("checkPlan XML validation", () => {
     ["duplicate attribute", '<testsuite><testcase name="one" name="two"/></testsuite>'],
     ["qualified file metadata", `<testsuite xmlns:x="urn:reporter" file="${selectedFile}"><testcase name="ambiguous" x:file="${missedFile}"><failure/></testcase></testsuite>`],
     ["qualified failure count", '<testsuite xmlns:x="urn:reporter" x:failures="1"><testcase name="passes"/></testsuite>'],
-    ["unused namespace declaration", '<testsuite xmlns:x="urn:reporter"><testcase name="passes"/></testsuite>'],
-    ["reserved XML namespace attribute", '<testsuite xml:space="preserve"><testcase name="passes"/></testsuite>'],
     ["XML 1.1", '<?xml version="1.1"?><testsuite><testcase name="passes"/></testsuite>'],
     ["non-UTF8 declaration", '<?xml version="1.0" encoding="UTF-16"?><testsuite><testcase name="passes"/></testsuite>'],
     ["external entity declaration", '<!DOCTYPE testsuite [<!ENTITY ext SYSTEM "file:///nonexistent-junit-entity">]><testsuite><testcase name="&ext;"/></testsuite>'],
-    ["failure outside a testcase", '<testsuite><failure/><testcase name="passes"/></testsuite>'],
     ["suite inside a testcase", '<testsuite><testcase name="bad"><testsuite/></testcase></testsuite>'],
     ["excessive nesting", '<testsuites>' + '<testsuite>'.repeat(129) + '<testcase name="passes"/>' + '</testsuite>'.repeat(129) + '</testsuites>'],
     ["negative failure count", '<testsuite failures="-1"><testcase name="passes"/></testsuite>'],
@@ -209,29 +206,29 @@ describe("checkPlan genuine reporter fixtures", () => {
   for (const name of ["vitest-default.xml", "vitest-explicit.xml"]) {
     it(`maps all five failed cases in ${name}`, () => {
       const result = checkPlan(plan(["tests/pass.test.js"], failingFiles), fixture(name));
-      assert.deepEqual(result.summary, { failedTests: 5, missed: 5, selected: 0, unattributed: 0 });
-      assert.deepEqual([...new Set(result.missed.map((failure) => failure.file))].sort(), [...failingFiles].sort());
-      assert.equal(result.missed.filter((failure) => failure.file === "tests/space & failure.test.js").length, 2);
-      assert.equal(result.missed.filter((failure) => failure.file === "tests/multiple-errors.test.js").length, 1);
+      assert.deepEqual(result.summary, { failedTests: 5, missed: 0, preExisting: 0, possibleMisses: 5, selected: 0, unattributed: 0 });
+      assert.deepEqual([...new Set(result.possibleMisses.map((failure) => failure.file))].sort(), [...failingFiles].sort());
+      assert.equal(result.possibleMisses.filter((failure) => failure.file === "tests/space & failure.test.js").length, 2);
+      assert.equal(result.possibleMisses.filter((failure) => failure.file === "tests/multiple-errors.test.js").length, 1);
     });
   }
 
   it("keeps Jest's default describe labels unattributed without guessing from stacks", () => {
     const result = checkPlan(plan(["tests/pass.test.js"], failingFiles), fixture("jest-junit-default.xml"));
-    assert.deepEqual(result.summary, { failedTests: 4, missed: 0, selected: 0, unattributed: 4 });
+    assert.deepEqual(result.summary, { failedTests: 4, missed: 0, preExisting: 0, possibleMisses: 0, selected: 0, unattributed: 4 });
   });
 
   it("reads Jest's explicit files, load errors and hook failures despite lower declared counts", () => {
     const result = checkPlan(plan(["tests/pass.test.js"], failingFiles), fixture("jest-junit-explicit.xml"));
-    assert.deepEqual(result.summary, { failedTests: 6, missed: 6, selected: 0, unattributed: 0 });
-    assert.equal(result.missed.filter((failure) => failure.file === "tests/load-error.test.js").length, 2);
-    assert.equal(result.missed.filter((failure) => failure.file === "tests/multiple-errors.test.js").length, 1);
+    assert.deepEqual(result.summary, { failedTests: 6, missed: 0, preExisting: 0, possibleMisses: 6, selected: 0, unattributed: 0 });
+    assert.equal(result.possibleMisses.filter((failure) => failure.file === "tests/load-error.test.js").length, 2);
+    assert.equal(result.possibleMisses.filter((failure) => failure.file === "tests/multiple-errors.test.js").length, 1);
   });
 
   it("covers the same genuine failures when the selection is corrected or FULL", () => {
     for (const mode of ["SELECTIVE", "FULL"] as const) {
       const result = checkPlan(plan(failingFiles, [], mode), fixture("jest-junit-explicit.xml"));
-      assert.deepEqual(result.summary, { failedTests: 6, missed: 0, selected: 6, unattributed: 0 });
+      assert.deepEqual(result.summary, { failedTests: 6, missed: 0, preExisting: 0, possibleMisses: 0, selected: 6, unattributed: 0 });
       assert.equal(result.fullFallback, mode === "FULL");
     }
   });
