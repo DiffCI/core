@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, posix, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 
 import { measureCommands } from "./command-batches.js";
 
@@ -195,8 +195,22 @@ function linkModules(source: string, target: string, tree: { repoReal: string; b
  * Runs `use` in the base commit, exported with `git archive` into a temporary directory with the
  * repository's installed node_modules linked in, the root's and each workspace package's that the base
  * also has. The same declines apply to tests and checks: the dependency manifests differ, or nothing is
- * installed. The repository itself is never written.
+ * installed. The working tree is never written.
+ *
+ * Memory (2026-11-05, LobeHub replay: a base `type-check` was killed with exit 137 and an introduced type
+ * error read as unknown). The archive used to be read into this process, up to 1 GB, and stayed alive
+ * while the base command ran; it now goes through a file that is deleted before anything runs. The tree
+ * goes under `<git common dir>/diffci/`, beside the outcome log, rather than a temporary directory that a
+ * container may keep in memory.
  */
+/** `<git common dir>/diffci`, created if needed, or the system temporary directory when that fails. */
+function baselineRoot(repoPath: string): string {
+  const common = git(repoPath, ["rev-parse", "--git-common-dir"]);
+  if (common.status !== 0) return tmpdir();
+  const root = join(resolve(repoPath, common.stdout.toString("utf8").trim()), "diffci");
+  try { mkdirSync(root, { recursive: true }); return root; } catch { return tmpdir(); }
+}
+
 function withBaseTree<T>(input: { repoPath: string; baseSha: string; headSha: string }, use: (directory: string) => T): BaseTree<T> {
   const changedDependencies = git(input.repoPath, ["diff", "--quiet", input.baseSha, input.headSha, "--", ...DEPENDENCY_FILES, ...DEPENDENCY_FILES.map((file) => `*/${file}`)]);
   if (changedDependencies.status !== 0) return { ok: false, reason: "dependency manifests or lockfiles differ between base and head" };
@@ -205,12 +219,15 @@ function withBaseTree<T>(input: { repoPath: string; baseSha: string; headSha: st
     return { ok: false, reason: "no installed node_modules to run the base commit with" };
   }
 
-  const directory = mkdtempSync(join(tmpdir(), "diffci-baseline-"));
+  const directory = mkdtempSync(join(baselineRoot(input.repoPath), "diffci-baseline-"));
   const links: string[] = [];
   try {
-    const archive = git(input.repoPath, ["archive", "--format=tar", input.baseSha]);
-    if (archive.status !== 0) return { ok: false, reason: "the base commit could not be exported" };
-    const extract = spawnSync("tar", ["-x", "-f", "-", "-C", directory], { input: archive.stdout, maxBuffer: 64 * 1024 * 1024 });
+    const tarball = `${directory}.tar`;
+    const archive = git(input.repoPath, ["archive", "--format=tar", `--output=${tarball}`, input.baseSha]);
+    if (archive.status !== 0) { rmSync(tarball, { force: true }); return { ok: false, reason: "the base commit could not be exported" }; }
+    // By a relative name: GNU tar reads `C:\...` as a remote host.
+    const extract = spawnSync("tar", ["-x", "-f", basename(tarball), "-C", directory], { cwd: dirname(tarball), maxBuffer: 64 * 1024 * 1024 });
+    rmSync(tarball, { force: true });
     if (extract.status !== 0) return { ok: false, reason: "the base commit could not be extracted" };
     for (const dir of installedModuleDirs(input.repoPath)) {
       const target = join(directory, dir, "node_modules");
