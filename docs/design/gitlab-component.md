@@ -10,7 +10,7 @@ that GitHub users get from `DiffCI/core@<release>`:
 
 ```yaml
 include:
-  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.26
+  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.27
 ```
 
 What this does not do (same as the Action): it does not skip, cancel or reorder jobs, comment on
