@@ -299,7 +299,7 @@ function inExclusionList(content: string, index: number): boolean {
  * a different file names that file, and a glob names only what it matches (2026-11-04). Bare names and
  * variables inside a path keep the conservative answer.
  */
-export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean): boolean {
+export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean, readGlobs = true): boolean {
   if (!pattern.test(content)) return false;
   const dirs: string[] = [];
   for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
@@ -322,6 +322,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
     }
     if (!word.includes("/") || /[!$]/.test(word)) return true;
     if (/[*?{}[\]]/.test(word)) {
+      if (!readGlobs) continue;
       if (word.startsWith("../")) return true;
       // A glob names what it matches, from the reader's directory, the root, or any directory below the
       // root; `packages/sdk/**` in a workflow's `paths` filter does not name `packages/database/`.
@@ -553,14 +554,19 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         }
         if (input.isDocumentation(candidate)) continue;
         // 2026-11-05: LobeHub's root tsconfig `include` names scripts/, and with every tsconfig extending it
-        // the readers of scripts/stylexMigration/legacyFiles.json passed the transitive limit.
-        if (PATH_LIST_CONFIG.test(base) && !input.isCodeFile(target.path)) continue;
+        // the readers of scripts/stylexMigration/legacyFiles.json passed the transitive limit. tsc compiles
+        // what a tsconfig lists and runs none of it, and changed code it compiles is a compiled project's.
+        if (PATH_LIST_CONFIG.test(base)) continue;
         const content = read(candidate);
         if (content === undefined && input.allowNoReaders && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate) || isImplicitlyLoadedFile(candidate))) {
           block(`${candidate} could not be read`, target.path);
           continue;
         }
-        if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors)) continue;
+        // A test runner's include and exclude globs select test files, so one matching a data file does not
+        // make the runner read it; an exact path in the config still counts (2026-11-05: LobeHub's
+        // packages/alint/vitest.config.mts excludes fixture directories under scripts/).
+        const globsSelectTests = loadsWithoutNaming(candidate) && !input.isCodeFile(target.path);
+        if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors, !globsSelectTests)) continue;
         visited.add(candidate);
         if (input.allowNoReaders && /^dockerfile/i.test(base) && copiesOnly(content, target.path)) {
           // The caller modelled what the file does when installed (dependency selection); a Dockerfile
@@ -590,7 +596,8 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           resolution.readers.push({ path: candidate, kind: "transitive", via: target.path });
           if (++transitiveCount > MAX_TRANSITIVE_READERS) { block(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`, target.path); break; }
           parent.set(candidate, target.path);
-          next.push({ path: candidate, via: target.path, lint: isLintConfig(candidate) });
+          // What reads a lint config is still lint tooling, so the marking carries down the chain.
+          next.push({ path: candidate, via: target.path, lint: target.lint || isLintConfig(candidate) });
         } else {
           // Markup, prose, images and licences name paths in links and URLs but execute nothing and
           // direct no reads, so nothing reaches the suite through them.

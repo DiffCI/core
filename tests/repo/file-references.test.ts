@@ -208,6 +208,27 @@ describe("configuration readers (2026-11-05)", () => {
     assert.equal(isLintConfig("packages/eslint/src/rules.ts"), false);
     assert.equal(isLintConfig("vitest.config.ts"), false);
   });
+  it("carries the lint marking down a chain and never follows a tsconfig, at any depth", () => {
+    const action = "runs:\n  using: composite\n  steps:\n    - run: node apps/share/should-build.mjs\n      shell: bash\n";
+    const resolution = resolveFileReferences("data/seed.json", input({
+      "data/seed.json": "{}",
+      "tests/seed.test.ts": `readFileSync("data/seed.json")`,
+      "knip.ts": `export default { entry: ["data/seed.json"] };`,
+      "tsconfig.json": `{ "include": ["knip.ts"] }`,
+      "apps/share/should-build.mjs": `readFileSync("tsconfig.json")`,
+      ".github/actions/share/action.yml": action,
+    }, ["tests/seed.test.ts"]));
+    assert.deepEqual(resolution.unresolvable, []);
+    assert.deepEqual(resolution.tests, ["tests/seed.test.ts"]);
+  });
+  it("does not read a runner config's globs as naming a data file, but does read an exact path", () => {
+    const workflow = "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: vitest run --config packages/x/vitest.config.mts\n      - run: npm test\n";
+    const files = { "data/fixtures/a.svg": "<svg/>", "tests/a.test.ts": `readFileSync("data/fixtures/a.svg")`, ".github/workflows/test.yml": workflow };
+    const globbed = resolveFileReferences("data/fixtures/a.svg", input({ ...files, "packages/x/vitest.config.mts": `export default { test: { exclude: ["**/fixtures/**"] } };` }, ["tests/a.test.ts"]));
+    assert.deepEqual(globbed.unresolvable, []);
+    const exact = resolveFileReferences("data/fixtures/a.svg", input({ ...files, "packages/x/vitest.config.mts": `readFileSync("data/fixtures/a.svg");` }, ["tests/a.test.ts"]));
+    assert.notDeepEqual(exact.unresolvable, []);
+  });
 });
 
 describe("workflowFeedsTests", () => {
