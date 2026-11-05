@@ -97,6 +97,13 @@ describe("word-level naming", () => {
     assert.equal(scriptNamesPath("node --test \"scripts/[!d]*.test.ts\"", "scripts/check.test.ts", pattern("scripts/check.test.ts")), true);
     assert.equal(scriptNamesPath("node -e \"require('./ops/cloudflare/x.js')\"", target, pattern(target)), true);
   });
+  it("reads a bare file name in a script as the file in the script's own directory", () => {
+    const target = "packages/alint/vitest.config.mts";
+    assert.equal(scriptNamesPath("vitest run -c vitest.config.mts", target, pattern(target), { ancestors: false, cwd: "apps/cli" }), false);
+    assert.equal(scriptNamesPath("vitest run -c vitest.config.mts", target, pattern(target), { ancestors: false, cwd: "packages/alint" }), true);
+    assert.equal(scriptNamesPath("cd ../../packages/alint && vitest -c vitest.config.mts", target, pattern(target), { ancestors: false, cwd: "apps/cli" }), true);
+    assert.equal(scriptNamesPath("pnpm -r exec vitest -c vitest.config.mts", target, pattern(target), { ancestors: false }), true);
+  });
   it("resolves relative paths in content from the reader's directory or the root", () => {
     const target = "ops/cloudflare/src/index.js";
     assert.equal(contentNamesPath(`{ "main": "./src/index.js" }`, "ops/builder/wrangler.jsonc", target, pattern(target), true), false);

@@ -227,6 +227,10 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
   const targetBase = posix.basename(target);
   const dirs: string[] = [];
   for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
+  // A file name with an extension is the script's own directory's file (`vitest -c vitest.config.mts` in
+  // apps/cli/package.json is apps/cli's config, not packages/alint's; 2026-11-05) unless the script runs
+  // somewhere else: a `cd`, a workspace-wide run or a directory flag keeps any same-named file.
+  const elsewhere = /(?:^|[\s;&|(])(?:cd|pushd)\s|--(?:dir|cwd|prefix|filter|recursive|workspaces?)\b|(?:^|\s)-[rC]\s|\b(?:turbo|nx|lerna)\b/.test(body);
   for (const raw of body.split(/\s+/)) {
     const word = raw.replace(/^["']+|["']+$/g, "");
     if (!word) continue;
@@ -249,7 +253,7 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
         continue;
       }
       if (resolved === target || dirs.includes(resolved)) return true;
-      if (!candidate.includes("/") && (candidate === targetBase || dirs.some((dir) => posix.basename(dir) === candidate))) return true;
+      if (!candidate.includes("/") && ((candidate === targetBase && (elsewhere || !/\.[A-Za-z0-9]+$/.test(candidate))) || dirs.some((dir) => posix.basename(dir) === candidate))) return true;
     }
   }
   return false;
@@ -366,6 +370,20 @@ export function directoryWalkers(filePath: string, tests: readonly string[], rea
  * either. `tsconfig.json`, `.gitignore` and lint or style configs list paths but run nothing; a
  * non-default `wrangler.validation.json` is used only when a command names it. */
 const RUNS_FILES_WITHOUT_NAMING = /^(?:wrangler\.(?:toml|json|jsonc)|dockerfile.*|docker-compose.*|compose\.ya?ml|procfile|makefile|justfile|taskfile\.ya?ml|(?:vitest|vite|jest|playwright|cypress|ava|babel|webpack|rollup|esbuild|vue|nuxt|svelte|astro|next)\.config\..+|\.mocharc.*|\.babelrc.*|\.c8rc.*|\.nycrc.*)$/i;
+
+/** TypeScript project files: they list what to compile, and a non-code file they name is read only
+ * through an import, which the dependency graph already has. */
+const PATH_LIST_CONFIG = /^[jt]sconfig(?:\.[^/]+)?\.json$/i;
+const LINTERS = new Set(["eslint", "oxlint", "stylelint", "prettier", "alint", "cspell", "markdownlint", "commitlint", "lintstaged", "lint-staged", "biome", "knip", "dprint"]);
+
+/** A linter's or formatter's configuration (`alint.config.toml`, `.eslintrc.json`, `biome.json`). */
+export function isLintConfig(filePath: string): boolean {
+  const base = posix.basename(filePath).toLowerCase();
+  const stem = base.replace(/^\./, "").split(".")[0]!;
+  const tool = stem.replace(/rc$/, "");
+  if (!LINTERS.has(tool)) return false;
+  return stem !== tool || base.includes(".config.") || /^(?:biome|knip|dprint|cspell)\.(?:json|jsonc|ts|js|mjs|cjs|ya?ml)$/.test(base);
+}
 
 export function loadsWithoutNaming(path: string): boolean {
   return RUNS_FILES_WITHOUT_NAMING.test(posix.basename(path));
@@ -495,13 +513,14 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
   const tests = new Set<string>();
   const code = new Set<string>();
   const visited = new Set<string>([filePath]);
-  let frontier: Array<{ path: string; via: string }> = [{ path: filePath, via: filePath }];
+  // `lint`: the file configures a linter, so what runs it runs the linter, not tests (isLintConfig).
+  let frontier: Array<{ path: string; via: string; lint?: boolean }> = [{ path: filePath, via: filePath }];
   let transitiveCount = 0;
   const contents = new Map<string, string | undefined>();
   const read = (path: string) => { if (!contents.has(path)) contents.set(path, input.read(path)); return contents.get(path); };
 
   for (let depth = 0; depth < MAX_DEPTH && frontier.length > 0; depth++) {
-    const next: Array<{ path: string; via: string }> = [];
+    const next: Array<{ path: string; via: string; lint?: boolean }> = [];
     for (const target of frontier) {
       // Directories are matched only for the changed file itself, which a test may find by listing its
       // directory. A reader reached through the changed file (a script, a manifest) matters only if
@@ -512,6 +531,10 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
       for (const candidate of input.files) {
         if (visited.has(candidate) || candidate === target.path || LOCKFILES.has(posix.basename(candidate))) continue;
         const base = posix.basename(candidate);
+        // A lint step in a workflow or a package's lint script reads a linter's configuration to lint,
+        // which no test observes; a test or graph code naming it is still followed (2026-11-05: LobeHub's
+        // alint.config.toml names fixture directories and its test workflow runs alint before the tests).
+        if (target.lint && (base === "package.json" || candidate.startsWith(".github/"))) continue;
         if (base === "package.json") {
           const content = read(candidate);
           if (content === undefined) {
@@ -529,6 +552,9 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           continue;
         }
         if (input.isDocumentation(candidate)) continue;
+        // 2026-11-05: LobeHub's root tsconfig `include` names scripts/, and with every tsconfig extending it
+        // the readers of scripts/stylexMigration/legacyFiles.json passed the transitive limit.
+        if (PATH_LIST_CONFIG.test(base) && !input.isCodeFile(target.path)) continue;
         const content = read(candidate);
         if (content === undefined && input.allowNoReaders && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate) || isImplicitlyLoadedFile(candidate))) {
           block(`${candidate} could not be read`, target.path);
@@ -564,7 +590,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           resolution.readers.push({ path: candidate, kind: "transitive", via: target.path });
           if (++transitiveCount > MAX_TRANSITIVE_READERS) { block(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`, target.path); break; }
           parent.set(candidate, target.path);
-          next.push({ path: candidate, via: target.path });
+          next.push({ path: candidate, via: target.path, lint: isLintConfig(candidate) });
         } else {
           // Markup, prose, images and licences name paths in links and URLs but execute nothing and
           // direct no reads, so nothing reaches the suite through them.

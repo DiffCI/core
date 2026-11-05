@@ -69,6 +69,27 @@ describe("resolveTestFixtureOwners", () => {
     const headWithoutSuite = new Set([...HEAD].filter((f) => !f.startsWith("examples/acp-agent/tests/")));
     assert.strictEqual(resolveTestFixtureOwners(deletedPath, isTest, headWithoutSuite), undefined);
   });
+
+  it("sibling: a fixtures dir beside its tests is owned by the tests in its parent and the parent's tests dir", () => {
+    const head = new Set([
+      "scripts/migrate/verification/__tests__/batch.test.ts",
+      "scripts/migrate/verification/__tests__/cli.test.ts",
+      "scripts/migrate/verification/analysis/coverage.test.ts",
+      "scripts/migrate/verification/fixtures/assets/manifest.json",
+      "packages/agents/src/spawn/__fixtures__/acp/plan.jsonl",
+      "packages/agents/src/spawn/deep/runner.test.ts",
+    ]);
+    assert.deepStrictEqual(resolveTestFixtureOwners("scripts/migrate/verification/fixtures/assets/manifest.json", isTest, head),
+      { testsDir: "scripts/migrate/verification", fixtureDir: "scripts/migrate/verification/fixtures", scope: "sibling", owners: ["scripts/migrate/verification/__tests__/batch.test.ts", "scripts/migrate/verification/__tests__/cli.test.ts"] });
+    assert.deepStrictEqual(resolveTestFixtureOwners("packages/agents/src/spawn/__fixtures__/acp/plan.jsonl", isTest, head)?.owners, ["packages/agents/src/spawn/deep/runner.test.ts"]);
+    assert.strictEqual(resolveTestFixtureOwners("packages/agents/src/other/__fixtures__/x.json", isTest, head), undefined);
+  });
+
+  it("a data file directly in a tests dir is owned by the tests beside it; a helper module is not claimed", () => {
+    const head = new Set(["apps/server/review/__tests__/run.test.ts", "apps/server/review/__tests__/recorded.json", "apps/server/review/__tests__/helper.ts"]);
+    assert.deepStrictEqual(resolveTestFixtureOwners("apps/server/review/__tests__/recorded.json", isTest, head)?.owners, ["apps/server/review/__tests__/run.test.ts"]);
+    assert.strictEqual(resolveTestFixtureOwners("apps/server/review/__tests__/helper.ts", isTest, head), undefined);
+  });
 });
 
 // ---- through the analyzer: category, selection, evidence, rename and fallback semantics ----
