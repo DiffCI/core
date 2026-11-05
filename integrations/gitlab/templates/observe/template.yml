@@ -3,7 +3,7 @@
 spec:
   inputs:
     stage:
-      description: Stage the observer job runs in. It starts at once (needs: []) whatever the stage.
+      description: "Stage the observer job runs in. It starts at once (needs: []) whatever the stage."
       default: test
     job-name:
       description: Name of the observer job. Override `rules` or `allow_failure` by redefining this job.
