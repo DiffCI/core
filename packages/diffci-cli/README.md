@@ -17,6 +17,21 @@ The `diffci-mcp` binary exposes the same local analysis through MCP. Install
 the public Codex, Claude Code, Cursor, Grok, or Meta Muse Code integration from
 the [cross-agent installation guide](https://github.com/DiffCI/core/blob/main/docs/agent-installation.md).
 
+## Compare a selection with full-suite results
+
+```sh
+diffci check-plan --plan plan.json --results junit.xml
+```
+
+This local command compares a saved Core execution plan with a full-suite JUnit
+report from the same revision. It prints JSON groups for missed, selected and
+unattributed failures. Missed or unattributed failures exit 1; invalid inputs exit
+2. Exit 0 describes the comparison, not whether the full suite passed. The command
+runs no tests, writes no files and sends nothing.
+
+See the [reporter configuration and scheduled-job example](https://github.com/DiffCI/core/blob/main/docs/using-diffci.md#compare-a-plan-with-a-full-suite-junit-report)
+for Vitest and Jest. Use a CLI build containing this command.
+
 ## Source and license
 
 This package is MIT-licensed. Its current source lives in

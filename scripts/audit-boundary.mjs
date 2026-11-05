@@ -15,7 +15,7 @@ const sourceRoots = [
   },
   {
     prefix: 'packages/diffci-cli/src/',
-    allowsPackage: (specifier) => specifier === 'yaml' || specifier === '@diffci.com/core' || specifier.startsWith('@diffci.com/core/'),
+    allowsPackage: (specifier) => ['yaml', 'saxes', '@diffci.com/core'].includes(specifier) || specifier.startsWith('@diffci.com/core/'),
   },
 ];
 function files(dir) {

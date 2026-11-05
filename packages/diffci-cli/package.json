@@ -77,6 +77,7 @@
   },
   "dependencies": {
     "@diffci.com/core": "git+https://github.com/DiffCI/core.git#a5f1c26963846cb4cd9df1f9d495e3c99373a64b",
+    "saxes": "6.0.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

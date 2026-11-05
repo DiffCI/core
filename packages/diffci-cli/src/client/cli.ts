@@ -14,6 +14,7 @@
  *   verify             fail-closed verification of a working-tree snapshot or commit range
  *   gate               run a build's whole gate and record what DiffCI would have skipped (observe)
  *   check              analysis plus automatic paired runtime measurement
+ *   check-plan         compare a saved test selection with one full-suite JUnit result
  *   observe            analyse the checkout and write an observation report
  *   verify-savings     run a paired full-versus-selected timing check
  *   validate-specs     block conflicting same-turn change specifications
@@ -29,7 +30,7 @@
  * exits 1 on a BLOCKING finding - it is a pre-install check run by a human, not a step inside a build.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -56,6 +57,7 @@ import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
+import { checkPlan } from "./check-plan.js";
 import {
   findReceipt,
   findWindowStart,
@@ -92,6 +94,54 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
   }
   return { command, flags };
+}
+
+const CHECK_PLAN_MAX_INPUT_BYTES = 16 * 1024 * 1024;
+
+function readCheckPlanInput(path: string): string {
+  // Nonblocking open prevents a named pipe from hanging before the regular-file check. The capped
+  // read also preserves the limit if a regular file grows after fstat.
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const info = fstatSync(descriptor);
+    if (!info.isFile()) throw new Error(`Input must be a regular file: ${path}`);
+    if (info.size > CHECK_PLAN_MAX_INPUT_BYTES) throw new Error(`Input exceeds the 16 MiB limit: ${path}`);
+    const bytes = Buffer.allocUnsafe(CHECK_PLAN_MAX_INPUT_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const read = readSync(descriptor, bytes, length, bytes.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length > CHECK_PLAN_MAX_INPUT_BYTES) throw new Error(`Input exceeds the 16 MiB limit: ${path}`);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function runCheckPlanCommand(args: readonly string[]): number {
+  try {
+    const files = new Map<string, string>();
+    for (let index = 0; index < args.length; index += 2) {
+      const flag = args[index]!;
+      if (flag !== "--plan" && flag !== "--results") throw new Error(`Unsupported check-plan argument: ${flag}`);
+      if (files.has(flag)) throw new Error(`Repeated check-plan argument: ${flag}`);
+      const value = args[index + 1];
+      if (!value || value.startsWith("--")) throw new Error(`Missing file path for ${flag}`);
+      files.set(flag, value);
+    }
+    const planPath = files.get("--plan");
+    const resultsPath = files.get("--results");
+    if (!planPath || !resultsPath) throw new Error("check-plan requires --plan <file> and --results <file>");
+    const plan: unknown = JSON.parse(readCheckPlanInput(planPath));
+    const report = checkPlan(plan, readCheckPlanInput(resultsPath));
+    console.log(JSON.stringify(report));
+    return report.summary.missed > 0 || report.summary.unattributed > 0 ? 1 : 0;
+  } catch (error: unknown) {
+    console.error(JSON.stringify({ schemaVersion: 1, error: error instanceof Error ? error.message : "Invalid check-plan input" }));
+    return 2;
+  }
 }
 
 function defaultReportPath(env: NodeJS.ProcessEnv): string {
@@ -1106,6 +1156,7 @@ Usage:
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
+  diffci check-plan --plan <plan.json> --results <junit.xml>
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
   diffci pilot-packet [--repo <path>] [--out-dir <dir>] [--base <sha> --head <sha>]
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
@@ -1147,6 +1198,9 @@ leaves) and stops at the first failure; --no-checks skips them, and they are ski
 verify without --changed resolves the CI event range (or HEAD^..HEAD locally), requires a clean checkout,
 and exits zero only when the analyzed head is the commit that actually passed verification.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
+check-plan reads one saved plan and one full-suite JUnit result, and prints a JSON failure comparison.
+It exits 1 for missed or unattributed failures, 2 for invalid inputs, and 0 otherwise. It runs no tests,
+reads no Git state, writes no reports, and sends nothing. Each UTF-8 input must be at most 16 MiB.
 pilot runs observe and verify-savings together, writing reports to ../diffci-output by default.
 pilot-packet writes a shareable compatibility summary, raw observation, and non-blocking workflow
 outside the checkout. It runs no tests, modifies no target-repository files, and sends nothing.
@@ -1196,6 +1250,11 @@ function maybeShowFeedbackPrompt(flags: Record<string, string | boolean>, env: N
 }
 
 async function main(): Promise<void> {
+  // This stateless command deliberately bypasses shared flag handling, telemetry and feedback.
+  if (process.argv[2] === "check-plan") {
+    process.exitCode = runCheckPlanCommand(process.argv.slice(3));
+    return;
+  }
   const { command, flags } = parseArgs(process.argv);
   const env = process.env;
 

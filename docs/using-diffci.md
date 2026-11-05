@@ -71,6 +71,111 @@ npx --yes @diffci.com/diffci@latest check \
 
 `plan` is advisory; `check` may execute repository test commands. If either command refuses or errors, run the repository's normal full validation.
 
+## Compare a plan with a full-suite JUnit report
+
+`check-plan` checks whether a saved selection would have skipped failures in one
+supplied full-suite report. It does not run tests, read Git state, write files or
+send data. Use a CLI build containing this command; when working from source,
+build `packages/diffci-cli` and invoke its `dist-client/src/client/cli.js` with Node.
+
+Save the advisory Core plan before running the full suite, using the verified
+revisions described above:
+
+```sh
+RESULTS_DIR=$(mktemp -d)
+node /path/to/core/dist/cli.js plan --repo "$PWD" --base "$BASE" --head "$HEAD" > "$RESULTS_DIR/plan.json"
+# Configure test:junit to run the normal full suite with a reporter below.
+DIFFCI_JUNIT_FILE="$RESULTS_DIR/junit.xml" npm run test:junit
+diffci check-plan --plan "$RESULTS_DIR/plan.json" --results "$RESULTS_DIR/junit.xml"
+```
+
+The command accepts the Core `plan` command's JSON output or its nested
+`ExecutionPlan` (version `5.0.0`). It requires `mode`, `selectedTests`, `skippedTests`
+and `safety.fallbackRequired`; the mode and fallback flag must agree, paths must
+be canonical repository-relative paths, and the two lists must not overlap.
+Observation reports and verification receipts are different formats.
+
+The JSON result has `schemaVersion: 1`, `mode`, `fullFallback`, a `summary`, and
+three arrays of failed testcases:
+
+| Group | Meaning |
+| --- | --- |
+| `missed` | The failure maps to a file in `skippedTests`. |
+| `selected` | The failure maps to a file in `selectedTests`. |
+| `unattributed` | The file is missing, unknown or ambiguous; `reason` explains why. |
+
+Exit **1** means at least one missed or unattributed failure. Exit **2** means
+invalid arguments, unreadable inputs, an invalid plan or an invalid report; a JSON
+error goes to stderr and no comparison goes to stdout. Exit **0** means neither
+group contains failures. Selected tests may still have failed: retain the full
+test runner's exit status as the authority on suite success.
+
+A `FULL` plan must have no skipped tests. Its result explicitly sets
+`fullFallback: true` and has no missed failures. Known failures remain selected;
+unattributed failures still exit 1, and invalid XML still exits 2.
+
+### Reporter configuration
+
+Use repository-relative file metadata. The comparison first checks testcase or
+suite `file` attributes, then JS/TS file paths in classname or suite names.
+Conflicting metadata stays unattributed. It normalizes Windows separators and
+leading `./`, but does not guess from test titles, stack traces, basenames or
+absolute-path suffixes. Absolute paths require a checkout root that these inputs
+do not establish, so they remain unattributed.
+
+Vitest's default JUnit classname and suite-name conventions normally identify the
+file. Explicit file attributes also work with custom labels. For example, merge
+this reporter into the project's Vitest configuration:
+
+```js
+test: {
+  reporters: ['default', ['junit', {
+    outputFile: process.env.DIFFCI_JUNIT_FILE ?? 'junit.xml',
+    addFileAttribute: true,
+  }]],
+}
+```
+
+For Jest, install and configure `jest-junit`. Its default description labels often
+do not identify a file, and its default report can omit test-suite load errors.
+Both options below are strings:
+
+```js
+reporters: ['default', ['jest-junit', {
+  outputFile: process.env.DIFFCI_JUNIT_FILE ?? 'junit.xml',
+  addFileAttribute: 'true',
+  reportTestSuiteErrors: 'true',
+}]],
+```
+
+Keep generated reports outside the checkout so they do not affect Core's
+clean-checkout check. These conventions are covered by reports generated with Vitest 5.1.0 and Jest
+30.5.2 plus jest-junit 17.0.0. Custom reporters may need different configuration.
+The [synthetic fixture notes](../packages/diffci-cli/tests/client/fixtures/check-plan/README.md)
+record their sources and reproduction steps. Go and Maven attribution are outside
+this first implementation.
+
+### Scheduled full-suite check
+
+The [scheduled-job example](../examples/github-actions-check-plan.yml) builds
+DiffCI from source, saves a plan for the scheduled checkout, runs `npm run
+test:junit` in full, and compares the report even if that test step fails. Configure
+`test:junit` to run the project's normal complete suite with one of the reporters
+above. Pin the DiffCI checkout to a reviewed revision containing `check-plan`.
+The example leaves full-suite failures visible and also runs the full suite when
+plan creation fails.
+
+Both inputs must come from the same revision and complete test scope. Standard
+JUnit does not prove either condition; a passing comparison cannot establish
+report completeness or the absence of missed failures beyond the supplied report.
+In particular, an error omitted by a reporter cannot be recovered. Each UTF-8 input
+is limited to 16 MiB. XML must contain at least one testcase; malformed XML,
+DOCTYPE declarations, namespaces, excessive nesting/tags, more than 16 MiB of
+accumulated failure metadata and headers claiming
+more evidence than the report contains are rejected. Duplicate failed testcases
+remain distinct, while multiple failure/error elements within one testcase count
+as one failed testcase.
+
 ## Reproduce a full fallback
 
 This synthetic project has one unsupported dependency shape: `loader.js` chooses an import at runtime, so static analysis cannot enumerate every module the changed loader may reach. The tree is:
