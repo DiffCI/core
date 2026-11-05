@@ -304,7 +304,7 @@ describe("end to end on a temporary repository", () => {
       assert.deepEqual(deploy.fallbackReasons, []);
       assert.deepEqual(deploy.affectedTests, []);
       const ci = await analyze(dir, { ".github/workflows/ci.yml": base[".github/workflows/ci.yml"].replace("npm test", "npm test -- --test-concurrency=1") });
-      assert.ok(ci.fallbackReasons.includes("GitHub workflow definition(s) changed; full validation required: .github/workflows/ci.yml"));
+      assert.ok(ci.fallbackReasons.includes("CI workflow definition(s) changed; full validation required: .github/workflows/ci.yml"));
       assert.ok(ci.fallbackReasons.includes("Configuration file(s) changed; full validation required: .github/workflows/ci.yml"));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

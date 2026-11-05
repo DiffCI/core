@@ -459,7 +459,7 @@ export class ImpactAnalyzer {
       { reason: "CONFIG_GLOBAL", message: "Configuration file(s) changed; full validation required", signal: "config", check: (a) => a.configChanged },
       { reason: "DEPENDENCY_MANIFEST", message: "Dependency manifest changed; full validation required", signal: "dependencyManifest", check: (a) => a.dependencyManifestChanged },
       { reason: "LOCKFILE_GLOBAL", message: "Lockfile changed; full validation required", signal: "lockfile", check: (a) => a.lockfileChanged },
-      { reason: "WORKFLOW_GLOBAL", message: "GitHub workflow definition(s) changed; full validation required", signal: "workflow", check: (a) => a.workflowChanged },
+      { reason: "WORKFLOW_GLOBAL", message: "CI workflow definition(s) changed; full validation required", signal: "workflow", check: (a) => a.workflowChanged },
       { reason: "INFRASTRUCTURE_GLOBAL", message: "Infrastructure definition(s) changed; full validation required", signal: "infrastructure", check: (a) => a.infrastructureChanged },
       { reason: "DATABASE_GLOBAL", message: "Database definition(s) changed; full validation required", signal: "database", check: (a) => a.databaseChanged },
     ];

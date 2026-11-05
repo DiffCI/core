@@ -37,6 +37,7 @@
  * the rules described someone else's repository.
  */
 import type { ChangedFile } from "../git/types.js";
+import { isConventionalCiConfigPath } from "../git/ci-config-paths.js";
 import type { RepositoryProfile } from "../repo/types.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT } from "../repo/layout.js";
 
@@ -145,7 +146,7 @@ export function runPathBaseline(
   if (changedPaths.some((p) => p === "package.json" || p === "package-lock.json" || /^(yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(p))) {
     return runEverything("config/dependency -> full fallback", "config/dependency change triggers full fallback");
   }
-  if (changedPaths.some((p) => p.startsWith(".github/workflows/"))) {
+  if (changedPaths.some(isConventionalCiConfigPath)) {
     return runEverything("workflow change -> full fallback", "workflow change triggers full fallback");
   }
   if (changedPaths.some((p) => DATABASE_DIRECTORIES.has(firstSegment(p)))) {

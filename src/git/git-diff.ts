@@ -16,6 +16,7 @@ import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
 import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
 import { LOCKFILE } from "../repo/lockfiles.js";
+import { ciConfigPredicate, gitlabLocalIncludes, isConventionalCiConfigPath } from "./ci-config-paths.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 export const ZERO_SHA = "0000000000000000000000000000000000000000";
@@ -441,6 +442,14 @@ function readFileAtSha(sha: string, path: string, repoPath: string | undefined):
   return result.stdout;
 }
 
+/** Every file path at a commit, for wildcard GitLab includes. Empty when the listing fails, which only
+ * loses matches inside a wildcard include's own includes; the wildcard itself still matches changes. */
+function listFilesAtSha(sha: string, repoPath: string | undefined): string[] {
+  const result = runGit(["ls-tree", "-r", "--full-tree", "--name-only", "-z", sha], repoPath);
+  if (result.status !== 0) return [];
+  return result.stdout.split(" ").filter(Boolean);
+}
+
 /** Root entries include directories and gitlinks, which recursive file inventories can omit. */
 function readRootPathsAtSha(sha: string, repoPath: string | undefined): ReadonlySet<string> | undefined {
   const result = runGit(["ls-tree", "--full-tree", "--name-only", "-z", sha], repoPath);
@@ -452,7 +461,8 @@ function readRootPathsAtSha(sha: string, repoPath: string | undefined): Readonly
   return roots.size === paths.length ? roots : undefined;
 }
 
-export function computeAnalysis(files: ChangedFile[]): GitDeltaAnalysis {
+/** `isCiConfig` defaults to names alone; analyzeGitDelta also passes what GitLab `include` reaches. */
+export function computeAnalysis(files: ChangedFile[], isCiConfig: (path: string) => boolean = isConventionalCiConfigPath): GitDeltaAnalysis {
   const paths = files.flatMap((f) =>
     f.oldPath ? [f.path, f.oldPath] : [f.path],
   );
@@ -462,7 +472,7 @@ export function computeAnalysis(files: ChangedFile[]): GitDeltaAnalysis {
     config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p))),
     dependencyManifest: matching((p) => p === "package.json"),
     lockfile: matching((p) => LOCKFILE.test(p)),
-    workflow: matching((p) => p.startsWith(".github/workflows/")),
+    workflow: matching(isCiConfig),
     infrastructure: matching((p) => infrastructureRole(p) === "definition"),
     database: matching((p) => p.startsWith("database/")),
   };
@@ -616,7 +626,11 @@ export async function analyzeGitDelta(
       f.oldPath ? [f.path, f.oldPath] : [f.path],
     );
 
-    const analysis = computeAnalysis(filesWithBinary);
+    // A GitLab pipeline can pull in any local file through `include`; follow it at both commits, since
+    // dropping an include changes the pipeline as much as adding one (2026-11-05).
+    const isCiConfig = ciConfigPredicate([baseSha, headSha].map((sha) =>
+      gitlabLocalIncludes((path) => readFileAtSha(sha, path, repoPath), () => listFilesAtSha(sha, repoPath))));
+    const analysis = computeAnalysis(filesWithBinary, isCiConfig);
     // Stage 1B fix (2026-08-21): narrow the path-based dependencyManifestChanged signal to whether a
     // behaviorally-relevant field actually changed - only attempted when the root package.json itself
     // was modified (not added/deleted/renamed, which stay unambiguously true - see
@@ -781,7 +795,7 @@ export async function analyzeGitDelta(
     if (narrowed.size > 0) {
       // Do not let the generic path rules undo the content-level narrowing. Other changes in the same
       // delta must still force full validation.
-      const remaining = computeAnalysis(filesWithBinary.filter((f) => !narrowed.has(f)));
+      const remaining = computeAnalysis(filesWithBinary.filter((f) => !narrowed.has(f)), isCiConfig);
       analysis.configChanged = remaining.configChanged;
       analysis.workflowChanged = remaining.workflowChanged;
       analysis.signalPaths = { ...analysis.signalPaths, config: remaining.signalPaths?.config, workflow: remaining.signalPaths?.workflow,

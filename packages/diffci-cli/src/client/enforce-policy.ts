@@ -57,6 +57,10 @@ export interface EnforcementDecision {
  */
 const GLOBAL_RISK_PATTERNS: readonly RegExp[] = [
   /^\.github\//,
+  // GitLab pipeline definitions (2026-11-05). Files pulled in by `include: local:` under other names
+  // are caught by the analyzer, which follows includes; this is the name-only backstop.
+  /(?:^|\/|\.)gitlab-ci\.ya?ml$/i,
+  /^\.gitlab\/.*\.ya?ml$/i,
   /(?:^|\/)package\.json$/,
   /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?)$/,
   /(?:^|\/)\.(?:npmrc|nvmrc|node-version|tool-versions)$/,
