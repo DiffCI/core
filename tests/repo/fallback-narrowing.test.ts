@@ -121,6 +121,21 @@ describe("word-level naming", () => {
     assert.equal(contentNamesPath(`run: ls "packages"`, action, target, pattern(target), true), true);
     assert.equal(contentNamesPath("require(`${process.env.GITHUB_WORKSPACE}/.github/packages/check.cjs`)", action, target, pattern(target), true), false);
   });
+  it("does not count a path in a list of files to skip as reading it", () => {
+    // LobeHub, 2026-11-05: knip, alint, a Vitest config and tsconfig.json each named the stylex
+    // migration's data files only to ignore them, and every change to those files ran the full suite.
+    const target = "scripts/stylexMigration/verification/fixtures/assets/manifest.json";
+    assert.equal(contentNamesPath("export default {\n  ignore: [\n    'packages/**',\n    'scripts/**',\n  ],\n};", "knip.ts", target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`[[config.group]]\nignores = [ "**/*.test.ts", "**/fixtures/**" ]`, "alint.config.toml", target, pattern(target), true), false);
+    assert.equal(contentNamesPath("test: { exclude: ['**/node_modules/**', 'fixtures/**'] }", "packages/alint/vitest.config.mts", target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`{ "exclude": ["e2e/**", "scripts/stylexMigration/**"], "include": ["src/**/*.ts"] }`, "tsconfig.json", target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`{ "testPathIgnorePatterns": ["<rootDir>/scripts/"] }`, "jest.config.json", target, pattern(target), true), false);
+    // Lists of files to process still name them, including one beside an exclusion list.
+    assert.equal(contentNamesPath(`{ "exclude": ["e2e/**"], "include": ["scripts/**/*.json"] }`, "tsconfig.json", target, pattern(target), true), true);
+    assert.equal(contentNamesPath(`files = [ "scripts/**" ]\nignores = [ "**/*.test.ts" ]`, "alint.config.toml", target, pattern(target), true), true);
+    assert.equal(contentNamesPath("const ignore = 1;\nreadFileSync('scripts/stylexMigration/verification/fixtures/assets/manifest.json')", "scripts/x.ts", target, pattern(target), true), true);
+    assert.equal(contentNamesPath("copy({ targets: [{ src: 'scripts/**', ignore: ['x'] }] })", "vite.config.ts", target, pattern(target), true), true);
+  });
 });
 
 describe("repositoryFileReader", () => {

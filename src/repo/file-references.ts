@@ -253,6 +253,32 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
 
 const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
 
+/** Keys whose list names files a tool skips: tsconfig and Vitest `exclude`, knip `ignore`, ESLint-style
+ * `ignores` and `ignorePatterns`, Jest `testPathIgnorePatterns` and its siblings. */
+const EXCLUSION_KEY = /^(?:ignored?|ignores|excluded?|excludes|ignorePatterns|\w*PathIgnorePatterns)$/;
+
+/**
+ * Whether the word at `index` is an element of a bracketed list assigned to an exclusion key
+ * (`exclude: [...]`, `"exclude": [...]`, `ignores = [...]`) (2026-11-05). A tool never reads what its
+ * own ignore list excludes, yet each such glob counted as a reader: on LobeHub, knip's
+ * `ignore: ['scripts/**']`, alint's `ignores = ["**\/fixtures/**"]` and a Vitest `exclude` named every
+ * data file of a migration under scripts/, and each change to one ran the full suite. YAML block lists
+ * and anything not directly inside such a list keep the conservative answer.
+ */
+function inExclusionList(content: string, index: number): boolean {
+  let depth = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    const char = content[i];
+    if (char === "]") depth++;
+    else if (char === "[") {
+      if (depth > 0) { depth--; continue; }
+      const key = /["']?([A-Za-z_$][\w$]*)["']?\s*[:=]\s*$/.exec(content.slice(Math.max(0, i - 80), i));
+      return key !== null && EXCLUSION_KEY.test(key[1]!);
+    } else if ((char === "{" || char === "(") && depth === 0) return false;
+  }
+  return false;
+}
+
 /**
  * Whether `content`, read from `readerPath`, names `target` (or, with `ancestors`, one of its
  * directories), once each matching word is read as a whole path (2026-10-28). The reference pattern
@@ -273,6 +299,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
     // Judged with the characters around it, so a bare directory name in prose (`the overlay packages,`
     // in a workflow comment) does not count, as the reference pattern intends (2026-11-04).
     if (!pattern.test(content.slice(Math.max(0, match.index - 1), match.index + word.length + 1))) continue;
+    if (inExclusionList(content, match.index)) continue;
     // A leading variable is a directory the content does not name (`$GITHUB_ACTION_PATH/../../scripts/x.sh`
     // names `scripts/x.sh` somewhere, not the repository's `scripts/`), so the rest is a path relative to
     // an unknown directory (2026-11-04: a LobeHub composite action blocked every changed file under scripts/).
@@ -340,7 +367,7 @@ export function loadsWithoutNaming(path: string): boolean {
 /** A root dependency manifest that a Dockerfile names only in `COPY`/`ADD` instructions, which put it
  * into the image for a package manager to install from. Any other instruction naming it (a `RUN` that
  * reads it) does not qualify. Comment lines execute nothing and are ignored, so a Dockerfile that names
- * the file only in comments qualifies too (2026-11-05: two DiffCI.com Dockerfiles' `# ... pinned in
+ * the file only in comments qualifies too (2026-11-05: two dogfood-repository Dockerfiles' `# ... pinned in
  * package.json` comments blocked every dependency bump). */
 function copiesOnly(content: string, target: string): boolean {
   if (target.includes("/") || !["package.json", ...LOCKFILES].includes(target)) return false;
@@ -501,7 +528,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         visited.add(candidate);
         if (input.allowNoReaders && /^dockerfile/i.test(base) && copiesOnly(content, target.path)) {
           // The caller modelled what the file does when installed (dependency selection); a Dockerfile
-          // that only copies it into the image to install from it adds nothing (2026-11-04: DentalPresence's
+          // that only copies it into the image to install from it adds nothing (2026-11-04: a dogfood repository's
           // `COPY package.json package-lock.json ./` made every dependency bump a full run).
           resolution.readers.push({ path: candidate, kind: "documentation", via: target.path });
         } else if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
