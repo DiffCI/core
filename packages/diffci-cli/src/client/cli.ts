@@ -49,6 +49,8 @@ import { configureTelemetry, readTelemetryPreference, recordUsage } from "./tele
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, type VerificationReport } from "./verify.js";
+import { startWatch } from "./watch.js";
+import { captureWorkingTreeSnapshot } from "./working-tree.js";
 import { decideStop, HOOK_AGENTS, maxAttempts, parseStopPayload, sessionAttempts, stopRepoPath, type HookAgent } from "./agent-stop.js";
 import { formatGateSummary, gateExitCode, planGate, runGate } from "./gate.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
@@ -395,6 +397,47 @@ function readStdin(): Promise<string> {
     process.stdin.on("end", () => resolveText(text));
     process.stdin.on("error", () => resolveText(text));
   });
+}
+
+async function runWatchCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? process.cwd());
+  const identity = observerIdentity();
+  const checks = flags.checks === true;
+  console.log(`DiffCI watching ${repoPath}: verifies the uncommitted changes after each save${checks ? "" : " (tests only; --checks adds lint, typecheck and other checks)"}. Ctrl+C stops.`);
+  const session = startWatch({
+    repoPath,
+    debounceMs: numberFlag(flags, "debounce-ms") ?? 300,
+    currentTree: () => { try { return captureWorkingTreeSnapshot(repoPath).treeSha; } catch { return undefined; } },
+    run: async () => {
+      const started = Date.now();
+      const report = await verifyChanged({
+        repoPath,
+        env: env as Record<string, string | undefined>,
+        version: identity.version,
+        engineSha: identity.sha,
+        timeoutMs: numberFlag(flags, "timeout-ms") ?? 30 * 60 * 1000,
+        tailBytes: 12_000,
+        skipChecks: !checks,
+      });
+      if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
+      console.log(formatWatchRun(report, Date.now() - started));
+      return { treeSha: report.snapshot.after_tree_sha ?? report.snapshot.before_tree_sha };
+    },
+  });
+  await new Promise<void>((resolveStop) => process.once("SIGINT", () => { session.stop(); resolveStop(); }));
+  return 0;
+}
+
+/** One line for a pass, the full summary for anything else, so a failure shows what broke. */
+function formatWatchRun(report: VerificationReport, wallMs: number): string {
+  const time = new Date().toTimeString().slice(0, 8);
+  if (report.selection === "none" && report.verification === "passed") return `${time}  no uncommitted changes`;
+  if (report.verification === "passed") {
+    const how = report.reused_from ? "reused an earlier pass of this tree" : `${report.selection} ${report.tests_selected} of ${report.tests_available} test files`;
+    return `${time}  passed  ${how}  (${(wallMs / 1000).toFixed(1)}s)`;
+  }
+  return `${time}  ${report.verification.toUpperCase()}
+${formatVerificationSummary(report)}`;
 }
 
 async function runVerifyCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
@@ -1212,6 +1255,7 @@ Pilot a repository: https://diffci.com/#pilot
 Usage:
   diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--no-hook] [--no-mcp] [--no-skill]
               [--no-agent-hooks] [--force]
+  diffci watch [--repo <path>] [--checks] [--debounce-ms <ms>] [--no-log]
   diffci agent-stop --agent claude|codex|cursor   (run by the agent stop hooks init installs; reads the hook JSON on stdin)
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
@@ -1298,6 +1342,8 @@ and a selection that cannot be split run in shard 1.
 coverage runs the full node:test suite once under a probe and V8 coverage and keeps, per test file, the files
 it loaded, read or listed in .git/diffci/coverage-map.json. verify then also runs tests that map connects to a
 changed file when the dependency graph did not select them; it only ever adds tests (--no-coverage ignores it).
+watch verifies the uncommitted changes after each save, as verify --changed would, and prints one line per
+pass and the full summary on a failure; tests only unless --checks.
 outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
 misses (a selected run that passed and a later full run of the same tree that failed). --curve replays the
 failing runs to show how soon the first failure is seen, ranked by history against path order. --timings
@@ -1353,6 +1399,9 @@ async function main(): Promise<void> {
       return;
     case "verify":
       process.exitCode = await runVerifyCommand(flags, env);
+      return;
+    case "watch":
+      process.exitCode = await runWatchCommand(flags, env);
       return;
     case "agent-stop":
       process.exitCode = await runAgentStopCommand(flags, env);

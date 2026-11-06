@@ -24,6 +24,14 @@ npx @diffci.com/diffci@latest observe --no-send
 
 `observe --no-send` reports selected tests, fallback reasons, and command availability without executing the repository's tests or sending a report. It does not establish runtime savings.
 
+## Watch your changes
+
+```sh
+npx @diffci.com/diffci@latest watch
+```
+
+`watch` verifies the uncommitted changes after each save, the way `verify --changed` does, so the selection, result reuse, test order and coverage map all apply. A pass prints one line; anything else prints the full summary, failing tests included. It runs tests only; `--checks` adds lint, typecheck and the other checks. Saves made during a run start one more run after it, and files a run writes do not start another. Each run analyses the repository afresh, so it takes as long as `verify --changed`. Agents get the same answer without watching: `diffci init` installs a stop hook that verifies when the agent finishes a turn (see `docs/agent-installation.md`).
+
 ## The outcome log, result reuse and test order
 
 Each `verify` run is appended to `.git/diffci/outcomes.jsonl`: the selection and why, the checks, the result, each test file's result and duration, and the failing tests. The file sits inside `.git`, so it is never committed and never sent. `diffci outcomes` summarises it. `--no-log` or `DIFFCI_OUTCOME_LOG=0` skips writing it.
