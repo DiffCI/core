@@ -542,6 +542,43 @@ describe("deleted asset safety", () => {
   }
 });
 
+describe("end-to-end specs by the routes they visit (2026-11-06)", () => {
+  const sources: Record<string, string> = {
+    "e2e/blog.spec.ts": "import { test } from '@playwright/test'; test('blog', async ({ page }) => { await page.goto('/blog/hello'); });",
+    "e2e/about.spec.ts": "import { test } from '@playwright/test'; test('about', async ({ page }) => { await page.goto('/about'); });",
+    "e2e/search.spec.ts": "import { test } from '@playwright/test'; test('search', async ({ page }) => { await page.goto(`/search?q=${q}`); });",
+    "e2e/helpers.spec.ts": "import { test } from 'vitest'; test('not playwright', () => {});",
+  };
+  const graph = makeGraph(
+    ["src/app/blog/[slug]/page.tsx", "src/app/about/page.tsx", "src/components/header.tsx", ...Object.keys(sources)],
+    [["src/app/about/page.tsx", "src/components/header.tsx"]],
+  );
+  const profile = makeProfile({ next: true, entryPoints: ["src/app/blog/[slug]/page.tsx", "src/app/about/page.tsx"], tests: ["e2e/**/*.spec.ts"] });
+  const options = { readRepositoryFile: (path: string) => sources[path], repositoryFiles: new Set(graph.nodes.map((node) => node.path)) };
+  const selected = (r: ReturnType<typeof analyzer.analyze>) => r.affectedTests.map((t) => t.path);
+
+  it("selects specs visiting a route a changed component reaches, and specs with computed URLs", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/components/header.tsx", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), profile, options);
+    assert.strictEqual(result.fallbackRequired, false, result.fallbackReasons.join("; "));
+    assert.deepStrictEqual(selected(result), ["e2e/about.spec.ts", "e2e/search.spec.ts"]);
+    assert.ok(result.affectedTests.every((t) => t.reasons.includes("ROUTE_VISIT")));
+    assert.ok(result.evidence.some((e) => e.message === "e2e/about.spec.ts visits /about, served by src/app/about/page.tsx"));
+  });
+
+  it("matches a dynamic segment", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/app/blog/[slug]/page.tsx", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), profile, options);
+    assert.deepStrictEqual(selected(result), ["e2e/blog.spec.ts", "e2e/search.spec.ts"]);
+  });
+
+  it("leaves selection to the graph without repository contents", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/components/header.tsx", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), profile, { repositoryFiles: options.repositoryFiles });
+    assert.deepStrictEqual(selected(result), []);
+  });
+});
+
 describe("declared inputs (2026-11-05)", () => {
   const graph = makeGraph(
     ["src/db/client.ts", "src/db/client.test.ts", "src/db/query.test.ts", "src/ui/button.ts", "src/ui/button.test.ts"],

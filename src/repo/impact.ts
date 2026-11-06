@@ -12,6 +12,7 @@ import { directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, listsDirect
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
+import { isPlaywrightSpec, nextAppRoute, routeMatches, visitedRoutes } from "./route-visits.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
@@ -435,6 +436,7 @@ export class ImpactAnalyzer {
     this.collectDependencyChangeTests(delta, graphResult, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, riskSignals, fallbackReasons);
     this.handleStructuralNextLayout(changedImpacts, profile, affectedEntryPoints, affectedSources, evidence);
     this.handleAddedEntryPoints(delta, affectedEntryPoints, affectedSources, affectedTests, evidence, fallbackReasons);
+    this.collectRouteVisitTests(profile, graph, affectedEntryPoints, affectedTests, evidence);
     this.collectAlwaysRunTests(profile, graph, affectedTests, evidence, graphResult.profile.vueRuntimeAlwaysRunPaths ?? []);
     this.collectComputedImportTests(graphResult, graph, changedImpacts, affectedTests, evidence, riskSignals, fallbackReasons);
 
@@ -1261,6 +1263,39 @@ export class ImpactAnalyzer {
       const runners = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));
       for (const test of runners) this.addAffectedTest(importer, test, graph, affectedTests, "COMPUTED_IMPORT", evidence);
       evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected`));
+    }
+  }
+
+  /** Playwright specs that visit an affected Next.js route (route-visits.ts, 2026-11-06). Without the
+   * repository's contents no spec can be read, which leaves selection as the graph made it. */
+  private collectRouteVisitTests(
+    profile: RepositoryProfile,
+    graph: DependencyGraph,
+    affectedEntryPoints: Map<string, EntryPointImpact>,
+    affectedTests: Map<string, TestImpact>,
+    evidence: ImpactEvidence[],
+  ): void {
+    const read = this.readRepositoryFile;
+    if (!read) return;
+    const entries = [...affectedEntryPoints.values()].filter((entry) => entry.kind.startsWith("next-"));
+    if (entries.length === 0) return;
+    const specs = this.knownTestPaths(profile, graph).flatMap((path) => {
+      const source = read(path);
+      return source !== undefined && isPlaywrightSpec(source) ? [{ path, visits: visitedRoutes(source) }] : [];
+    });
+    if (specs.length === 0) return;
+    for (const entry of entries) {
+      const route = nextAppRoute(entry.path, entry.kind);
+      for (const spec of specs) {
+        const visited = route ? spec.visits.paths.find((path) => routeMatches(route, path)) : undefined;
+        const why = !route ? `${entry.path} has no route DiffCI can derive, so every end-to-end spec may reach it`
+          : visited ? `${spec.path} visits ${visited}, served by ${entry.path}`
+          : spec.visits.computed ? `${spec.path} visits a URL built at run time, which may be served by ${entry.path}`
+          : undefined;
+        if (!why) continue;
+        this.addAffectedTest(entry.path, spec.path, graph, affectedTests, "ROUTE_VISIT", evidence);
+        evidence.push(makeEvidence("ROUTE_VISIT", entry.path, why, spec.path));
+      }
     }
   }
 

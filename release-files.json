@@ -298,6 +298,8 @@
     "packages/diffci-cli/tests/client/test-ranking.test.ts",
     "packages/diffci-cli/src/client/test-shards.ts",
     "packages/diffci-cli/tests/client/test-shards.test.ts",
+    "src/repo/route-visits.ts",
+    "tests/repo/route-visits.test.ts",
     ".github/FUNDING.yml"
   ]
 }

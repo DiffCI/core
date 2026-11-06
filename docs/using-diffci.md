@@ -32,6 +32,10 @@ When the log already holds a pass of the exact same tree that covers the current
 
 The log also orders the selection. Selected test files that failed in earlier runs (recent failures count more) and tests the change itself edited run first, so a failure shows up sooner. Ordering never drops a test, and it applies only when the selected command ends in the selected file paths; `--no-rank` keeps the selection's own order. `--fail-fast` runs those likely failures as a first batch and stops there if one fails, reporting how much of the selection did not run. `diffci outcomes --curve` replays the failing runs in the log, ranking each one only by the runs before it, and shows how much of the test time passes before the first failure, ranked against path order. With fewer than ten failing runs, read it as an early signal.
 
+## End-to-end specs and the routes they visit
+
+A Playwright spec reaches your application through a URL, not an import, so the dependency graph alone never connects `page.goto("/blog/hello")` to `app/blog/[slug]/page.tsx`. In a Next.js App Router project, DiffCI reads the literal URLs each spec visits (`page.goto(...)` and `request.get/post/...(...)` in files that import `@playwright/test`) and selects the specs that visit a route an affected page, route handler, layout or middleware serves, with the reason `ROUTE_VISIT`. Dynamic, catch-all and optional catch-all segments match as Next matches them, and route groups and parallel slots are ignored. A spec that visits a URL built at run time, such as `` `/blog/${slug}` ``, is selected whenever any route is affected, and so is every spec when an affected file's route cannot be derived. The Pages Router, intercepting routes and other frameworks' file routes are not modelled yet; their specs are still selected through any imports they have.
+
 ## Split a selection across CI jobs
 
 `verify --shard i/N` runs job `i`'s share of the selection in an `N`-job matrix. Every job computes the same selection from the same commits and splits it the same way, so each selected test file runs in exactly one job:
