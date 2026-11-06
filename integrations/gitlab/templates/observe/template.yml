@@ -15,7 +15,7 @@ spec:
       default: node:22
     cli-version:
       description: Exact published DiffCI CLI version to run.
-      default: "0.3.29"
+      default: "0.3.30"
     redact-paths:
       description: Replace every file path in the report with a stable 12-character digest.
       type: boolean
