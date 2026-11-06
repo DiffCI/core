@@ -95,6 +95,59 @@ test cases, skipped CI jobs, or measured savings from selection counts. Required
 project CI stays authoritative.
 `;
 
+/**
+ * Stop hooks that run `diffci agent-stop` when the agent ends a turn (agent-stop.ts, 2026-11-06), in each
+ * agent's project hook file. Claude Code and Codex share one shape (`Stop` > group > handlers); Cursor has
+ * its own (`version: 1`, `stop` > handlers). A hook is DiffCI's when its command runs `agent-stop` from
+ * the DiffCI package; those are replaced, every other hook is kept.
+ */
+export const AGENT_HOOK_PATHS: Record<"claude" | "codex" | "cursor", string> = {
+  claude: ".claude/settings.json",
+  codex: ".codex/hooks.json",
+  cursor: ".cursor/hooks.json",
+};
+/** Seconds the agent waits for the hook; verify's own timeout stays below it (cli.ts, agent-stop). */
+export const AGENT_HOOK_TIMEOUT_SECONDS = 1200;
+
+function isDiffciHook(command: unknown): boolean {
+  return typeof command === "string" && /\bagent-stop\b/.test(command) && /diffci/.test(command);
+}
+
+export function writeAgentStopHook(repoPath: string, agent: "claude" | "codex" | "cursor", launcher: string): string {
+  const relativePath = AGENT_HOOK_PATHS[agent];
+  const absolutePath = join(repoPath, relativePath);
+  const command = `${launcher} agent-stop --agent ${agent}`;
+  let config: Record<string, unknown> = {};
+  let existing: string | undefined;
+  if (existsSync(absolutePath)) {
+    existing = readFileSync(absolutePath, "utf8");
+    try {
+      const parsed = JSON.parse(existing) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+      config = parsed as Record<string, unknown>;
+    } catch {
+      return `kept ${relativePath} (not a JSON object; add the DiffCI stop hook by hand)`;
+    }
+  }
+  const hooks = config.hooks && typeof config.hooks === "object" && !Array.isArray(config.hooks) ? config.hooks as Record<string, unknown> : {};
+  if (agent === "cursor") {
+    const stop = Array.isArray(hooks.stop) ? hooks.stop.filter((entry) => !isDiffciHook((entry as { command?: unknown })?.command)) : [];
+    config = { ...config, version: typeof config.version === "number" ? config.version : 1, hooks: { ...hooks, stop: [...stop, { command, loop_limit: 3 }] } };
+  } else {
+    const groups = (Array.isArray(hooks.Stop) ? hooks.Stop : []).flatMap((group) => {
+      const handlers = Array.isArray((group as { hooks?: unknown })?.hooks) ? (group as { hooks: unknown[] }).hooks : [];
+      const kept = handlers.filter((handler) => !isDiffciHook((handler as { command?: unknown })?.command));
+      return kept.length === 0 && handlers.length > 0 ? [] : [kept.length === handlers.length ? group : { ...(group as object), hooks: kept }];
+    });
+    config = { ...config, hooks: { ...hooks, Stop: [...groups, { hooks: [{ type: "command", command, timeout: AGENT_HOOK_TIMEOUT_SECONDS }] }] } };
+  }
+  const next = `${JSON.stringify(config, null, 2)}\n`;
+  if (next === existing) return `kept ${relativePath} (DiffCI stop hook current)`;
+  mkdirSync(dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, next, "utf8");
+  return `${existing === undefined ? "wrote" : "updated"} ${relativePath} (DiffCI stop hook)`;
+}
+
 /** A skill file DiffCI wrote is recognised by its frontmatter name and updated; any other file is kept. */
 export function writeSkill(repoPath: string, force: boolean): string {
   const absolutePath = join(repoPath, SKILL_PATH);

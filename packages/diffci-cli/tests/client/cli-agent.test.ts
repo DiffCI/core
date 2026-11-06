@@ -18,7 +18,8 @@ describe("agent-facing CLI commands", () => {
   it("prints check and init as first-class commands", () => {
     const result = runCli(["help"], ROOT);
     assert.equal(result.status, 0);
-    assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\] \[--force\]/);
+    assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\]\s+\[--no-agent-hooks\] \[--force\]/);
+    assert.match(result.stdout, /diffci agent-stop --agent claude\|codex\|cursor/);
     assert.match(result.stdout, /diffci mcp/);
     assert.match(result.stdout, /diffci verify \[--changed \| --base <sha> --head <sha>\]/);
     assert.match(result.stdout, /diffci check \[--repo <path>\]/);
@@ -104,6 +105,10 @@ describe("agent-facing CLI commands", () => {
       const pluginSkill = readFileSync(join(ROOT, "..", "..", "integrations", "agent-plugin", "skills", "diffci-verify", "SKILL.md"), "utf8").replace(/\r\n/g, "\n");
       assert.equal(readFileSync(join(dir, ".claude", "skills", "diffci-verify", "SKILL.md"), "utf8"), pluginSkill);
       assert.match(readFileSync(join(dir, ".git", "hooks", "pre-push"), "utf8"), /diffci:managed pre-push hook/);
+      // Stop hooks for Claude Code, Codex and Cursor run diffci agent-stop when the agent ends a turn.
+      assert.match(JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, /diffci.* agent-stop --agent claude$/);
+      assert.match(JSON.parse(readFileSync(join(dir, ".codex", "hooks.json"), "utf8")).hooks.Stop[0].hooks[0].command, /agent-stop --agent codex$/);
+      assert.match(JSON.parse(readFileSync(join(dir, ".cursor", "hooks.json"), "utf8")).hooks.stop[0].command, /agent-stop --agent cursor$/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

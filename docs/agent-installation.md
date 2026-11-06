@@ -28,12 +28,25 @@ npx "@diffci.com/diffci@latest" init
 
 Besides the instruction files, it registers the DiffCI MCP server in `.mcp.json`
 (Claude Code) and `.cursor/mcp.json` (Cursor), keeping any other servers there,
-writes the `diffci-verify` skill to `.claude/skills/diffci-verify/SKILL.md`, and
-installs the pre-push hook. Commit the config and skill files so every agent
-session in the repository finds them. `--no-mcp`, `--no-skill` and `--no-hook`
-leave each part out. Three things make DiffCI the default:
+writes the `diffci-verify` skill to `.claude/skills/diffci-verify/SKILL.md`,
+adds agent stop hooks, and installs the pre-push hook. Commit the config, hook and
+skill files so every agent session in the repository finds them. `--no-mcp`,
+`--no-skill`, `--no-agent-hooks` and `--no-hook` leave each part out. Four things
+make DiffCI the default:
 
-1. **A pre-push hook**, so every push verifies the commits being pushed whoever
+1. **Verify when the agent finishes a turn.** `init` adds a stop hook that runs
+   `diffci agent-stop` to `.claude/settings.json` (Claude Code), `.codex/hooks.json`
+   (Codex) and `.cursor/hooks.json` (Cursor), keeping every other hook there. When
+   the agent ends a turn, DiffCI verifies the uncommitted changes. If tests or
+   checks fail, the agent is asked to keep working with the failures as the
+   reason, at most `DIFFCI_AGENT_HOOK_MAX` times a session (default 3), after which
+   the decision is yours. A pass, no changes, or a change DiffCI cannot verify lets
+   the agent stop; the last is reported to you, not turned into work for the agent.
+   `DIFFCI_AGENT_HOOK=0` turns the hook off. Claude Code runs project hooks only in
+   a folder you have trusted, and Codex asks you to review new hooks with `/hooks`
+   before they run.
+
+2. **A pre-push hook**, so every push verifies the commits being pushed whoever
    runs it. It writes `pre-push` into Git's hooks directory (honouring `core.hooksPath`,
    such as `.husky`), never over a hook DiffCI did not write unless you pass
    `--force`. Failing verification blocks the push. If DiffCI cannot verify, for
@@ -44,11 +57,11 @@ leave each part out. Three things make DiffCI the default:
    environment you push from: the hook then also sends the observation report for each pushed range.
    Sending never blocks the push.
 
-2. **One exact command from the MCP server.** `diffci_select_tests` now starts with a
+3. **One exact command from the MCP server.** `diffci_select_tests` now starts with a
    plain line such as `DiffCI selected 3 of 580 test files. Run exactly: <command>`
    before the JSON plan, so the agent runs that command and does not improvise.
 
-3. **Directive instruction files.** `diffci init` writes these lines into a managed
+4. **Directive instruction files.** `diffci init` writes these lines into a managed
    section of `AGENTS.md` and `CLAUDE.md`. To add them by hand:
 
    ```md

@@ -303,6 +303,8 @@
     "tests/repo/route-visits.test.ts",
     "packages/diffci-cli/src/client/coverage-map.ts",
     "packages/diffci-cli/tests/client/coverage-map.test.ts",
+    "packages/diffci-cli/src/client/agent-stop.ts",
+    "packages/diffci-cli/tests/client/agent-stop.test.ts",
     ".github/FUNDING.yml"
   ]
 }

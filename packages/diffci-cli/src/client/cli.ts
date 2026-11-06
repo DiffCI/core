@@ -38,7 +38,7 @@ import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook, isGitRepository } from "./hook.js";
-import { MCP_CONFIG_PATHS, SKILL_PATH, writeMcpConfig, writeSkill } from "./agent-setup.js";
+import { AGENT_HOOK_TIMEOUT_SECONDS, MCP_CONFIG_PATHS, SKILL_PATH, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
@@ -47,7 +47,8 @@ import { githubDeliveryWarning } from "./delivery-warning.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
-import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
+import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, type VerificationReport } from "./verify.js";
+import { decideStop, HOOK_AGENTS, maxAttempts, parseStopPayload, sessionAttempts, stopRepoPath, type HookAgent } from "./agent-stop.js";
 import { formatGateSummary, gateExitCode, planGate, runGate } from "./gate.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditEnforceWorkflows, auditWorkflows, isNonInterfering } from "./workflow-guard.js";
@@ -311,6 +312,8 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   else for (const path of MCP_CONFIG_PATHS) writes.push(writeMcpConfig(repoPath, path, identity.version, force));
   if (flags["no-skill"] === true) skipped.push(`skipped ${SKILL_PATH} (--no-skill)`);
   else writes.push(writeSkill(repoPath, force));
+  if (flags["no-agent-hooks"] === true) skipped.push("skipped the agent stop hooks (--no-agent-hooks)");
+  else for (const agent of HOOK_AGENTS) writes.push(writeAgentStopHook(repoPath, agent, hookCommand(manager, identity.version)));
   if (flags["no-hook"] === true) skipped.push("skipped the pre-push hook (--no-hook)");
   else if (!isGitRepository(repoPath)) skipped.push("skipped the pre-push hook (not a Git repository; rerun init after git init)");
   else writes.push(installPrePushHook(repoPath, hookCommand(manager, identity.version), force));
@@ -337,6 +340,54 @@ function runMcp(): number {
   if (typeof result.status === "number") return result.status;
   if (result.error) throw result.error;
   return 0;
+}
+
+async function runAgentStopCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
+  const agent = stringFlag(flags, "agent") as HookAgent | undefined;
+  if (!agent || !HOOK_AGENTS.includes(agent)) {
+    console.error(`diffci agent-stop needs --agent ${HOOK_AGENTS.join("|")}`);
+    return 2;
+  }
+  // Every exit is 0 with JSON on stdout: a hook that fails would neither stop the agent nor tell it why.
+  if (env.DIFFCI_AGENT_HOOK === "0") {
+    console.log("{}");
+    return 0;
+  }
+  const payload = parseStopPayload(await readStdin());
+  const repoPath = resolve(stopRepoPath(payload, env as Record<string, string | undefined>, process.cwd()));
+  const attempts = sessionAttempts(repoPath, payload);
+  let report: VerificationReport | undefined;
+  try {
+    const identity = observerIdentity();
+    report = await verifyChanged({
+      repoPath,
+      env: env as Record<string, string | undefined>,
+      version: identity.version,
+      engineSha: identity.sha,
+      // Below the hook's own timeout (agent-setup.ts), so the hook always answers.
+      timeoutMs: (AGENT_HOOK_TIMEOUT_SECONDS - 120) * 1000,
+      tailBytes: 12_000,
+      skipChecks: env.DIFFCI_CHECKS === "0",
+    });
+    appendOutcome(repoPath, report, env as Record<string, string | undefined>);
+  } catch {
+    report = undefined;
+  }
+  const decision = decideStop(agent, report, attempts.failures, maxAttempts(env as Record<string, string | undefined>));
+  attempts.record(decision.failures);
+  console.log(decision.stdout);
+  return 0;
+}
+
+function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return Promise.resolve("");
+  return new Promise((resolveText) => {
+    let text = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { text += chunk; });
+    process.stdin.on("end", () => resolveText(text));
+    process.stdin.on("error", () => resolveText(text));
+  });
 }
 
 async function runVerifyCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
@@ -1152,7 +1203,9 @@ Open-source engine: https://github.com/DiffCI/core
 Pilot a repository: https://diffci.com/#pilot
 
 Usage:
-  diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--no-hook] [--no-mcp] [--no-skill] [--force]
+  diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--no-hook] [--no-mcp] [--no-skill]
+              [--no-agent-hooks] [--force]
+  diffci agent-stop --agent claude|codex|cursor   (run by the agent stop hooks init installs; reads the hook JSON on stdin)
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
@@ -1188,8 +1241,11 @@ Usage:
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
 registers the DiffCI MCP server in .mcp.json (Claude Code) and .cursor/mcp.json (Cursor), keeping other
-servers, adds the diffci-verify skill to .claude/skills, and installs the pre-push hook; --no-mcp,
---no-skill and --no-hook leave each out. --workflow adds a separate non-blocking observation workflow. --install detects npm, pnpm, Yarn,
+servers, adds the diffci-verify skill to .claude/skills, installs the pre-push hook, and adds stop hooks
+(.claude/settings.json, .codex/hooks.json, .cursor/hooks.json) that run diffci agent-stop when an agent ends a
+turn: it verifies the uncommitted changes and, when tests or checks fail, asks the agent to fix them before
+finishing, at most DIFFCI_AGENT_HOOK_MAX times a session (default 3; DIFFCI_AGENT_HOOK=0 turns it off).
+--no-mcp, --no-skill, --no-hook and --no-agent-hooks leave each out. --workflow adds a separate non-blocking observation workflow. --install detects npm, pnpm, Yarn,
 or Bun, installs this DiffCI version as an exact dev dependency, updates the manager's lockfile,
 and adds diffci:verify, diffci:check, and diffci:observe package scripts without replacing existing scripts.
 --verification-workflow adds a blocking GitHub check that uploads a commit-bound verification receipt.
@@ -1290,6 +1346,9 @@ async function main(): Promise<void> {
       return;
     case "verify":
       process.exitCode = await runVerifyCommand(flags, env);
+      return;
+    case "agent-stop":
+      process.exitCode = await runAgentStopCommand(flags, env);
       return;
     case "check":
       process.exitCode = await runCheck(flags, env);
