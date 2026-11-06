@@ -1,0 +1,17 @@
+# Sections for the notes `gh release create --generate-notes` writes (release-cli.yml).
+# Contributors' pull requests come first so their work is credited at the top of each release.
+changelog:
+  exclude:
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: Thanks to our contributors
+      labels:
+        - "*"
+      exclude:
+        authors:
+          - adityankale190895
+    - title: Other changes
+      labels:
+        - "*"

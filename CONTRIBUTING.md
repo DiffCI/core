@@ -13,3 +13,7 @@ Use Node.js 22.5+ and run `npm ci`, `npm run typecheck`, `npm test`, `npm run bu
 Contributions to this repository are made under the MIT License. Submit only work you are entitled to contribute and preserve third-party notices.
 
 Sign off every commit to certify the [Developer Certificate of Origin](https://developercertificate.org/), using `git commit -s`. This adds a `Signed-off-by: Your Name <you@example.com>` line stating that you wrote the change or otherwise have the right to submit it under the MIT License.
+
+## Credit
+
+Every merged contribution is credited by name: in the release notes of the version that ships it, in the [Contributors](README.md#contributors) list in the README, and next to the feature in the docs when it adds one. Tell us in your PR if you would like a different name or link used.

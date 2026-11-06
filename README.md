@@ -181,6 +181,17 @@ What stays in Core, and never moves to Cloud, is set out in [STEWARDSHIP.md](STE
 
 Most open work is teaching DiffCI to narrow changes it currently treats as "run everything": config files, `package.json` edits and lockfiles. Each case is small and comes with a synthetic fixture, so you don't need to learn the whole engine. Python and Rust support are next and split into one-PR steps: see the [Python](https://github.com/DiffCI/core/issues/61) and [Rust](https://github.com/DiffCI/core/issues/62) tracking issues. Pick a [good first issue](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22) and see [CONTRIBUTING.md](CONTRIBUTING.md); a dev container is included.
 
+### Contributors
+
+Thank you to everyone who has improved DiffCI:
+
+- <a href="https://github.com/KingEmma7"><img src="https://github.com/KingEmma7.png?size=80" width="40" height="40" alt="@KingEmma7"></a> **[Emmanuel Mawulolo Tagbor](https://github.com/KingEmma7)**: [`diffci check-plan`](docs/using-diffci.md#compare-a-plan-with-a-full-suite-junit-report) for comparing a saved plan with full-suite JUnit results ([#74](https://github.com/DiffCI/core/pull/74)), Yarn Classic lockfile narrowing ([#63](https://github.com/DiffCI/core/pull/63)), and follow-ups ([#67](https://github.com/DiffCI/core/pull/67), [#70](https://github.com/DiffCI/core/pull/70)).
+- <a href="https://github.com/FredApps"><img src="https://github.com/FredApps.png?size=80" width="40" height="40" alt="@FredApps"></a> **[@FredApps](https://github.com/FredApps)**: five safety fixes for runtime module dependencies, Maven module resources, runner suites, deleted assets and Go runtime inputs ([#32](https://github.com/DiffCI/core/pull/32)–[#36](https://github.com/DiffCI/core/pull/36)).
+- <a href="https://github.com/bfs2021"><img src="https://github.com/bfs2021.png?size=80" width="40" height="40" alt="@bfs2021"></a> **[@bfs2021](https://github.com/bfs2021)**: `bun.lock` and `npm-shrinkwrap.json` recognition in the lockfile signal ([#64](https://github.com/DiffCI/core/pull/64)).
+- <a href="https://github.com/varshith84"><img src="https://github.com/varshith84.png?size=80" width="40" height="40" alt="@varshith84"></a> **[Varshith Sai Pasupuleti](https://github.com/varshith84)**: tests for transitive Vue selection and full fallback ([#16](https://github.com/DiffCI/core/pull/16)).
+
+Every merged contribution is credited in the release notes, here, and next to the feature in the docs.
+
 ## License
 
 See [LICENSE](LICENSE), [NOTICE](NOTICE) and [CONTRIBUTING.md](CONTRIBUTING.md). Releases before the MIT switch were published under AGPL-3.0-only and are now also available under MIT; see [LICENSE-HISTORY.md](LICENSE-HISTORY.md). Grant eligibility depends on the particular grant agreement. No eligibility or legal separation is guaranteed by this repository layout.

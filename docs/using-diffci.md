@@ -120,6 +120,8 @@ npx --yes @diffci.com/diffci@latest check \
 
 ## Compare a plan with a full-suite JUnit report
 
+_Contributed by [Emmanuel Mawulolo Tagbor (@KingEmma7)](https://github.com/KingEmma7) in [#74](https://github.com/DiffCI/core/pull/74)._
+
 `check-plan` checks whether a saved selection would have skipped failures in one
 supplied full-suite report. It does not run tests, read Git state, write files or
 send data. Use a CLI build containing this command; when working from source,
@@ -442,6 +444,8 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 
 ### Go
 
+_The runtime-input check (`Go runtime inputs outside source/embed metadata …`) was contributed by [@FredApps](https://github.com/FredApps) in [#36](https://github.com/DiffCI/core/pull/36)._
+
 | Reason | Example change | Narrow |
 | --- | --- | --- |
 | `Go support requires one root go.mod; workspaces and nested modules require full validation` | Add `tools/go.mod` | Yes: `"go": { "scope": "root-module" }` |
@@ -463,6 +467,8 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Changes in Go discovery-excluded paths require full validation, including runtime test data` | Edit `testdata/input.json` or a file under a `_`-prefixed directory | No |
 
 ### Maven
+
+_Module resource and dependency impact contributed by [@FredApps](https://github.com/FredApps) in [#33](https://github.com/DiffCI/core/pull/33)._
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
