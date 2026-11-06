@@ -370,6 +370,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     baselineOnFailure: flags["baseline-on-failure"] === true || env.DIFFCI_BASELINE_ON_FAILURE === "1",
     // Gate checks are for before push; in CI the repository's own check jobs already run them.
     skipChecks: flags["no-checks"] === true || env.DIFFCI_CHECKS === "0" || (Boolean(env.CI) && env.CI !== "false" && flags.checks !== true),
+    reuse: flags["no-reuse"] !== true && env.DIFFCI_REUSE !== "0",
   };
   const report = changed
     ? await verifyChanged(common)
@@ -1102,7 +1103,7 @@ Usage:
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
-                [--share-usage] [--no-send] [--no-log]
+                [--share-usage] [--no-send] [--no-log] [--no-reuse]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -1167,8 +1168,10 @@ and writes DiffCI's decisions, for a gate that runs without git history; --plan 
 analysing, and --expect-head ignores a plan made for another commit. It sends nothing.
 enforce-misses classifies a full run's failures on main against the enforce dry-run receipts of the pull
 requests merged since the last recorded run, and exits 1 on a miss. It never edits configuration.
-verify appends each run (plan, selection reasons, checks, results, durations, failing tests) to
+verify appends each run (plan, selection reasons, checks, results, per-file durations, failing tests) to
 .git/diffci/outcomes.jsonl, which is never committed and never sent; --no-log or DIFFCI_OUTCOME_LOG=0 skips it.
+When an earlier run in that log passed on the exact same tree and covered the same tests and checks, verify
+reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again.
 outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
 misses (a selected run that passed and a later full run of the same tree that failed).
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.

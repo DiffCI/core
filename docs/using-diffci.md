@@ -24,6 +24,12 @@ npx @diffci.com/diffci@latest observe --no-send
 
 `observe --no-send` reports selected tests, fallback reasons, and command availability without executing the repository's tests or sending a report. It does not establish runtime savings.
 
+## The outcome log and result reuse
+
+Each `verify` run is appended to `.git/diffci/outcomes.jsonl`: the selection and why, the checks, the result, each test file's result and duration, and the failing tests. The file sits inside `.git`, so it is never committed and never sent. `diffci outcomes` summarises it. `--no-log` or `DIFFCI_OUTCOME_LOG=0` skips writing it.
+
+When the log already holds a pass of the exact same tree that covers the current run, `verify` reuses it and runs nothing. The receipt then carries `reused_from`. A pass covers the run when it was made with the same DiffCI and Node.js versions and either ran the full test command or selected every test selected now, and when every gate check the run would execute passed in it with the identical command. Failures are never reused. The tree includes the lockfile but not `node_modules`, so after reinstalling dependencies without changing the lockfile, pass `--no-reuse` (or set `DIFFCI_REUSE=0`) to run everything again. Reuse is off under `--policy enforce`.
+
 ## Recover a missing base in a shallow checkout
 
 DiffCI must be able to read both revisions, and the checkout must still be at the requested head. In CI, set `BASE` and `HEAD` to the full commit IDs supplied by the pull-request or merge-request event, then verify them before asking DiffCI for a plan:

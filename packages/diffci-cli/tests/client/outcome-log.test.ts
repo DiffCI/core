@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { appendOutcome, outcomeLogPath, readOutcomes, summarizeOutcomes } from "../../src/client/outcome-log.js";
+import { appendOutcome, outcomeLogPath, readOutcomes, reusablePass, summarizeOutcomes, type OutcomeRecord, type ReuseQuery } from "../../src/client/outcome-log.js";
 import type { VerificationReport } from "../../src/client/verify.js";
 
 function report(fields: Partial<VerificationReport> & { tree: string; failing?: string[]; wallMs?: number }): VerificationReport {
@@ -55,6 +55,37 @@ test("verify runs are appended inside .git and summarised, with possible misses"
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("reuses only a covering pass of the same tree under the same versions", () => {
+  const run = (fields: Partial<OutcomeRecord>): OutcomeRecord => ({
+    schema: "diffci.outcome.v1", produced_at: "2026-11-06T00:00:00.000Z", diffci_version: "1.0.0", node_version: "24.0.0",
+    scope: "working-tree", base_sha: "b", tree_sha: "t1", verification: "passed", selection: "full", tests_selected: 3, tests_available: 3,
+    fallback_reasons: [], command: "npm test", ...fields,
+  });
+  const query: ReuseQuery = {
+    tree_sha: "t1", diffci_version: "1.0.0", node_version: "24.0.0", selection: "selected", selected_tests: ["a.test.js"],
+    command: "node --test a.test.js", full_command: "npm test", checks: [],
+  };
+  assert.equal(reusablePass([run({})], query)?.command, "npm test", "a full pass covers any selection");
+  assert.equal(reusablePass([run({ tree_sha: "t2" })], query), undefined, "another tree");
+  assert.equal(reusablePass([run({ verification: "failed" })], query), undefined, "failures are never reused");
+  assert.equal(reusablePass([run({ node_version: "22.0.0" })], query), undefined, "another Node version");
+  assert.equal(reusablePass([run({ diffci_version: "0.9.0" })], query), undefined, "another DiffCI version");
+  assert.equal(reusablePass([run({ command: "npm run test:all" })], query), undefined, "another full command");
+  assert.equal(reusablePass([run({ reused_from: "2026-11-05T00:00:00.000Z" })], query), undefined, "a reused run is not a source");
+
+  const selected = (tests: string[]) => run({ selection: "selected", selected_tests: tests, command: `node --test ${tests.join(" ")}` });
+  assert.ok(reusablePass([selected(["a.test.js", "b.test.js"])], query), "a selected pass covering every selected test");
+  assert.equal(reusablePass([selected(["b.test.js"])], query), undefined, "a selected pass missing one");
+  assert.equal(reusablePass([selected(["a.test.js"])], { ...query, selection: "full", command: "npm test" }), undefined, "a selection never covers a full run");
+
+  const lint = { id: "lint", command: "eslint src/a.js" };
+  const withChecks = { ...query, checks: [lint] };
+  assert.equal(reusablePass([run({})], withChecks), undefined, "a check this run would execute must have passed");
+  assert.equal(reusablePass([run({ checks: [{ id: "lint", decision: "NARROWED", status: "passed", command: "eslint src/b.js" }] })], withChecks), undefined, "narrowed to other files");
+  assert.ok(reusablePass([run({ checks: [{ id: "lint", decision: "NARROWED", status: "passed", command: "eslint src/a.js" }] })], withChecks));
+  assert.equal(reusablePass([run({}), run({ produced_at: "2026-11-06T01:00:00.000Z" })], query)?.produced_at, "2026-11-06T01:00:00.000Z", "the newest pass");
 });
 
 test("outside a Git repository there is no log and nothing is written", () => {

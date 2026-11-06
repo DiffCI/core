@@ -6,10 +6,12 @@ import { batchCommand, measureCommands } from "./command-batches.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
-import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
+import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport, SelectionReason } from "./report.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
+import { outcomeLogPath, readOutcomes, reusablePass } from "./outcome-log.js";
+import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
 
@@ -80,6 +82,8 @@ export interface VerificationReport {
   failure_baseline?: FailureBaseline;
   /** Present only under `--policy enforce`. `applied` is true when the selected tests replaced the full suite. */
   enforcement?: EnforcementDecision & { applied: boolean };
+  /** Present when nothing ran because an earlier pass of this exact tree covered it (outcome-log.ts, reusablePass). */
+  reused_from?: { produced_at: string; selection: "selected" | "full"; command?: string };
 }
 
 interface VerifyOptions {
@@ -94,6 +98,8 @@ interface VerifyOptions {
   baselineOnFailure?: boolean;
   /** Run only the tests, not the gate's other checks (`--no-checks`). */
   skipChecks?: boolean;
+  /** False runs everything even when an earlier pass of the same tree covers it (`--no-reuse`). */
+  reuse?: boolean;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -247,6 +253,33 @@ async function executeWithPolicy(
   const checkBase = scope === "commit-range" ? range?.baseSha : before.baseSha;
   const checkHead = scope === "commit-range" ? range?.headSha : before.commitSha;
   const planned = options.skipChecks ? [] : plannedChecks(options.repoPath, checkBase && checkHead ? { baseSha: checkBase, headSha: checkHead } : undefined);
+  // An earlier pass of this exact tree that covers these tests and checks ends the run here (2026-11-06).
+  // Never under enforce, whose receipt must show the decision it applied, nor for tests outside the full
+  // suite, which a full run does not cover.
+  const reusable = options.reuse !== false && !enforcement && !outsideSuite
+    ? findReusablePass(options, before.treeSha, selection, result?.selectedTests ?? [], commands.join(" && "), planned)
+    : undefined;
+  if (reusable) {
+    const reused_from = { produced_at: reusable.produced_at, selection: reusable.selection as "selected" | "full", ...(reusable.command ? { command: reusable.command } : {}) };
+    return {
+      ...baseReport(before, scope, boundRange),
+      verification: "passed",
+      safe_to_continue: true,
+      reason: `reused the passing ${reused_from.selection} run of this exact tree from ${reused_from.produced_at}; nothing was run again (--no-reuse runs it)`,
+      changed_files: counts.changedFiles,
+      tests_available: counts.testsAvailable,
+      tests_selected: selection === "full" ? counts.testsAvailable : counts.testsSelected,
+      selection,
+      ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
+      ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
+      command,
+      ...(commands.length > 1 ? { commands } : {}),
+      snapshot: { ...baseReport(before, scope, boundRange).snapshot, after_base_sha: before.baseSha, after_tree_sha: before.treeSha, unchanged: true },
+      analysis,
+      required_actions: [],
+      reused_from,
+    };
+  }
   const checkBaseline = options.baselineOnFailure && checkBase && checkHead
     ? (check: { command: string }, remainingMs: number) => checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: Math.max(remainingMs, 0) })
     : undefined;
@@ -259,9 +292,10 @@ async function executeWithPolicy(
   const preexistingNote = preexistingChecks.length
     ? `; gate check(s) ${preexistingChecks.map((check) => check.id).join(", ")} also fail at the base commit (already broken before this change)`
     : "";
-  // Selected `node --test` files run under a probe that records which of them actually started.
+  // Every test run goes under a probe that records which `node --test` files started (selected ones must)
+  // and each one's duration and result for the outcome log (2026-11-06). Outside node:test it does nothing.
   const expectedNodeTests = selection === "selected" && result ? selectedNodeTests(command, result.selectedTests) : [];
-  const trace = expectedNodeTests.length && !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
+  const trace = !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
   let startedNodeTests: string[] | undefined;
   let execution: CommandMeasurement;
   try {
@@ -269,6 +303,8 @@ async function executeWithPolicy(
       ? checkRun.failure.measurement
       : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env });
     startedNodeTests = trace?.read();
+    const nodeResults = trace?.results() ?? [];
+    if (nodeResults.length) execution = { ...execution, testResults: mergeTestFileResults(execution.testResults, nodeResults) };
   } finally {
     trace?.dispose();
   }
@@ -515,6 +551,22 @@ export function formatVerificationSummary(report: VerificationReport): string {
 function fullSelection(repoPath: string, reason: string) {
   const command = inferFullCommand(repoPath).command;
   return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0 };
+}
+
+/** The earlier pass in this repository's outcome log that covers this run, if any (reusablePass). */
+function findReusablePass(options: VerifyOptions, treeSha: string, selection: "selected" | "full", selectedTests: readonly string[], command: string, planned: readonly PlannedCheck[]) {
+  const path = outcomeLogPath(options.repoPath);
+  if (!path) return undefined;
+  return reusablePass(readOutcomes(path), {
+    tree_sha: treeSha,
+    diffci_version: options.version,
+    node_version: process.versions.node,
+    selection,
+    selected_tests: selectedTests,
+    command,
+    full_command: selection === "full" ? command : fullSelection(options.repoPath, "").command,
+    checks: planned.filter((check) => check.decision !== "SKIP").map(({ id, command: checkCommand }) => ({ id, command: checkCommand })),
+  });
 }
 
 /** Shared executable plan for read-only agent selection and verification. */

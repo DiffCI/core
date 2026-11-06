@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -120,6 +120,42 @@ describe("verify --changed", () => {
       assert.equal(summary.runs, 1);
       assert.equal(summary.selected, 1);
       assert.equal(summary.passed, 1);
+      // Each test file's result and duration, from the node:test probe (2026-11-06).
+      const record = JSON.parse(readFileSync(join(dir, ".git", "diffci", "outcomes.jsonl"), "utf8").trim());
+      assert.deepEqual(record.test_results.map(({ file, status }: { file: string; status: string }) => ({ file, status })), [{ file: "test/alpha.test.js", status: "passed" }]);
+      assert.equal(typeof record.test_results[0].ms, "number");
+      assert.equal(record.node_version, process.versions.node);
+      assert.match(record.command, /node --test/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses an earlier pass of the same tree and runs nothing, unless --no-reuse", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/alpha.js", "export const alpha = () => 3;\n");
+      write(dir, "test/alpha.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {alpha} from '../src/alpha.js'; test('alpha', () => assert.equal(alpha(), 3));\n");
+      const first = JSON.parse(runVerify(dir).stdout);
+      assert.equal(first.verification, "passed");
+      assert.equal(first.reused_from, undefined);
+
+      const second = runVerify(dir);
+      assert.equal(second.status, 0, second.stdout + second.stderr);
+      const reused = JSON.parse(second.stdout);
+      assert.equal(reused.verification, "passed");
+      assert.equal(reused.reused_from.produced_at, first.produced_at);
+      assert.equal(reused.execution, undefined, "nothing ran");
+      assert.match(reused.reason, /reused the passing selected run/);
+
+      const again = spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--no-reuse"], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() });
+      const rerun = JSON.parse(again.stdout);
+      assert.equal(rerun.reused_from, undefined);
+      assert.equal(rerun.execution.exitCode, 0);
+
+      // A different tree is never covered.
+      write(dir, "src/beta.js", "export const beta = () => 2; // touched\n");
+      assert.equal(JSON.parse(runVerify(dir).stdout).reused_from, undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

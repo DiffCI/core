@@ -1,4 +1,5 @@
 import { commandArguments } from "./selected-coverage.js";
+import { mergeTestFileResults } from "./test-results.js";
 import { measureCommand, type CommandMeasurement } from "./verify-savings.js";
 
 /**
@@ -65,6 +66,7 @@ export function measureCommands(commands: readonly string[], options: { cwd: str
   const ranAll = parts.length === commands.length;
   const failingTests = [...new Set(parts.flatMap((part) => part.failingTests ?? []))].sort();
   const counted = ranAll && parts.every((part) => part.runnerTestCount !== undefined);
+  const testResults = mergeTestFileResults(...parts.map((part) => part.testResults));
   const tail = (key: "stdoutTail" | "stderrTail") => parts.map((part) => part[key]).join("").slice(-Math.max(options.tailBytes, 0) || undefined);
   return {
     command: commands.join(" && "),
@@ -78,5 +80,6 @@ export function measureCommands(commands: readonly string[], options: { cwd: str
     stderrTail: options.tailBytes > 0 ? tail("stderrTail") : "",
     ...(failingTests.length ? { failingTests } : {}),
     ...(counted ? { runnerTestCount: parts.reduce((sum, part) => sum + part.runnerTestCount!, 0) } : {}),
+    ...(testResults.length ? { testResults } : {}),
   };
 }
