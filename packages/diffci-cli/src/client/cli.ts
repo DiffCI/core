@@ -56,6 +56,7 @@ import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
+import { buildCoverageMap, formatCoverageRun } from "./coverage-map.js";
 import { confidenceCurve, formatConfidenceCurve } from "./test-ranking.js";
 import { parseShard, readTimings, timingsFromOutcomes, type TimingsFile } from "./test-shards.js";
 import {
@@ -394,6 +395,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     reuse: flags["no-reuse"] !== true && env.DIFFCI_REUSE !== "0",
     rank: flags["no-rank"] !== true && env.DIFFCI_RANK !== "0",
     failFast: flags["fail-fast"] === true,
+    coverage: flags["no-coverage"] !== true && env.DIFFCI_COVERAGE !== "0",
     ...(shard ? { shard } : {}),
     ...(timings ? { timings } : {}),
   };
@@ -417,6 +419,18 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     if (reportPath) console.log(`  receipt: ${reportPath}`);
   }
   return verificationExitCode(report);
+}
+
+function runCoverageCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  const command = stringFlag(flags, "command") ?? inferFullCommand(repoPath).command;
+  if (!command) {
+    console.error(`diffci coverage: no full test command could be inferred for ${repoPath}; pass --command`);
+    return 2;
+  }
+  const run = buildCoverageMap(repoPath, command, { timeoutMs: numberFlag(flags, "timeout-ms") ?? 60 * 60 * 1000 });
+  console.log(flags.json === true ? JSON.stringify({ ...(run.path ? { path: run.path } : {}), ...(run.error ? { error: run.error } : {}), exit_code: run.execution.exitCode, ...(run.map ? { tests: Object.keys(run.map.tests).length } : {}) }, null, 2) : formatCoverageRun(run));
+  return run.map ? 0 : 1;
 }
 
 function runOutcomesCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
@@ -1139,7 +1153,7 @@ Usage:
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
                 [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
-                [--shard <i/N> [--timings <file>]]
+                [--shard <i/N> [--timings <file>]] [--no-coverage]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -1165,6 +1179,7 @@ Usage:
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
   diffci outcomes [--repo <path>] [--curve | --timings] [--json]
+  diffci coverage [--repo <path>] [--command <cmd>] [--timeout-ms <ms>] [--json]
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
@@ -1213,6 +1228,9 @@ failed before in that log, or that the change edited, run first (--no-rank keeps
 selection in an N-job CI matrix; every job splits it the same way, balanced by --timings (a file from
 diffci outcomes --timings that every job reads) or else by file count. The full suite, test-script phases
 and a selection that cannot be split run in shard 1.
+coverage runs the full node:test suite once under a probe and V8 coverage and keeps, per test file, the files
+it loaded, read or listed in .git/diffci/coverage-map.json. verify then also runs tests that map connects to a
+changed file when the dependency graph did not select them; it only ever adds tests (--no-coverage ignores it).
 outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
 misses (a selected run that passed and a later full run of the same tree that failed). --curve replays the
 failing runs to show how soon the first failure is seen, ranked by history against path order. --timings
@@ -1297,6 +1315,9 @@ async function main(): Promise<void> {
       return;
     case "enforce-misses":
       process.exitCode = runEnforceMisses(flags, env);
+      return;
+    case "coverage":
+      process.exitCode = runCoverageCommand(flags, env);
       return;
     case "outcomes":
       process.exitCode = runOutcomesCommand(flags, env);

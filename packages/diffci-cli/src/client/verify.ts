@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
+import { appendToCommand, batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
+import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
@@ -88,6 +89,8 @@ export interface VerificationReport {
   reused_from?: { produced_at: string; selection: "selected" | "full"; command?: string };
   /** Present under `--shard i/N`: this job's share of the selection (test-shards.ts). */
   shard?: { index: number; total: number; timings: "file" | "equal" };
+  /** Tests the coverage map added to the selection (coverage-map.ts), when it added any. */
+  coverage_added?: string[];
 }
 
 interface VerifyOptions {
@@ -111,6 +114,8 @@ interface VerifyOptions {
   /** Run only this job's share of the selection (`--shard i/N`), balanced by `timings` when given. */
   shard?: ShardSpec;
   timings?: TimingsFile;
+  /** False ignores the coverage map (`--no-coverage`). */
+  coverage?: boolean;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -251,6 +256,30 @@ async function executeWithPolicy(
     return report;
   }
 
+  // Coverage edges, phase A (coverage-map.ts, 2026-11-06): tests the coverage map connects to a changed
+  // file and the graph did not select are added. Only ever adds; a selected command that cannot take them
+  // runs the full suite instead. Never under enforce or path redaction.
+  const coverageAdded: string[] = [];
+  if (result && result.mode === "SELECTIVE" && !enforcement && !options.redactPaths && options.coverage !== false) {
+    const map = readCoverageMap(options.repoPath);
+    const additions = map ? coverageAdditions(map, result.changedFiles, result.selectedTests) : [];
+    if (additions.length) {
+      const tests = additions.map((addition) => addition.test);
+      const extended = result.proposedCommands.length === 1 ? appendToCommand(result.proposedCommands[0]!, result.selectedTests, tests) : undefined;
+      coverageAdded.push(...tests);
+      result = extended
+        ? {
+            ...result,
+            selectedTests: [...result.selectedTests, ...tests],
+            proposedCommands: [extended],
+            selectionReasons: { ...result.selectionReasons, ...Object.fromEntries(additions.map((addition) => [addition.test, { reason: "COVERAGE", changed_file: addition.changed_file }])) },
+          }
+        : { ...result, mode: "FULL", fallbackReasons: [...result.fallbackReasons, `the coverage map adds ${tests.length} test file(s) the selected command cannot include, such as ${tests[0]}`] };
+      counts.testsSelected = result.selectedTests.length;
+      analysis.fallback_reasons = result.fallbackReasons;
+    }
+  }
+
   // --shard i/N (test-shards.ts): this job's share of the selection, split the same way in every job.
   const shard = options.shard;
   const shardTests = shard && result && !enforcedFull && result.mode === "SELECTIVE"
@@ -259,7 +288,11 @@ async function executeWithPolicy(
   const executable = enforcedFull || !result
     ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
     : executableSelection(options.repoPath, result, rankedOrdering(options, result), shard && shardTests ? { tests: new Set(shardTests), first: shard.index === 1 } : undefined);
-  const { selection, command, commands, reason, outsideSuite } = executable;
+  const { selection, command, commands, outsideSuite } = executable;
+  const reason = coverageAdded.length && selection === "selected"
+    ? `${executable.reason}; the coverage map added ${coverageAdded.length} test file(s) the dependency graph did not select (${coverageAdded.slice(0, 3).join(", ")})`
+    : executable.reason;
+  const coverageField = coverageAdded.length && selection === "selected" ? { coverage_added: coverageAdded } : {};
   const unshardable = "unshardable" in executable && executable.unshardable;
   const shardField = shard ? { shard: { index: shard.index, total: shard.total, timings: options.timings ? "file" as const : "equal" as const } } : {};
   if (shard) {
@@ -327,6 +360,7 @@ async function executeWithPolicy(
       required_actions: [],
       reused_from,
       ...shardField,
+      ...coverageField,
     };
   }
   const checkBaseline = options.baselineOnFailure && checkBase && checkHead
@@ -450,6 +484,7 @@ async function executeWithPolicy(
     required_actions: verification === "passed" ? [] : [finalReason + baselineNote],
     ...(failureBaseline ? { failure_baseline: failureBaseline } : {}),
     ...shardField,
+    ...coverageField,
   };
 }
 

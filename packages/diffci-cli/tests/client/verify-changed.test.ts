@@ -215,6 +215,30 @@ describe("verify --changed", () => {
     }
   });
 
+  it("adds the tests the coverage map connects to a changed file, unless --no-coverage", () => {
+    const dir = fixture();
+    try {
+      // The map says beta's test also loads alpha (as a framework or a computed path would); the graph cannot see it.
+      write(dir, ".git/diffci/coverage-map.json", JSON.stringify({ schema: "diffci.coverage-map.v1", produced_at: "", command: "npm test", tests: {
+        "test/alpha.test.js": ["src/alpha.js"], "test/beta.test.js": ["src/alpha.js", "src/beta.js"],
+      } }));
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+      const report = JSON.parse(runVerify(dir).stdout);
+      assert.equal(report.verification, "passed", report.reason);
+      assert.deepEqual(report.selected_tests, ["test/alpha.test.js", "test/beta.test.js"]);
+      assert.deepEqual(report.coverage_added, ["test/beta.test.js"]);
+      assert.deepEqual(report.selection_reasons["test/beta.test.js"], { reason: "COVERAGE", changed_file: "src/alpha.js" });
+      assert.match(report.command, /alpha\.test\.js.*beta\.test\.js/);
+      assert.match(report.reason, /the coverage map added 1 test file/);
+
+      const off = JSON.parse(spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--no-coverage", "--no-reuse"], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() }).stdout);
+      assert.deepEqual(off.selected_tests, ["test/alpha.test.js"]);
+      assert.equal(off.coverage_added, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when selected verification fails", () => {
     const dir = fixture();
     try {

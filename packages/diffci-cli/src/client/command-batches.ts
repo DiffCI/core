@@ -76,6 +76,15 @@ export function subsetCommand(command: string, paths: readonly string[], keep: R
   return kept.length ? `${tail.prefix} ${kept.map((entry) => entry.token).join(" ")}` : null;
 }
 
+/**
+ * `command` with `extra` test files appended (coverage-map.ts), or undefined when `command` does not end in
+ * exactly the selected paths or an extra path would need quoting, so it cannot be extended safely.
+ */
+export function appendToCommand(command: string, paths: readonly string[], extra: readonly string[]): string | undefined {
+  if (!selectedTail(command, paths) || !extra.every((path) => /^[\w./@+-]+$/.test(path))) return undefined;
+  return `${command} ${extra.join(" ")}`;
+}
+
 /** `command` split so each part fits `limit`, or `[command]` when it fits or cannot be split safely. */
 export function batchCommand(command: string, paths: readonly string[], limit = COMMAND_LINE_LIMIT): string[] {
   if (command.length <= limit || paths.length === 0) return [command];

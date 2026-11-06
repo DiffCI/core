@@ -300,6 +300,8 @@
     "packages/diffci-cli/tests/client/test-shards.test.ts",
     "src/repo/route-visits.ts",
     "tests/repo/route-visits.test.ts",
+    "packages/diffci-cli/src/client/coverage-map.ts",
+    "packages/diffci-cli/tests/client/coverage-map.test.ts",
     ".github/FUNDING.yml"
   ]
 }
