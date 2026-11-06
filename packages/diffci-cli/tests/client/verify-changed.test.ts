@@ -312,6 +312,41 @@ describe("verify commit range", () => {
     }
   });
 
+  it("verifies a commit range when the checkout differs from HEAD only by CRLF line endings", () => {
+    const dir = fixture();
+    try {
+      commitAlphaChange(dir);
+      // The state a system-wide core.autocrlf=true checkout leaves behind once the repository sets it to false.
+      write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
+      const run = runVerifyRange(dir);
+      assert.equal(run.status, 0, run.stdout + run.stderr);
+      const report = JSON.parse(run.stdout);
+      assert.equal(report.verification, "passed");
+      assert.deepEqual(report.snapshot.line_ending_only_changes, ["src/beta.js"]);
+
+      const summary = spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--repo", dir], { cwd: ROOT, encoding: "utf8", env: localTestEnv() });
+      assert.match(summary.stdout, /line endings only: 1 checked-out file\(s\) differ from HEAD only by CRLF \(src\/beta\.js\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks when a CRLF-only file comes with a real change", () => {
+    const dir = fixture();
+    try {
+      commitAlphaChange(dir);
+      write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
+      write(dir, "README.md", "not committed\n");
+      const run = runVerifyRange(dir);
+      assert.equal(run.status, 2, run.stdout + run.stderr);
+      const report = JSON.parse(run.stdout);
+      assert.match(report.reason, /requires a clean checkout/);
+      assert.equal(report.snapshot.line_ending_only_changes, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("blocks when the analyzed head is not the commit being executed", () => {
     const dir = fixture();
     try {

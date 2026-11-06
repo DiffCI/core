@@ -140,6 +140,29 @@ describe("agent-facing CLI commands", () => {
     }
   });
 
+  it("warns when .gitignore would keep the files it wrote out of commits", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-agent-ignored-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: dir });
+      writeFileSync(join(dir, ".gitignore"), "/.claude/\n", "utf8");
+
+      const result = runCli(["init", "--repo", dir], ROOT);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Warning: \.gitignore keeps these files out of commits/);
+      assert.match(result.stdout, /^ {2}\.claude\/skills\/diffci-verify\/SKILL\.md$/m);
+      assert.match(result.stdout, /^ {2}\.claude\/settings\.json$/m);
+      assert.doesNotMatch(result.stdout, /^ {2}\.mcp\.json$/m);
+      assert.doesNotMatch(result.stdout, /^ {2}\.git\/hooks\/pre-push$/m);
+
+      writeFileSync(join(dir, ".gitignore"), "/.claude/*\n!/.claude/skills/\n!/.claude/settings.json\n", "utf8");
+      const clean = runCli(["init", "--repo", dir], ROOT);
+      assert.equal(clean.status, 0, clean.stderr);
+      assert.doesNotMatch(clean.stdout, /Warning: \.gitignore/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("initializes an installed npm project end to end and is idempotent", () => {
     const parent = mkdtempSync(join(tmpdir(), "diffci-cli-install-"));
     const packageDir = join(parent, "package");

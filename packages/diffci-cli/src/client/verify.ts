@@ -16,7 +16,7 @@ import { likelyFailures, rankTests, testHistory } from "./test-ranking.js";
 import { assignShards, type ShardSpec, type TimingsFile } from "./test-shards.js";
 import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
-import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
+import { captureWorkingTreeSnapshot, lineEndingOnlyChanges, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
 
 export const VERIFICATION_SCHEMA = "diffci.verification.v1" as const;
 
@@ -67,6 +67,8 @@ export interface VerificationReport {
     written_during_verification?: string[];
     /** Files that existed before the run and changed during it, at most 20. Their presence blocks the verdict. */
     changed_during_verification?: SnapshotChange[];
+    /** Commit-range only: checked-out files that differ from HEAD only by CRLF line endings, at most 20. */
+    line_ending_only_changes?: string[];
   };
   analysis: {
     status: "not_needed" | ObservationReport["status"];
@@ -152,6 +154,7 @@ function baseReport(
       base_sha: snapshot.baseSha,
       before_tree_sha: snapshot.treeSha,
       unchanged: false,
+      ...(snapshot.lineEndingOnly ? { line_ending_only_changes: snapshot.lineEndingOnly.slice(0, 20) } : {}),
     },
   };
 }
@@ -563,12 +566,16 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
     return blocked(unknownSnapshot(), "commit-range", message, { status: "ERROR", stage: "context", fallback_reasons: [], error: message });
   }
   if (before.changed) {
-    return blocked(
-      before,
-      "commit-range",
-      "commit-range verification requires a clean checkout; use verify --changed for uncommitted changes",
-      { status: "not_needed", fallback_reasons: [] },
-    );
+    const lineEndingOnly = lineEndingOnlyChanges(repoPath, before);
+    if (!lineEndingOnly) {
+      return blocked(
+        before,
+        "commit-range",
+        "commit-range verification requires a clean checkout; use verify --changed for uncommitted changes",
+        { status: "not_needed", fallback_reasons: [] },
+      );
+    }
+    before = { ...before, lineEndingOnly };
   }
 
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "diffci-verify-"));
@@ -613,6 +620,10 @@ export function formatVerificationSummary(report: VerificationReport): string {
     `  snapshot: ${report.snapshot.before_tree_sha.slice(0, 12)} (${report.snapshot.unchanged ? "unchanged" : "not confirmed"})`,
   ];
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
+  const lineEndings = report.snapshot.line_ending_only_changes;
+  if (lineEndings?.length) {
+    lines.push(`  line endings only: ${lineEndings.length}${lineEndings.length === 20 ? "+" : ""} checked-out file(s) differ from HEAD only by CRLF (${lineEndings.slice(0, 3).join(", ")}${lineEndings.length > 3 ? ", ..." : ""}); verified as checked out`);
+  }
   const written = report.snapshot.written_during_verification;
   if (written?.length) lines.push(`  written by the run (not in .gitignore): ${written.slice(0, 5).join(", ")}${written.length > 5 ? ", ..." : ""}`);
   if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}${check.baseline?.status === "preexisting" ? " (also fails at base)" : ""}`).join(", ")}`);

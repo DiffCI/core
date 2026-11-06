@@ -38,7 +38,7 @@ import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook, isGitRepository } from "./hook.js";
-import { AGENT_HOOK_TIMEOUT_SECONDS, MCP_CONFIG_PATHS, SKILL_PATH, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
+import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATH, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
@@ -137,7 +137,7 @@ What this does:
 New files the run writes are listed in the receipt (snapshot.written_during_verification) and do not block it;
 consider adding them to .gitignore. If verification changes existing files, review those changes and rerun DiffCI
 so the new snapshot is verified.
-If the repository has the DiffCI pre-push hook (\`diffci init --hook\`), a push verifies the pushed commits again; do not bypass it with \`--no-verify\` unless the user asks.
+If the repository has the DiffCI pre-push hook (\`diffci init\` installs it), a push verifies the pushed commits again; do not bypass it with \`--no-verify\` unless the user asks.
 Use \`observe --no-send\` when analysis without test execution is needed.
 
 Do not propose, commit, push, or deploy when \`safe_to_continue\` is false. If DiffCI is blocked, run the repository's normal required verification and report the blocker; required project CI remains authoritative.
@@ -323,6 +323,12 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   if (installed) console.log(`  ${installed}`);
   else console.log("  skipped package installation (pass --install to add an exact dev dependency)");
   for (const line of skipped) console.log(`  ${line}`);
+  const ignored = ignoredWrites(repoPath, writes);
+  if (ignored.length > 0) {
+    console.log(`\nWarning: .gitignore keeps ${ignored.length === 1 ? "this file" : "these files"} out of commits, so other checkouts and agent sessions will not get ${ignored.length === 1 ? "it" : "them"}:`);
+    for (const path of ignored) console.log(`  ${path}`);
+    console.log("Add an exception (for example !/.claude/skills/ after /.claude/*) or commit with git add -f.");
+  }
   if (!includeWorkflow) console.log("  skipped .github/workflows/diffci.yml (pass --workflow to add it)");
   if (!includeVerificationWorkflow) console.log("  skipped .github/workflows/diffci-verify.yml (pass --verification-workflow to add it)");
   console.log(`\nDefault agent command: ${agentCommand}`);

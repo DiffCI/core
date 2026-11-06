@@ -1,5 +1,28 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+
+/**
+ * Which of the files init wrote or updated Git would leave out of a commit, from init's own result lines
+ * ("wrote <path> ...", "updated <path> ..."). Paths under .git (the pre-push hook) are never versioned.
+ *
+ * WHY (2026-11-06). DentalPresence ignored all of `/.claude/`, so init reported "wrote
+ * .claude/skills/diffci-verify/SKILL.md" for a skill no other checkout or agent session would ever get.
+ */
+export function ignoredWrites(repoPath: string, results: readonly string[]): string[] {
+  const paths = results
+    .map((result) => /^(?:wrote|updated) (\S+)/.exec(result)?.[1])
+    .filter((path): path is string => path !== undefined && !path.startsWith(".git/"));
+  if (paths.length === 0) return [];
+  const result = spawnSync("git", ["check-ignore", "--stdin", "-z"], {
+    cwd: repoPath,
+    input: `${paths.join("\0")}\0`,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  // Exit 1 means nothing is ignored; anything else (not a repository) leaves nothing to warn about.
+  return result.status === 0 ? result.stdout.split("\0").filter(Boolean) : [];
+}
 
 /**
  * Agent integrations `diffci init` sets up by default (2026-11-04): the MCP server in the project
