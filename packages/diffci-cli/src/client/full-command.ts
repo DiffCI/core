@@ -25,6 +25,21 @@ export function inferSelectedCommands(repoPath: string, proposed: readonly strin
   return { commands, reason: `${plan.commands.length} commands from the verified plan` };
 }
 
+/** The planner's commands for `tests` on their own, rebuilt from the repository (a FULL observation
+ * reports none): several already split to fit the shell, or one whole command for the caller to check
+ * and split. Undefined when the planner refuses them. */
+export function inferPlannedCommands(repoPath: string, tests: readonly string[]): { commands: string[] } | { single: string } | undefined {
+  const plan = planSelectiveTestCommands(analyzeRepository({ repoPath }), tests);
+  if (plan.refusalReason || plan.commands.length === 0) return undefined;
+  const proposed = plan.commands.map(commandSpecToString);
+  if (proposed.length > 1) {
+    const commands = inferSelectedCommands(repoPath, proposed, tests).commands;
+    return commands ? { commands } : undefined;
+  }
+  const single = inferSelectedCommand(repoPath, proposed[0]!, tests).command;
+  return single ? { single } : undefined;
+}
+
 /** Rebuild the complete plan locally; never join arbitrary report commands. */
 export function inferWorkspaceComparison(repoPath: string, proposed: readonly string[], selectedTests: readonly string[]): { full?: string; selected?: string; reason: string } {
   const profile = analyzeRepository({ repoPath });

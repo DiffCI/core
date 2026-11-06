@@ -8,7 +8,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { analyzeGitDelta, packageJsonChange, testListEdit } from "../../src/git/git-diff.js";
+import { analyzeGitDelta, exportsRemapTargets, packageJsonChange, testListEdit } from "../../src/git/git-diff.js";
 import { npmLockAffectedDependencies } from "../../src/repo/npm-lockfile.js";
 import { contentNamesPath, referencePattern, referenceTokens, repositoryFileReader, resolveFileReferences, scriptNamesPath, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests } from "../../src/repo/workflow-test-steps.js";
@@ -97,6 +97,13 @@ describe("word-level naming", () => {
     assert.equal(scriptNamesPath("node --test \"scripts/[!d]*.test.ts\"", "scripts/check.test.ts", pattern("scripts/check.test.ts")), true);
     assert.equal(scriptNamesPath("node -e \"require('./ops/cloudflare/x.js')\"", target, pattern(target)), true);
   });
+  it("reads a bare file name in a script as the file in the script's own directory", () => {
+    const target = "packages/alint/vitest.config.mts";
+    assert.equal(scriptNamesPath("vitest run -c vitest.config.mts", target, pattern(target), { ancestors: false, cwd: "apps/cli" }), false);
+    assert.equal(scriptNamesPath("vitest run -c vitest.config.mts", target, pattern(target), { ancestors: false, cwd: "packages/alint" }), true);
+    assert.equal(scriptNamesPath("cd ../../packages/alint && vitest -c vitest.config.mts", target, pattern(target), { ancestors: false, cwd: "apps/cli" }), true);
+    assert.equal(scriptNamesPath("pnpm -r exec vitest -c vitest.config.mts", target, pattern(target), { ancestors: false }), true);
+  });
   it("resolves relative paths in content from the reader's directory or the root", () => {
     const target = "ops/cloudflare/src/index.js";
     assert.equal(contentNamesPath(`{ "main": "./src/index.js" }`, "ops/builder/wrangler.jsonc", target, pattern(target), true), false);
@@ -105,6 +112,17 @@ describe("word-level naming", () => {
     assert.equal(contentNamesPath(`join(root, "src", "index.js")`, "scripts/x.mjs", target, pattern(target), true), true);
     assert.equal(contentNamesPath("see ops/cloudflare/src/other.js", "scripts/x.mjs", target, pattern(target), true), false);
     assert.equal(contentNamesPath("`${root}/ops/cloudflare/src/index.js`", "scripts/x.mjs", target, pattern(target), true), true);
+  });
+  it("needs a directory name before code elsewhere names a reader's reader by its bare file name", () => {
+    // LobeHub (2026-11-06): root package.json -> scripts/hotfixWorkflow/index.ts -> every `'index.ts'`.
+    const target = "scripts/hotfixWorkflow/index.ts";
+    const bare = pattern(target, false);
+    assert.equal(contentNamesPath(`export const entry = 'index.ts';`, "packages/ui/src/build.ts", target, bare, false), false);
+    assert.equal(contentNamesPath(`spawn('tsx', ['index.ts'], { cwd: 'scripts/hotfixWorkflow' })`, "packages/ui/src/build.ts", target, bare, false), true);
+    assert.equal(contentNamesPath(`spawn('tsx', [join(dir, 'index.ts')]); readdirSync('scripts')`, "tools/run-all.ts", target, bare, false), true);
+    assert.equal(contentNamesPath(`import('./' + 'index.ts')`, "scripts/hotfixWorkflow/cli.ts", target, bare, false), true);
+    assert.equal(contentNamesPath(`cd somewhere && tsx index.ts`, "tools/run.sh", target, bare, false), true);
+    assert.equal(contentNamesPath(`export const entry = 'index.ts';`, "packages/ui/src/build.ts", target, pattern(target), true), true);
   });
   it("reads a glob as the paths it matches and a leading variable as an unknown directory", () => {
     const target = "packages/database/migrations/0199.sql";
@@ -120,6 +138,23 @@ describe("word-level naming", () => {
     assert.equal(contentNamesPath(`run: cat "packages/sdk/x.json"\n# onto the overlay packages, and`, action, target, pattern(target), true), false);
     assert.equal(contentNamesPath(`run: ls "packages"`, action, target, pattern(target), true), true);
     assert.equal(contentNamesPath("require(`${process.env.GITHUB_WORKSPACE}/.github/packages/check.cjs`)", action, target, pattern(target), true), false);
+  });
+  it("does not count a path in a list of files to skip as reading it", () => {
+    // LobeHub, 2026-11-05: knip, alint, a Vitest config and tsconfig.json each named the stylex
+    // migration's data files only to ignore them, and every change to those files ran the full suite.
+    const target = "scripts/stylexMigration/verification/fixtures/assets/manifest.json";
+    assert.equal(contentNamesPath("export default {\n  ignore: [\n    'packages/**',\n    'scripts/**',\n  ],\n};", "knip.ts", target, pattern(target), true), false);
+    // Braces and classes in earlier globs of the same list are balanced, not read as an enclosing object.
+    assert.equal(contentNamesPath("export default {\n  ignore: [\n    'src/**/*.spec.ts{x,}',\n    'src/[!_]*.ts',\n    // Other directories\n    'scripts/**',\n  ],\n};", "knip.ts", target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`[[config.group]]\nignores = [ "**/*.test.ts", "**/fixtures/**" ]`, "alint.config.toml", target, pattern(target), true), false);
+    assert.equal(contentNamesPath("test: { exclude: ['**/node_modules/**', 'fixtures/**'] }", "packages/alint/vitest.config.mts", target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`{ "exclude": ["e2e/**", "scripts/stylexMigration/**"], "include": ["src/**/*.ts"] }`, "tsconfig.json", target, pattern(target), true), false);
+    assert.equal(contentNamesPath(`{ "testPathIgnorePatterns": ["<rootDir>/scripts/"] }`, "jest.config.json", target, pattern(target), true), false);
+    // Lists of files to process still name them, including one beside an exclusion list.
+    assert.equal(contentNamesPath(`{ "exclude": ["e2e/**"], "include": ["scripts/**/*.json"] }`, "tsconfig.json", target, pattern(target), true), true);
+    assert.equal(contentNamesPath(`files = [ "scripts/**" ]\nignores = [ "**/*.test.ts" ]`, "alint.config.toml", target, pattern(target), true), true);
+    assert.equal(contentNamesPath("const ignore = 1;\nreadFileSync('scripts/stylexMigration/verification/fixtures/assets/manifest.json')", "scripts/x.ts", target, pattern(target), true), true);
+    assert.equal(contentNamesPath("copy({ targets: [{ src: 'scripts/**', ignore: ['x'] }] })", "vite.config.ts", target, pattern(target), true), true);
   });
 });
 
@@ -268,9 +303,58 @@ describe("workspace package manifests (LobeHub, 2026-11-03)", () => {
       const version = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released" }) });
       assert.deepEqual(version.fallbackReasons, []);
       const dependency = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" } }) });
-      assert.deepEqual(dependency.fallbackReasons, ["Workspace package manifest changed dependencies, scripts or resolution fields: packages/a/package.json; full validation required"]);
+      // No lockfile is committed, so the bump is attributed to `left`, which nothing imports.
+      assert.deepEqual(dependency.fallbackReasons, ["Dependency left changed and no repository source imports it; full validation required"]);
       const script = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" }, scripts: { build: "tsc -b" } }) });
       assert.equal(script.fallbackReasons.length, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("exports remaps (LobeHub model-bank, 2026-11-06)", () => {
+  const pkg = (exports: unknown, fields: Record<string, unknown> = {}) => JSON.stringify({ name: "@fx/bank", version: "1.0.0", scripts: { build: "tsc" }, exports, ...fields });
+  it("returns the old and new targets of every changed subpath", () => {
+    const before = pkg({ ".": "./src/index.ts", "./qwen": "./src/qwen.ts", "./xai": "./src/xai.ts" });
+    const after = pkg({ ".": "./src/index.ts", "./qwen": { types: "./src/qwen/index.d.ts", default: "./src/qwen/index.ts" }, "./xai": "./src/xai.ts" });
+    assert.deepEqual(exportsRemapTargets(before, after), { targets: ["./src/qwen.ts", "./src/qwen/index.d.ts", "./src/qwen/index.ts"], dataChanged: false });
+    assert.deepEqual(exportsRemapTargets(pkg("./a.js"), pkg("./b.js", { version: "1.1.0" })), { targets: ["./a.js", "./b.js"], dataChanged: true });
+  });
+  it("declines patterns, non-relative targets and any other behavioral edit", () => {
+    assert.equal(exportsRemapTargets(pkg({ "./*": "./src/*.ts" }), pkg({ "./*": "./lib/*.ts" })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "pkg/a.js" })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "./b.js" }, { type: "module" })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "./b.js" }, { scripts: { build: "tsc -b" } })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "./a.js" }, { version: "2.0.0" })), undefined);
+  });
+  it("selects the dependents of a remapped subpath instead of the full suite", async () => {
+    const dir = join(tmpdir(), `diffci-exports-remap-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const write = (files: Record<string, string>) => { for (const [path, content] of Object.entries(files)) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), content); } };
+    const bank = (qwen: string) => JSON.stringify({ name: "@fx/bank", version: "1.0.0", type: "module", exports: { "./qwen": qwen, "./xai": "./src/xai.js" } }, null, 2);
+    try {
+      execSync("git init --quiet && git config user.email t@diffci.local && git config user.name t && git config core.autocrlf false", { cwd: dir });
+      write({
+        "package.json": JSON.stringify({ name: "fixture", private: true, type: "module", workspaces: ["packages/*"], scripts: { test: "node --test" } }, null, 2),
+        "packages/bank/package.json": bank("./src/qwen.js"),
+        "packages/bank/src/qwen.js": "export const qwen = 1;\n",
+        "packages/bank/src/qwen/index.js": "export const qwen = 2;\n",
+        "packages/bank/src/xai.js": "export const xai = 1;\n",
+        "packages/bank/src/qwen/index.test.js": `import { qwen } from "./index.js";\nimport test from "node:test";\ntest("q", () => qwen);\n`,
+        "packages/bank/src/xai.test.js": `import { xai } from "./xai.js";\nimport test from "node:test";\ntest("x", () => xai);\n`,
+      });
+      execSync("git add -A && git commit --quiet -m base", { cwd: dir });
+      const baseSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+      write({ "packages/bank/package.json": bank("./src/qwen/index.js") });
+      rmSync(join(dir, "packages/bank/src/qwen.js"));
+      execSync("git add -A && git commit --quiet -m head", { cwd: dir });
+      const headSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+      const delta = await analyzeGitDelta({ repoPath: dir, baseSha, headSha });
+      assert.ok(delta.success);
+      assert.deepEqual(delta.delta.analysis.exportsRemaps, { "packages/bank/package.json": { targets: ["packages/bank/src/qwen.js", "packages/bank/src/qwen/index.js"], dataChanged: false } });
+      const graph = await buildDependencyGraph({ repoPath: dir, excludeDirs: ["node_modules", ".git"] });
+      const impact = new ImpactAnalyzer().analyze(delta.delta, graph, graph.profile, { repositoryFiles: delta.inventory?.files, readRepositoryFile: repositoryFileReader(dir) });
+      assert.deepEqual(impact.fallbackReasons, [], JSON.stringify(impact.evidence.filter((e) => e.reason === "UNKNOWN_FILE" || e.reason === "DEPENDENCY_MANIFEST")));
+      assert.deepEqual(impact.affectedTests.map((t) => t.path), ["packages/bank/src/qwen/index.test.js"]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

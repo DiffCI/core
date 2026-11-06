@@ -9,6 +9,7 @@ import {
   buildDependencyGraph,
   graphToJson,
   refineConfidenceForDelta,
+  explainGraphConfidence,
   validateDependencyGraph,
 } from "../../src/repo/graph.js";
 
@@ -717,9 +718,9 @@ describe("runtime module references", () => {
   });
 
   for (const [name, source] of Object.entries({
-    "variable import": "const path = './changed'; export const load = () => import(path);",
+    "variable import": "let path = './changed'; export const load = () => import(path);",
     "conditional import": "export const load = () => import(true ? './changed' : './other');",
-    "variable require": "const path = './changed'; export const load = () => require(path);",
+    "variable require": "export const load = (path: string) => require(path);",
     "interpolated import from the repository root": "export const load = (name: string) => import(`/src/${name}`);",
   })) {
     // A computed target can be any file, so the changed module has no edge to the loader. Every test
@@ -857,6 +858,89 @@ describe("runtime module references", () => {
       }
     });
   }
+
+  // 2026-11-06 LobeHub fixture replay: these kept their tests selected on every commit.
+  for (const [name, source] of Object.entries({
+    "concatenated literal": "export const load = () => import('./chan' + 'ged' + '.ts');",
+    "const binding": "const modulePath = './changed' + '.ts'; export const load = async () => import(modulePath);",
+    "cache-busting query": "export const load = () => import('./changed?v=' + Date.now());",
+    "template over a const": "const dir = '.'; export const load = () => import(`${dir}/changed`);",
+  })) {
+    it(`resolves a ${name} import to its one target`, async () => {
+      const root = createTempRepo({
+        "src/changed.ts": "export const value = 1;",
+        "src/other.ts": "export const value = 2;",
+        "src/loader.ts": source,
+      });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.equal(result.confidence, "COMPLETE", JSON.stringify(result.unresolved));
+        assert.deepEqual(result.graph.dependenciesOf("src/loader.ts"), ["src/changed.ts"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  for (const [name, source] of Object.entries({
+    "const rebound in another scope": "const p = './changed'; export const load = (p: string) => import(p);",
+    "numeric sum": "const a = 1; const b = 2; export const load = () => import(a + b);",
+  })) {
+    it(`keeps a ${name} computed`, async () => {
+      const root = createTempRepo({ "src/changed.ts": "export const value = 1;", "src/loader.ts": source });
+      try {
+        const result = await buildDependencyGraph({ repoPath: root });
+        assert.ok(result.unresolved.some((ref) => ref.importer === "src/loader.ts" && ref.computed), JSON.stringify(result.unresolved));
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+
+  it("explains a repository-wide UNSAFE in counts, without paths", async () => {
+    const root = createTempRepo({
+      "src/changed.ts": "export const value = 1;",
+      "src/loader.ts": "export const load = (name: string) => import(name);",
+      "src/broken.ts": "import { x } from './missing'; export const y = x;",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.confidence, "UNSAFE");
+      const reasons = explainGraphConfidence(result);
+      assert.deepEqual(reasons, [
+        "1 computed module load in 1 file; the tests that run them are selected for every code change",
+        "1 unresolved import; a change that reaches one falls back to full validation",
+      ]);
+      assert.ok(!reasons.join(" ").includes("src/"), "no paths");
+      const clean = await buildDependencyGraph({ repoPath: createTempRepo({ "src/a.ts": "export const a = 1;" }) });
+      assert.deepEqual(explainGraphConfidence(clean), []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a root-absolute import.meta.glob from the Vite root", async () => {
+    const root = createTempRepo({
+      "vitest.config.mts": "export default {};",
+      "src/locale.ts": "export const loaders = import.meta.glob(['/locales/*/*.json', '!/locales/*/skip.json']);",
+      "locales/en/ui.json": "{}",
+      "locales/en/skip.json": "{}",
+      "tests/locale.test.ts": "import { loaders } from '../src/locale'; export const value = loaders;",
+      "tests/unrelated.test.ts": "export const unrelated = 1;",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.ok(!result.unresolved.some((ref) => ref.importer === "src/locale.ts"), JSON.stringify(result.unresolved));
+      assert.deepEqual(result.graph.dependenciesOf("src/locale.ts"), ["locales/en/ui.json"]);
+      const impact = new ImpactAnalyzer().analyze(delta("locales/en/ui.json"), result, result.profile);
+      assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("; "));
+      assert.deepEqual(impact.affectedTests.map((test) => test.path), ["tests/locale.test.ts"]);
+      const unrelated = new ImpactAnalyzer().analyze(delta("src/other.ts"), result, result.profile);
+      assert.ok(!unrelated.affectedTests.some((test) => test.path === "tests/locale.test.ts"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runtime test selection", () => {

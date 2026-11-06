@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -11,6 +11,43 @@ export interface WorkingTreeSnapshot {
   /** Unreachable commit used only so the existing commit-range analyzer can inspect the tree. */
   commitSha: string;
   changed: boolean;
+  /** Set when every difference from HEAD is a CRLF checkout of an LF-committed file (see lineEndingOnlyChanges). */
+  lineEndingOnly?: string[];
+}
+
+/**
+ * The paths, when every difference between HEAD and the snapshot is only CRLF line endings on files
+ * committed with LF; otherwise undefined.
+ *
+ * WHY (2026-11-06). On DentalPresence the pre-push hook could not verify any push: 268 files had been
+ * checked out with CRLF under Git for Windows' system-wide `core.autocrlf=true` before the repository
+ * set it to false. `git status` called the checkout clean because its stat cache still matched, while
+ * the snapshot re-reads every file and saw 268 changes. Git's own view decides "clean" for the user, so
+ * a CRLF-only checkout is verified rather than blocked, and the receipt names the files.
+ */
+export function lineEndingOnlyChanges(repoPathInput: string, snapshot: WorkingTreeSnapshot): string[] | undefined {
+  const repoPath = resolve(repoPathInput);
+  const baseTreeSha = requireGit(repoPath, ["rev-parse", "--verify", `${snapshot.baseSha}^{tree}`], "could not resolve the snapshot base tree");
+  const changes = snapshotChanges(repoPath, baseTreeSha, snapshot.treeSha);
+  if (changes.length === 0 || changes.some((change) => change.status !== "modified")) return undefined;
+  for (const change of changes) {
+    const committed = spawnSync("git", ["cat-file", "blob", `${baseTreeSha}:${change.path}`], {
+      cwd: repoPath,
+      maxBuffer: 256 * 1024 * 1024,
+      windowsHide: true,
+    });
+    if (committed.status !== 0 || committed.stdout.includes(13)) return undefined;
+    let checkedOut: Buffer;
+    try {
+      checkedOut = readFileSync(join(repoPath, change.path));
+    } catch {
+      return undefined;
+    }
+    if (!checkedOut.includes(13)) return undefined;
+    const normalized = Buffer.from(checkedOut.toString("latin1").replace(/\r\n/g, "\n"), "latin1");
+    if (!normalized.equals(committed.stdout)) return undefined;
+  }
+  return changes.map((change) => change.path);
 }
 
 /** One path that differs between two snapshots. A rename is a deletion plus an addition. */

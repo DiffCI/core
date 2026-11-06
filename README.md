@@ -55,9 +55,11 @@ into `CLAUDE.md` or `AGENTS.md` so it runs DiffCI before pushing.
 
 ## GitHub Action
 
-The public [`action.yml`](action.yml) is an observation-only GitHub Action
-wrapper. It runs the pinned published DiffCI CLI outside the observed checkout,
-retains existing CI jobs, and uploads an advisory report. See the
+The public [`action.yml`](action.yml) ("DiffCI change impact") shows, in the
+job summary of every pull request, which tests the change affects and why, or
+that the full suite is needed and why. It is observation only: it runs the
+pinned published DiffCI CLI outside the observed checkout, retains existing CI
+jobs, skips nothing, and uploads the report as an artifact. See the
 [observer Action guide](docs/github-action-observer.md) and
 [workflow example](examples/github-actions-observer.yml).
 

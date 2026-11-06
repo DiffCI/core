@@ -87,4 +87,26 @@ describe("repository DiffCI configuration", () => {
       assert.ok(new ImpactAnalyzer() instanceof ImpactAnalyzer, "default construction carries no built-in policy");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+  it("reads declared inputs, and a diffci.json declaring only inputs wins over package.json", () => {
+    const root = tmpRepo();
+    try {
+      write(root, "package.json", JSON.stringify({ name: "x", diffci: { alwaysRunTests: ["from-package.json"] } }));
+      write(root, "diffci.json", JSON.stringify({ inputs: [{ files: ["prisma/schema.prisma"], tests: ["src/db/**/*.test.ts"] }] }));
+      assert.deepEqual(readRepositoryConfig(root), { inputs: [{ files: ["prisma/schema.prisma"], tests: ["src/db/**/*.test.ts"] }] });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("reports a malformed inputs block as a configuration error instead of dropping entries", () => {
+    // Dropping one entry would turn a declared edge into a silent skip; the error falls back instead.
+    for (const inputs of [{ files: ["a"] }, [{ files: ["a"] }], [{ files: [], tests: ["b"] }], [{ files: ["a"], tests: [""] }], [null]]) {
+      const root = tmpRepo();
+      try {
+        write(root, "diffci.json", JSON.stringify({ inputs }));
+        const config = readRepositoryConfig(root);
+        assert.equal(config.inputs, undefined, JSON.stringify(inputs));
+        assert.match(config.configurationError ?? "", /Invalid inputs/);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  });
 });

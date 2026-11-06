@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, isAbsolute, join, relative } from "node:path";
 
 /**
- * The pre-push hook `diffci init --hook` installs (2026-10-28).
+ * The pre-push hook `diffci init` installs (2026-10-28; on by default since 0.3.24).
  *
  * WHY. In 449 agent sessions on DentalPresence, agents ran DiffCI in 24 of over 1,500 test commands:
  * they picked test files themselves (928) or ran the whole suite (282), and 104 pushes then failed the

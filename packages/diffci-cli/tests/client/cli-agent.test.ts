@@ -18,7 +18,8 @@ describe("agent-facing CLI commands", () => {
   it("prints check and init as first-class commands", () => {
     const result = runCli(["help"], ROOT);
     assert.equal(result.status, 0);
-    assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\] \[--force\]/);
+    assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\]\s+\[--no-agent-hooks\] \[--force\]/);
+    assert.match(result.stdout, /diffci agent-stop --agent claude\|codex\|cursor/);
     assert.match(result.stdout, /diffci mcp/);
     assert.match(result.stdout, /diffci verify \[--changed \| --base <sha> --head <sha>\]/);
     assert.match(result.stdout, /diffci check \[--repo <path>\]/);
@@ -104,6 +105,10 @@ describe("agent-facing CLI commands", () => {
       const pluginSkill = readFileSync(join(ROOT, "..", "..", "integrations", "agent-plugin", "skills", "diffci-verify", "SKILL.md"), "utf8").replace(/\r\n/g, "\n");
       assert.equal(readFileSync(join(dir, ".claude", "skills", "diffci-verify", "SKILL.md"), "utf8"), pluginSkill);
       assert.match(readFileSync(join(dir, ".git", "hooks", "pre-push"), "utf8"), /diffci:managed pre-push hook/);
+      // Stop hooks for Claude Code, Codex and Cursor run diffci agent-stop when the agent ends a turn.
+      assert.match(JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, /diffci.* agent-stop --agent claude$/);
+      assert.match(JSON.parse(readFileSync(join(dir, ".codex", "hooks.json"), "utf8")).hooks.Stop[0].hooks[0].command, /agent-stop --agent codex$/);
+      assert.match(JSON.parse(readFileSync(join(dir, ".cursor", "hooks.json"), "utf8")).hooks.stop[0].command, /agent-stop --agent cursor$/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -130,6 +135,29 @@ describe("agent-facing CLI commands", () => {
       assert.equal(noMcp.status, 0, noMcp.stderr);
       assert.match(noMcp.stdout, /skipped the MCP server configs \(--no-mcp\)/);
       assert.equal(existsSync(join(dir, ".mcp.json")), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns when .gitignore would keep the files it wrote out of commits", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-agent-ignored-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: dir });
+      writeFileSync(join(dir, ".gitignore"), "/.claude/\n", "utf8");
+
+      const result = runCli(["init", "--repo", dir], ROOT);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /Warning: \.gitignore keeps these files out of commits/);
+      assert.match(result.stdout, /^ {2}\.claude\/skills\/diffci-verify\/SKILL\.md$/m);
+      assert.match(result.stdout, /^ {2}\.claude\/settings\.json$/m);
+      assert.doesNotMatch(result.stdout, /^ {2}\.mcp\.json$/m);
+      assert.doesNotMatch(result.stdout, /^ {2}\.git\/hooks\/pre-push$/m);
+
+      writeFileSync(join(dir, ".gitignore"), "/.claude/*\n!/.claude/skills/\n!/.claude/settings.json\n", "utf8");
+      const clean = runCli(["init", "--repo", dir], ROOT);
+      assert.equal(clean.status, 0, clean.stderr);
+      assert.doesNotMatch(clean.stdout, /Warning: \.gitignore/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

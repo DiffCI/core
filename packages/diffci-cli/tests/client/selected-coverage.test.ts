@@ -103,6 +103,30 @@ test("records which node --test files started, through the shell the CLI uses", 
   }
 });
 
+test("records each node --test file's result and duration", () => {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-node-test-results-test-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src/pass.test.js"), `require("node:test")("pass", () => {});\n`);
+    writeFileSync(join(dir, "src/fail.test.js"), `require("node:test")("fail", () => { throw new Error("no"); });\n`);
+    const trace = traceNodeTestFiles(dir, "--no-warnings");
+    try {
+      const run = measureCommand("node --test src/pass.test.js src/fail.test.js", { cwd: dir, timeoutMs: 60_000, tailBytes: 4096, env: trace.env });
+      assert.equal(run.exitCode, 1, run.stderrTail);
+      const results = trace.results();
+      assert.deepEqual(results.map(({ file, status }) => ({ file, status })), [
+        { file: "src/fail.test.js", status: "failed" },
+        { file: "src/pass.test.js", status: "passed" },
+      ]);
+      assert.ok(results.every((result) => typeof result.ms === "number" && result.ms >= 0));
+    } finally {
+      trace.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("compares started files case-insensitively only on Windows", () => {
   assert.deepEqual(unstartedNodeTests(["src/A.test.ts"], ["src/a.test.ts"], true), []);
   assert.deepEqual(unstartedNodeTests(["src/A.test.ts"], ["src/a.test.ts"], false), ["src/A.test.ts"]);

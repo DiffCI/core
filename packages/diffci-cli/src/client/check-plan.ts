@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 /** Compare one advisory selection with failures in the supplied full-suite JUnit report. */
-import { parseJunitFailures, readJunit, junitFile, type JunitFailure } from "./check-plan-junit.js";
+import { createHash } from "node:crypto";
+import { posix } from "node:path";
+import { readJunit, junitFile, attributeJunitFile, normalizeTestPath, type JunitFailure } from "./check-plan-junit.js";
 
 interface PlanSelection {
   mode: "SELECTIVE" | "FULL";
@@ -82,40 +84,55 @@ function readSelection(input: unknown): PlanSelection {
 export interface PlanCheckOptions {
   /** JUnit results from the plan's base revision, produced with the same reporter configuration. */
   baseResults?: string;
+  /** Absolute checkout root that produced the base report. Defaults to repoRoot. */
+  baseRepoRoot?: string;
   /** Absolute checkout root for absolute reporter paths. Defaults to the current directory. */
   repoRoot?: string;
   /** Reporter root, relative to the repository root. */
   root?: string;
 }
 
-function identity(test: JunitFailure, file: string): string {
-  return JSON.stringify([file, test.suiteNames, test.classname ?? "", test.name]);
+function identity(test: JunitFailure, file: string, repoRoot: string, root: string): string {
+  const label = (value: string) => /\.[cm]?[jt]sx?$/.test(value) ? normalizeTestPath(value, repoRoot, root) || value : value;
+  // Keep stored keys bounded even when many passing cases inherit long describe names.
+  return createHash("sha256").update(JSON.stringify([file, test.suiteNames.map(label), label(test.classname ?? ""), test.name])).digest("hex");
+}
+
+function reporterRoot(value = "."): string {
+  const path = value.replace(/\\/g, "/");
+  if (!path || /[\x00-\x1f\x7f]/.test(path) || path.startsWith("/")
+    || /^[a-z][a-z\d+.-]*:/i.test(path) || path.split("/").includes("..")) {
+    throw new Error("Invalid --root: expected a directory inside the repository, without parent traversal");
+  }
+  return posix.normalize(path).replace(/\/$/, "") || ".";
 }
 
 /** This checks selection against supplied results, not suite success or report/revision provenance. */
 export function checkPlan(planInput: unknown, junitXml: string, options: PlanCheckOptions = {}): PlanCheckReport {
-  const root = options.root ?? ".";
-  if (root !== ".") planPaths([root], "reporter root");
+  const root = reporterRoot(options.root);
   const repoRoot = options.repoRoot ?? process.cwd();
+  const baseRepoRoot = options.baseRepoRoot ?? repoRoot;
   const plan = readSelection(planInput);
   const known = new Set([...plan.selected, ...plan.skipped]);
   const headCounts = new Map<string, number>();
   const baseCounts = new Map<string, number>();
   const baseline = new Set<string>();
-  function count(test: JunitFailure, counts: Map<string, number>): string | undefined {
-    const file = junitFile(test, repoRoot, root);
+  const basePassed = new Set<string>();
+  function count(test: JunitFailure, counts: Map<string, number>, checkout: string): string | undefined {
+    const file = junitFile(test, checkout, root);
     // Missing names and ambiguous file identities cannot establish an old failure.
     if (!known.has(file) || !test.name || test.name === "(unnamed testcase)") return undefined;
-    const key = identity(test, file);
+    const key = identity(test, file, checkout, root);
     counts.set(key, (counts.get(key) ?? 0) + 1);
     return key;
   }
-  const results = options.baseResults === undefined ? parseJunitFailures(junitXml)
-    : readJunit(junitXml, (test) => { count(test, headCounts); });
+  const results = readJunit(junitXml, options.baseResults === undefined ? undefined
+    : (test) => { count(test, headCounts, repoRoot); });
   if (options.baseResults !== undefined) {
-    readJunit(options.baseResults, (test, failed) => {
-      const key = count(test, baseCounts);
+    readJunit(options.baseResults, (test, failed, skipped) => {
+      const key = count(test, baseCounts, baseRepoRoot);
       if (key !== undefined && failed) baseline.add(key);
+      if (key !== undefined && !failed && !skipped) basePassed.add(key);
     });
   }
   const missed: PlanCheckFailure[] = [];
@@ -130,18 +147,22 @@ export function checkPlan(planInput: unknown, junitXml: string, options: PlanChe
       ...(failure.suite === undefined ? {} : { suite: failure.suite }),
       ...(failure.file === undefined ? {} : { reportedFile: failure.file }),
     };
-    const file = junitFile(failure, repoRoot, root);
-    if (!known.has(file)) {
-      unattributed.push({ ...details, reason: failure.suiteLevel ? "Suite-level failure has no testcase file identity"
-        : "File metadata is missing, conflicting, invalid or absent from the supplied plan" });
+    const attribution = attributeJunitFile(failure, repoRoot, root);
+    if (!("file" in attribution)) {
+      unattributed.push({ ...details, ...attribution });
       continue;
     }
-    const key = identity(failure, file);
+    const file = attribution.file;
+    if (!known.has(file)) {
+      unattributed.push({ ...details, reason: "File is absent from the supplied plan; check --root and report scope", candidates: [file] });
+      continue;
+    }
+    const key = identity(failure, file, repoRoot, root);
     if (baseline.has(key) && baseCounts.get(key) === 1 && headCounts.get(key) === 1) {
       preExisting.push({ ...details, file });
     } else if (plan.mode === "SELECTIVE" && plan.skipped.has(file)) {
       // Repeated or unnamed identities cannot tell whether the failing occurrence changed.
-      const uncertain = options.baseResults === undefined || (headCounts.get(key) ?? 0) > 1
+      const uncertain = !basePassed.has(key) || (headCounts.get(key) ?? 0) > 1
         || (baseCounts.get(key) ?? 0) > 1
         || !failure.name || failure.name === "(unnamed testcase)";
       (uncertain ? possibleMisses : missed).push({ ...details, file });

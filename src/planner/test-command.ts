@@ -242,6 +242,35 @@ function runsOnlyDefaultVitest(scripts: Readonly<Record<string, string>>, name =
 }
 
 /**
+ * A workspace package's test script as one Vitest invocation DiffCI can repeat with selected files
+ * (2026-11-05): `vitest`, `vitest run` or `vitest --run`, optionally through `bunx`, `npx`, `pnpm exec`,
+ * `pnpm`/`yarn`, with `--typecheck`, one `--config`/`-c` file, and flags that only change output
+ * (LobeHub's `bunx vitest run --config vitest.config.mts --silent='passed-only'`). Anything else is
+ * undefined, `--coverage` included: its thresholds can fail a run that the selection would not repeat.
+ */
+export function workspaceVitestScript(script: string | undefined): { config?: string; typecheck: boolean } | undefined {
+  const words = (script ?? "").trim().split(/\s+/).filter(Boolean);
+  if (words[0] === "bunx" || words[0] === "npx") words.shift();
+  else if (words[0] === "pnpm" && words[1] === "exec") words.splice(0, 2);
+  else if ((words[0] === "pnpm" || words[0] === "yarn") && words[1] === "vitest") words.shift();
+  if (words.shift() !== "vitest") return undefined;
+  if (words[0] === "run" || words[0] === "--run") words.shift();
+  let config: string | undefined;
+  let typecheck = false;
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index]!;
+    const inline = /^--config=(.+)$/.exec(word)?.[1];
+    if (word === "--typecheck") typecheck = true;
+    else if (word === "--run") continue;
+    else if (config === undefined && inline) config = inline;
+    else if (config === undefined && (word === "--config" || word === "-c") && words[index + 1]) config = words[++index];
+    else if (!/^--(?:silent|reporter|passWithNoTests)(?:=\S+)?$/.test(word)) return undefined;
+  }
+  const file = config?.replace(/^["']|["']$/g, "").replace(/^\.\//, "");
+  return { ...(file ? { config: file } : {}), typecheck };
+}
+
+/**
  * Routes each selected test to the runner configuration that claims it, then emits one command per
  * group. A repository with `vitest.config.ts` and `vitest.e2e.config.ts` gets two commands, because
  * running an e2e suite under the unit config is not the same job - the family distinction that
@@ -257,12 +286,15 @@ export function planSelectiveTestCommands(
     const suites = profile.workspaceTestPackages;
     const refuse = (reason: string): SelectiveTestCommandPlan => ({ commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: reason });
     if (!["pnpm", "npm"].includes(profile.packageManager) || suites.some(s => suites.some(other => other !== s && s.packageRoot.startsWith(`${other.packageRoot}/`)))) return refuse("Workspace routing requires non-overlapping declared npm or pnpm packages");
-    const owned = (path: string) => suites.some(s => path.startsWith(`${s.packageRoot}/`) && s.profile.testFilePaths.includes(path.slice(s.packageRoot.length + 1)));
+    // A package without a `test` script runs nothing itself; its tests run where the root suite claims them
+    // (2026-11-05: LobeHub's apps/server tests run in the root's `server` Vitest project).
+    const scripted = suites.filter(s => s.profile.packageJson.scripts.test?.trim());
+    const owned = (path: string) => scripted.some(s => path.startsWith(`${s.packageRoot}/`) && s.profile.testFilePaths.includes(path.slice(s.packageRoot.length + 1)));
     // Tests no workspace package owns belong to the root package's own suite, planned as a
     // single-package repository would be (2026-11-04: LobeHub keeps its app and server tests at the
     // root beside `packages/*`, and every selection was refused).
     const rootPaths = selectedPaths.filter(path => !owned(path));
-    if (rootPaths.some(path => suites.some(s => path.startsWith(`${s.packageRoot}/`)))) return refuse("A selected test has no verified workspace owner");
+    if (rootPaths.some(path => scripted.some(s => path.startsWith(`${s.packageRoot}/`)))) return refuse("A selected test has no verified workspace owner");
     const rootScript = profile.packageJson.scripts.test ?? "";
     const runsWorkspaceScripts = !rootScript.trim() || /(?:^|\s)(?:-r|--recursive|--filter|-F|--workspaces?|-ws)(?:[\s=]|$)|\b(?:turbo|nx|lerna)\b/.test(rootScript);
     const groups: SelectiveTestCommandGroup[] = [];
@@ -273,17 +305,30 @@ export function planSelectiveTestCommands(
       groups.push(...root.groups);
       outsideSuitePaths = root.outsideSuitePaths;
     }
-    for (const suite of suites) {
-      const child = suite.profile;
+    for (const suite of scripted) {
+      let child = suite.profile;
       const script = child.packageJson.scripts.test?.trim();
-      const paths = selectedPaths.filter(path => path.startsWith(`${suite.packageRoot}/`)).map(path => path.slice(suite.packageRoot.length + 1));
-      if (!/^vitest(?: run)?(?: --typecheck)?$/.test(script ?? "") || child.packageJson.scripts.pretest || child.packageJson.scripts.posttest || child.testUniverse?.blindSpot || child.testUniverse?.declaredFrameworks.length !== 1 || child.testUniverse.declaredFrameworks[0] !== "vitest" || child.workspaceTestPackages?.length) {
+      const vitest = workspaceVitestScript(script);
+      let paths = selectedPaths.filter(path => path.startsWith(`${suite.packageRoot}/`)).map(path => path.slice(suite.packageRoot.length + 1));
+      if (!vitest || child.packageJson.scripts.pretest || child.packageJson.scripts.posttest || child.testUniverse?.blindSpot || child.testUniverse?.declaredFrameworks.length !== 1 || child.testUniverse.declaredFrameworks[0] !== "vitest" || child.workspaceTestPackages?.length) {
         // A package with no selected test has nothing to narrow when the root test script never runs
         // workspace scripts, so their extra phases are not part of full validation either, unless it
         // runs type tests, which the graph does not track (2026-11-04: LobeHub's root runs only its own
         // Vitest suite, and 13 packages, `e2e` among them, have other scripts).
         if (!paths.length && !runsWorkspaceScripts && !/--typecheck\b/.test(script ?? "")) continue;
         return refuse("Workspace test scripts require a single declared Vitest phase without lifecycle hooks or discovery blind spots");
+      }
+      if (vitest.config) {
+        // The script runs one named configuration: plan with only that one, and report files it does not
+        // include as outside the suite (apps/cli's vitest.e2e.config.mts tests run under `test:e2e`).
+        const named = child.testRunnerConfigs?.find(config => config.file === vitest.config);
+        if (!named || (named.includes.length === 0 && !named.isDefault)) return refuse("A workspace test script names a Vitest configuration DiffCI did not discover");
+        child = { ...child, testRunnerConfigs: [named] };
+        if (named.includes.length) {
+          const outside = paths.filter(path => !configAllowsPath(named, path) || !named.includes.some(glob => matchesGlob(path, glob)));
+          if (outside.length) outsideSuitePaths = [...(outsideSuitePaths ?? []), ...outside.map(path => `${suite.packageRoot}/${path}`)];
+          paths = paths.filter(path => !outside.includes(path));
+        }
       }
       const wrap = (args: string[]): CommandSpec => profile.packageManager === "npm"
         ? { executable: "npm", args: ["exec", "--offline", `--workspace=${suite.packageRoot}`, "--", "vitest", ...args] }
@@ -301,8 +346,8 @@ export function planSelectiveTestCommands(
       if (child.testRunnerConfigs?.some(config => config.runtimeSelectionUnsafe)) {
         // Preserve state-sharing files together in the original package process.
         // Only whole unaffected packages may be omitted, never files within it.
-        if (paths.length) groups.push({ runnerId: `${suite.packageRoot}:full`, label: "Full non-isolated workspace suite", paths: child.testFilePaths.map(path => `${suite.packageRoot}/${path}`), commandSpec: wrap(["run", ...(script?.endsWith(" --typecheck") ? ["--typecheck"] : [])]) });
-        else if (script?.endsWith(" --typecheck")) groups.push({ runnerId: `${suite.packageRoot}:types`, label: "Full workspace type tests", paths: [], commandSpec: wrap(["run", "--typecheck.only", "--passWithNoTests"]) });
+        if (paths.length) groups.push({ runnerId: `${suite.packageRoot}:full`, label: "Full non-isolated workspace suite", paths: child.testFilePaths.map(path => `${suite.packageRoot}/${path}`), commandSpec: wrap(["run", ...(vitest.typecheck ? ["--typecheck"] : [])]) });
+        else if (vitest.typecheck) groups.push({ runnerId: `${suite.packageRoot}:types`, label: "Full workspace type tests", paths: [], commandSpec: wrap(["run", "--typecheck.only", "--passWithNoTests"]) });
         continue;
       }
       const local = planSelectiveTestCommands({ ...child, packageManager: "pnpm" }, paths);
@@ -320,7 +365,7 @@ export function planSelectiveTestCommands(
         for (const [index, batch] of batches.entries()) groups.push({ ...group, runnerId: `${suite.packageRoot}:${group.runnerId}:${index}`, paths: batch.map(path => `${suite.packageRoot}/${path}`), commandSpec: wrap([...prefix.slice(2), ...batch]) });
       }
       // Type-test files are not runtime selection candidates. Retain the entire type suite.
-      if (script?.endsWith(" --typecheck")) groups.push({ runnerId: `${suite.packageRoot}:types`, label: "Full workspace type tests", paths: [], commandSpec: wrap(["run", "--typecheck.only", "--passWithNoTests"]) });
+      if (vitest.typecheck) groups.push({ runnerId: `${suite.packageRoot}:types`, label: "Full workspace type tests", paths: [], commandSpec: wrap(["run", "--typecheck.only", "--passWithNoTests"]) });
     }
     if (!groups.some(group => group.paths.length)) return refuse("No workspace runtime suite can be safely narrowed; full validation is required");
     return { commands: groups.map(g => g.commandSpec), groups, unroutedPaths: [], ...(outsideSuitePaths?.length ? { outsideSuitePaths: outsideSuitePaths.sort() } : {}) };

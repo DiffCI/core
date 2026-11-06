@@ -25,11 +25,12 @@ diffci check-plan --plan plan.json --results junit.xml
 
 This local command compares a saved Core execution plan with a full-suite JUnit
 report from the same revision. Without `--base-results base.xml`, skipped failures
-are `possibleMisses`. With a
-base report, matching failures are `preExisting` and new skipped failures are
-`missed`. Selected and unattributed failures are also reported. Missed, possible
+are `possibleMisses`. With a base report, unique matching failures are
+`preExisting`; a skipped failure is `missed` only if its matching base testcase
+passed. Absent, skipped or ambiguous base identities remain `possibleMisses`. Selected and unattributed failures are also reported. Missed, possible
 misses or unattributed failures exit 1; invalid inputs exit 2. Use `--root packages/web`
-for a nested reporter root and `--repo /checkout` for absolute paths. Exit 0
+for a nested reporter root and `--repo /checkout` for absolute paths. Use
+`--base-repo /base/checkout` if the base report came from another checkout. Exit 0
 describes the comparison, not whether the full suite passed. The command
 runs no tests, writes no files and sends nothing.
 

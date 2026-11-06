@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 
 import { detectAgentFromEnvironment } from "./agent-identity.js";
 import type { SelectionReason } from "./report.js";
+import type { TestFileResult } from "./test-results.js";
 import type { VerificationReport } from "./verify.js";
 
 /**
@@ -42,7 +43,14 @@ export interface OutcomeRecord {
   tests_ms?: number;
   exit_code?: number | null;
   failing_tests?: string[];
-  checks?: Array<{ id: string; decision: string; status: string; wall_ms?: number }>;
+  checks?: Array<{ id: string; decision: string; status: string; wall_ms?: number; command?: string }>;
+  /** The test command as run, and the Node version it ran under (2026-11-06). */
+  command?: string;
+  node_version?: string;
+  /** Each test file's result and duration, where the runner showed them (test-results.ts, 2026-11-06). */
+  test_results?: TestFileResult[];
+  /** When this run ran nothing and reused an earlier pass: that run's `produced_at` (reusablePass). */
+  reused_from?: string;
 }
 
 export function outcomeRecord(report: VerificationReport, env: Record<string, string | undefined> = {}): OutcomeRecord {
@@ -66,8 +74,56 @@ export function outcomeRecord(report: VerificationReport, env: Record<string, st
     ...(report.analysis.duration_ms !== undefined ? { analysis_ms: report.analysis.duration_ms } : {}),
     ...(report.execution ? { tests_ms: report.execution.wallMs, exit_code: report.execution.exitCode } : {}),
     ...(report.execution?.failingTests?.length ? { failing_tests: report.execution.failingTests } : {}),
-    ...(report.checks ? { checks: report.checks.map((check) => ({ id: check.id, decision: check.decision, status: check.status, ...(check.wall_ms !== undefined ? { wall_ms: check.wall_ms } : {}) })) } : {}),
+    ...(report.checks ? { checks: report.checks.map((check) => ({ id: check.id, decision: check.decision, status: check.status, ...(check.wall_ms !== undefined ? { wall_ms: check.wall_ms } : {}), command: check.command })) } : {}),
+    ...(report.command ? { command: report.commands?.join(" && ") ?? report.command } : {}),
+    node_version: process.versions.node,
+    ...(report.execution?.testResults?.length ? { test_results: report.execution.testResults } : {}),
+    ...(report.reused_from ? { reused_from: report.reused_from.produced_at } : {}),
   };
+}
+
+/** What a verify run is about to execute, for reusablePass. */
+export interface ReuseQuery {
+  tree_sha: string;
+  diffci_version: string;
+  node_version: string;
+  selection: "selected" | "full";
+  selected_tests: readonly string[];
+  /** The command this run would execute, and the repository's full test command. */
+  command: string;
+  full_command?: string;
+  /** The gate checks this run would execute (decision RUN or NARROWED), with their exact commands. */
+  checks: ReadonlyArray<{ id: string; command: string }>;
+}
+
+/**
+ * Result reuse by tree (2026-11-06), the idea of Turborepo's and Bazel's caches applied to a verify run.
+ *
+ * WHY. Agents re-run verify on a tree that has not changed since the last pass: after a commit, after a
+ * rebase that changed nothing, from a second worktree. Running the same tests on the same bytes again
+ * learns nothing.
+ *
+ * WHAT. The newest earlier run that passed on the same tree, under the same DiffCI and Node versions, and
+ * that covers what this run would execute: a full run of the same full command, or a selected run whose
+ * tests include every test selected now. Every gate check this run would execute must have passed in it
+ * with the identical command, so a check narrowed to other files does not count. Only passes are reused;
+ * a reused run is never itself a source. The tree covers the lockfile but not node_modules, so a changed
+ * install with an unchanged lockfile is the one thing reuse cannot see; `--no-reuse` runs everything.
+ */
+export function reusablePass(records: readonly OutcomeRecord[], query: ReuseQuery): OutcomeRecord | undefined {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const run = records[index]!;
+    if (run.reused_from || run.verification !== "passed" || run.tree_sha !== query.tree_sha) continue;
+    if (run.diffci_version !== query.diffci_version || run.node_version !== query.node_version) continue;
+    const tests = run.selection === "full"
+      ? run.command !== undefined && run.command === (query.selection === "full" ? query.command : query.full_command)
+      : run.selection === "selected" && query.selection === "selected" && run.selected_tests !== undefined
+        && query.selected_tests.every((test) => run.selected_tests!.includes(test));
+    if (!tests) continue;
+    const passedChecks = new Set((run.checks ?? []).filter((check) => check.status === "passed" && check.command).map((check) => `${check.id}\n${check.command}`));
+    if (query.checks.every((check) => passedChecks.has(`${check.id}\n${check.command}`))) return run;
+  }
+  return undefined;
 }
 
 /** `<git common dir>/diffci/outcomes.jsonl`, or undefined outside a Git repository. */

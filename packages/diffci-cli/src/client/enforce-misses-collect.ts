@@ -197,7 +197,8 @@ export function rerunFailingFiles(repoPath: string, runnerArgs: readonly string[
       },
     });
     if (!existsSync(junit)) return undefined;
-    return parseJunit(readFileSync(junit, "utf8"), repoPath);
+    try { return parseJunit(readFileSync(junit, "utf8"), repoPath); }
+    catch { return undefined; } // A partial rerun cannot prove a full-run failure flaky.
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

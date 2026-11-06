@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
-import { isInsideRepository, observe } from "../../src/client/observe.js";
+import { isInsideRepository, observe, separateProjectReason } from "../../src/client/observe.js";
 import { validateObservationReport } from "../../src/client/report.js";
 
 /**
@@ -202,5 +202,23 @@ describe("client-side observation", () => {
     assert.equal(isInsideRepository(repoPath, join(repoPath, "nested", "report.json")), true);
     assert.equal(isInsideRepository(repoPath, join(tmpdir(), "report.json")), false);
     assert.equal(isInsideRepository(repoPath, repoPath), false);
+  });
+});
+
+describe("separateProjectReason", () => {
+  it("names the nested project whose own lockfile the root install skips", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-separate-"));
+    try {
+      mkdirSync(join(dir, "apps/desktop/src/main"), { recursive: true });
+      writeFileSync(join(dir, "apps/desktop/pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+      assert.equal(
+        separateProjectReason(dir, ["apps/desktop/src/main/index.test.ts", "apps/desktop/shell/a.test.mjs"]),
+        "apps/desktop is a separate project with its own lockfile, which the root install does not install; run those 2 tests from there after installing it",
+      );
+      assert.equal(separateProjectReason(dir, ["apps/desktop/a.test.ts", "src/b.test.ts"]), undefined, "every test must sit in one");
+      assert.match(separateProjectReason(dir, ["apps/desktop/a.test.ts"], (path) => `#${path.length}`)!, /^#12 is a separate project/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

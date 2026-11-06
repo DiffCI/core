@@ -24,6 +24,8 @@ export type ImpactReason =
   | "OUTSIDE_FULL_SUITE"
   | "TEST_FIXTURE_OWNER"
   | "ALWAYS_RUN_POLICY"
+  | "DECLARED_INPUT"
+  | "ROUTE_VISIT"
   | "DELETED_FILE_LEGACY_DEPENDENTS"
   | "DELETED_FILE_UNKNOWABLE_GRAPH"
   | "RENAMED_FILE_LEGACY_IDENTITY"
@@ -99,6 +101,9 @@ export interface ImpactResult {
 
   fallbackRequired: boolean;
   fallbackReasons: string[];
+  /** For a changed file whose readers could not be resolved: every blocker, each with the chain of readers
+   * that leads to it (`reader names x (via a <- b)`). Present only on a fallback (2026-11-05). */
+  fallbackDetails?: Record<string, string[]>;
 
   analysisStatus: "SAFE_TO_PROPOSE" | "FALLBACK";
 

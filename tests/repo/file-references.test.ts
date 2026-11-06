@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { contentNamesPath, infrastructureRole, isImplicitlyLoadedFile, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
+import { contentNamesPath, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests, workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
 import { analyzeGitDelta, packageJsonChangeKind } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
@@ -162,6 +162,85 @@ describe("resolveFileReferences", () => {
     }));
     assert.deepEqual(noWorkflow.unresolvable, []);
     assert.deepEqual(noWorkflow.tests, ["tests/train.test.ts"]);
+  });
+});
+
+describe("fallback blockers", () => {
+  it("reports every blocker of the level where the first appeared, each with the readers leading to it", () => {
+    const action = (line: string) => `runs:\n  using: composite\n  steps:\n    - run: ${line}\n      shell: bash\n`;
+    const resolution = resolveFileReferences("data/seed.json", input({
+      "data/seed.json": "{}",
+      "scripts/load.sh": "cat data/seed.json",
+      "tools/list.json": `{ "files": ["data/seed.json"] }`,
+      ".github/actions/a/action.yml": action("bash scripts/load.sh"),
+      ".github/actions/b/action.yml": action("jq . tools/list.json"),
+    }));
+    assert.deepEqual(resolution.blockers.map((b) => [b.reason, b.chain]).sort(), [
+      [".github/actions/a/action.yml names scripts/load.sh", ["data/seed.json", "scripts/load.sh"]],
+      [".github/actions/b/action.yml names tools/list.json", ["data/seed.json", "tools/list.json"]],
+    ]);
+    assert.deepEqual(resolution.unresolvable.sort(), resolution.blockers.map((b) => b.reason).sort());
+  });
+});
+
+describe("configuration readers (2026-11-05)", () => {
+  const files = {
+    "data/seed.json": "{}",
+    "tests/seed.test.ts": `readFileSync("data/seed.json")`,
+    ".github/actions/types/action.yml": "runs:\n  using: composite\n  steps:\n    - run: tsc -p tsconfig.json\n      shell: bash\n",
+  };
+  it("does not count a tsconfig listing a data file as its reader", () => {
+    const resolution = resolveFileReferences("data/seed.json", input({ ...files, "tsconfig.json": `{ "include": ["data", "src"] }` }));
+    assert.deepEqual(resolution.unresolvable, []);
+    assert.deepEqual(resolution.tests, ["tests/seed.test.ts"]);
+    // Code is still followed through a tsconfig: what it compiles is what tsc checks.
+    assert.notDeepEqual(resolveFileReferences("src/a.ts", input({ "src/a.ts": "", "tsconfig.json": `{ "include": ["src"] }`, ".github/actions/types/action.yml": files[".github/actions/types/action.yml"] }, [])).unresolvable, []);
+  });
+  it("follows a lint config only to tests and graph code, not to the workflow step or script that lints", () => {
+    const workflow = "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: alint --config alint.config.toml\n      - run: npm test\n";
+    const lint = { "data/seed.json": "{}", "tests/seed.test.ts": `readFileSync("data/seed.json")`, "alint.config.toml": `ignore = ["data/**"]\n`, ".github/workflows/test.yml": workflow };
+    const resolution = resolveFileReferences("data/seed.json", input(lint));
+    assert.deepEqual(resolution.unresolvable, []);
+    assert.deepEqual(resolution.tests, ["tests/seed.test.ts"]);
+    assert.equal(isLintConfig("alint.config.toml"), true);
+    assert.equal(isLintConfig(".eslintrc.json"), true);
+    assert.equal(isLintConfig("biome.json"), true);
+    assert.equal(isLintConfig("packages/eslint/src/rules.ts"), false);
+    assert.equal(isLintConfig("vitest.config.ts"), false);
+  });
+  it("follows nothing past a lint config but tests and graph code", () => {
+    const resolution = resolveFileReferences("data/legacy.json", input({
+      "data/legacy.json": "[]",
+      "lint/plugin.mjs": `readFileSync("data/legacy.json")`,
+      "oxlint.config.mts": `import plugin from "./lint/plugin.mjs";`,
+      "tools/a.json": `{ "config": "oxlint.config.mts" }`,
+      "tools/b.json": `{ "next": "tools/a.json" }`,
+      "tools/c.json": `{ "next": "tools/b.json" }`,
+      "tools/d.json": `{ "next": "tools/c.json" }`,
+      "tools/e.json": `{ "next": "tools/d.json" }`,
+    }, []));
+    assert.deepEqual(resolution.unresolvable, []);
+  });
+  it("carries the lint marking down a chain and never follows a tsconfig, at any depth", () => {
+    const action = "runs:\n  using: composite\n  steps:\n    - run: node apps/share/should-build.mjs\n      shell: bash\n";
+    const resolution = resolveFileReferences("data/seed.json", input({
+      "data/seed.json": "{}",
+      "tests/seed.test.ts": `readFileSync("data/seed.json")`,
+      "knip.ts": `export default { entry: ["data/seed.json"] };`,
+      "tsconfig.json": `{ "include": ["knip.ts"] }`,
+      "apps/share/should-build.mjs": `readFileSync("tsconfig.json")`,
+      ".github/actions/share/action.yml": action,
+    }, ["tests/seed.test.ts"]));
+    assert.deepEqual(resolution.unresolvable, []);
+    assert.deepEqual(resolution.tests, ["tests/seed.test.ts"]);
+  });
+  it("does not read a runner config's globs as naming a data file, but does read an exact path", () => {
+    const workflow = "on: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: vitest run --config packages/x/vitest.config.mts\n      - run: npm test\n";
+    const files = { "data/fixtures/a.svg": "<svg/>", "tests/a.test.ts": `readFileSync("data/fixtures/a.svg")`, ".github/workflows/test.yml": workflow };
+    const globbed = resolveFileReferences("data/fixtures/a.svg", input({ ...files, "packages/x/vitest.config.mts": `export default { test: { exclude: ["**/fixtures/**"] } };` }, ["tests/a.test.ts"]));
+    assert.deepEqual(globbed.unresolvable, []);
+    const exact = resolveFileReferences("data/fixtures/a.svg", input({ ...files, "packages/x/vitest.config.mts": `readFileSync("data/fixtures/a.svg");` }, ["tests/a.test.ts"]));
+    assert.notDeepEqual(exact.unresolvable, []);
   });
 });
 

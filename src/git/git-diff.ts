@@ -333,6 +333,7 @@ export function testListEdit(oldBody: string, newBody: string): { added: string[
 }
 
 const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
+const PACKAGE_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
 
 /** Exact root requests for the supported Classic layout. Unlike scriptRecord, never discard an
  * invalid dependency value: an omitted root would make the lockfile attribution incomplete. */
@@ -424,6 +425,60 @@ export function packageJsonChange(oldContent: string | undefined, newContent: st
   return dependencies.size > 0
     ? result("dependencies", [...added].sort(), [...dependencies].sort(), specifiersOnly)
     : result("data", [...added].sort());
+}
+
+/**
+ * The files a package.json edit remaps through `exports`, when that is its only behavioral change
+ * (2026-11-06: LobeHub's model-bank moved `./qwen` from `./src/aiModels/qwen.ts` to
+ * `./src/aiModels/qwen/index.ts` and ran the full suite). An importer of a remapped subpath resolves to
+ * one of these targets at one side of the change, so the targets' dependents bound it. Returns the
+ * `./`-relative targets of every changed subpath on both sides, or undefined when anything else
+ * changed, a subpath or target is a pattern (`*`), or a target is not a `./` path.
+ */
+export function exportsRemapTargets(oldContent: string | undefined, newContent: string | undefined): { targets: string[]; dataChanged: boolean } | undefined {
+  let oldJson: Record<string, unknown>;
+  let newJson: Record<string, unknown>;
+  try {
+    oldJson = JSON.parse(oldContent ?? "");
+    newJson = JSON.parse(newContent ?? "");
+  } catch {
+    return undefined;
+  }
+  const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  if (!isRecord(oldJson) || !isRecord(newJson)) return undefined;
+  if (JSON.stringify(oldJson.exports) === JSON.stringify(newJson.exports)) return undefined;
+  const without = (json: Record<string, unknown>) => JSON.stringify({ ...json, exports: undefined });
+  const rest = packageJsonChange(without(oldJson), without(newJson));
+  if (rest.kind !== "metadata" && rest.kind !== "data") return undefined;
+  if (JSON.stringify(parsePackageScripts(oldContent)) !== JSON.stringify(parsePackageScripts(newContent))) return undefined;
+  // A string, an array or an object of conditions at the top level is the "." export.
+  const subpaths = (value: unknown): Record<string, unknown> | undefined => {
+    if (value === undefined) return {};
+    if (typeof value === "string" || Array.isArray(value)) return { ".": value };
+    if (!isRecord(value)) return undefined;
+    const keys = Object.keys(value);
+    if (keys.every((key) => key.startsWith("."))) return value;
+    return keys.some((key) => key.startsWith(".")) ? undefined : { ".": value };
+  };
+  const before = subpaths(oldJson.exports);
+  const after = subpaths(newJson.exports);
+  if (!before || !after) return undefined;
+  const targets = new Set<string>();
+  const collect = (value: unknown): boolean => {
+    if (value === null) return true;
+    if (typeof value === "string") {
+      if (!value.startsWith("./") || value.includes("*")) return false;
+      targets.add(value);
+      return true;
+    }
+    if (Array.isArray(value)) return value.every(collect);
+    return isRecord(value) && Object.values(value).every(collect);
+  };
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue;
+    if (key.includes("*") || !collect(before[key]) || !collect(after[key])) return undefined;
+  }
+  return { targets: [...targets].sort(), dataChanged: rest.kind === "data" };
 }
 
 /** packageJsonChange's kind, with a dependency change reported as behavioral. */
@@ -763,6 +818,53 @@ export async function analyzeGitDelta(
         }
       }
     }
+    // 2026-11-05: without a committed lockfile every install resolves each request afresh, so an edit
+    // limited to dependency requests reaches only the packages whose request changed and what they
+    // install; importers of those packages are selected like a lockfile-attributed change. LobeHub ignores
+    // pnpm-lock.yaml, and each of its workspace dependency bumps ran the full suite. A lockfile that governs
+    // any changed manifest, a local (`workspace:`, `link:`, `file:`) request, a scripts edit, any other
+    // behavioral field, or a package-manager configuration change keeps the global signal.
+    const manifests = filesWithBinary.filter((f) => f.changeType === "modified" && posix.basename(f.path) === "package.json" && !f.path.split("/").includes("node_modules"));
+    const managerConfiguration = allPaths.some((path) => posix.basename(path) !== "package.json"
+      && (LOCKFILE.test(posix.basename(path)) || /^(?:\.npmrc|\.yarnrc(?:\.yml)?|pnpm-workspace\.yaml|\.pnpmfile\.cjs|bunfig\.toml)$/.test(posix.basename(path))));
+    if (manifests.length > 0 && !manifests.some((f) => narrowed.has(f)) && !analysis.lockfileChanged && !managerConfiguration) {
+      const lockfileGoverns = (path: string) => {
+        for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
+          const prefix = dir === "." ? "" : `${dir}/`;
+          if (PACKAGE_LOCKFILES.some((name) => [baseSha, headSha].some((sha) => readFileAtSha(sha, prefix + name, repoPath) !== undefined))) return true;
+          if (dir === ".") return false;
+        }
+      };
+      const edits = manifests.map((file) => {
+        const before = readFileAtSha(baseSha, file.path, repoPath);
+        const after = readFileAtSha(headSha, file.path, repoPath);
+        const change = packageJsonChange(before, after);
+        const localChanged = change.changedDependencies.some((name) => [before, after].some((content) => {
+          try {
+            const json = JSON.parse(content ?? "") as Record<string, unknown>;
+            return [...DEPENDENCY_FIELDS].some((field) => /^(?:workspace|link|file|portal):/.test(scriptRecord(json[field])?.[name] ?? ""));
+          } catch { return true; }
+        }));
+        const eligible = change.kind !== "behavioral" && !localChanged
+          && JSON.stringify(parsePackageScripts(before)) === JSON.stringify(parsePackageScripts(after));
+        return { file, change, eligible };
+      });
+      if (edits.some((edit) => edit.change.kind === "dependencies") && edits.every((edit) => edit.eligible) && !manifests.some((f) => lockfileGoverns(f.path))) {
+        const names = new Set(analysis.changedDependencies ?? []);
+        const specifiersOnly: string[] = [];
+        for (const { file, change } of edits) {
+          for (const name of change.changedDependencies) names.add(name);
+          narrowed.add(file);
+          if (change.kind !== "metadata" && !referenceResolvedPaths.includes(file.path)) referenceResolvedPaths.push(file.path);
+          if (change.kind === "dependencies" && change.specifiersOnly) specifiersOnly.push(file.path);
+          if (file.path === "package.json" && change.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = change.testScriptAddedPaths;
+        }
+        analysis.dependencyManifestChanged = false;
+        analysis.changedDependencies = [...names].sort();
+        if (specifiersOnly.includes("package.json")) analysis.packageJsonSpecifiersOnly = true;
+        if (specifiersOnly.length > 0) analysis.specifiersOnlyManifests = specifiersOnly.sort();
+      }
+    }
     // 2026-11-03: a workspace package's package.json used to be an unknown file and a full run. One whose
     // edit is limited to metadata and data fields (a release bumping `version`) cannot change how tests
     // run, so its readers are resolved like the root's. A script edit stays unknown: the root's test
@@ -772,6 +874,14 @@ export async function analyzeGitDelta(
       const before = readFileAtSha(baseSha, file.path, repoPath);
       const after = readFileAtSha(headSha, file.path, repoPath);
       const change = packageJsonChange(before, after);
+      const remap = change.kind === "behavioral" ? exportsRemapTargets(before, after) : undefined;
+      if (remap) {
+        // Readers of the file are resolved like a data edit, and ImpactAnalyzer treats each target as changed.
+        const dir = posix.dirname(file.path);
+        (analysis.exportsRemaps ??= {})[file.path] = { targets: remap.targets.map((target) => posix.normalize(posix.join(dir, target))), dataChanged: remap.dataChanged };
+        referenceResolvedPaths.push(file.path);
+        continue;
+      }
       if (change.kind !== "metadata" && change.kind !== "data") continue;
       if (JSON.stringify(parsePackageScripts(before)) !== JSON.stringify(parsePackageScripts(after))) continue;
       referenceResolvedPaths.push(file.path);

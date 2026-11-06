@@ -19,7 +19,7 @@ import {
   type ReceiptFields,
   type TestOutcome,
 } from "../../src/client/enforce-misses.js";
-import { findReceipt, findWindowStart, mergedPullRequests, type CommandRunner } from "../../src/client/enforce-misses-collect.js";
+import { findReceipt, findWindowStart, mergedPullRequests, rerunFailingFiles, type CommandRunner } from "../../src/client/enforce-misses-collect.js";
 
 const ROOT = "/repo";
 
@@ -285,4 +285,14 @@ describe("collector", () => {
       rmSync(workDir, { recursive: true, force: true });
     }
   });
+});
+
+// A real child process leaves a partial report, as a killed runner can do.
+it("treats a truncated actual rerun report as unavailable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-partial-rerun-"));
+  try {
+    const script = join(dir, "partial.cjs");
+    writeFileSync(script, `const path = process.env.NODE_OPTIONS.match(/--test-reporter-destination=([^ ]*rerun.junit.xml)/)[1]; require('node:fs').writeFileSync(path, '<testsuite><testcase name="partial">');`);
+    assert.equal(rerunFailingFiles(dir, [script], []), undefined);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

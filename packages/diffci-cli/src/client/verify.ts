@@ -2,16 +2,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { batchCommand, measureCommands } from "./command-batches.js";
+import { appendToCommand, batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
+import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
-import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
-import { plannedChecks, runChecks, type CheckResult } from "./gate-checks.js";
+import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
+import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport, SelectionReason } from "./report.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
+import { outcomeLogPath, readOutcomes, reusablePass } from "./outcome-log.js";
+import { likelyFailures, rankTests, testHistory } from "./test-ranking.js";
+import { assignShards, type ShardSpec, type TimingsFile } from "./test-shards.js";
+import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
-import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
+import { captureWorkingTreeSnapshot, lineEndingOnlyChanges, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
 
 export const VERIFICATION_SCHEMA = "diffci.verification.v1" as const;
 
@@ -62,6 +67,8 @@ export interface VerificationReport {
     written_during_verification?: string[];
     /** Files that existed before the run and changed during it, at most 20. Their presence blocks the verdict. */
     changed_during_verification?: SnapshotChange[];
+    /** Commit-range only: checked-out files that differ from HEAD only by CRLF line endings, at most 20. */
+    line_ending_only_changes?: string[];
   };
   analysis: {
     status: "not_needed" | ObservationReport["status"];
@@ -74,12 +81,22 @@ export interface VerificationReport {
     /** The graph's own confidence and the confidence after narrowing to this change. */
     graph_confidence?: string;
     effective_graph_confidence?: string;
+    /** Why graph_confidence is below COMPLETE, in counts only. */
+    graph_confidence_reasons?: string[];
   };
   required_actions: string[];
   /** Present when a failed verification was rerun at the base commit (`--baseline-on-failure`). */
   failure_baseline?: FailureBaseline;
   /** Present only under `--policy enforce`. `applied` is true when the selected tests replaced the full suite. */
   enforcement?: EnforcementDecision & { applied: boolean };
+  /** Present when nothing ran because an earlier pass of this exact tree covered it (outcome-log.ts, reusablePass). */
+  reused_from?: { produced_at: string; selection: "selected" | "full"; command?: string };
+  /** Present under `--shard i/N`: this job's share of the selection (test-shards.ts). */
+  shard?: { index: number; total: number; timings: "file" | "equal" };
+  /** A full run that first ran the tests the dependency graph found affected (firstPassParts). */
+  first_pass?: { tests: number; commands: string[]; stopped_full_suite: boolean };
+  /** Tests the coverage map added to the selection (coverage-map.ts), when it added any. */
+  coverage_added?: string[];
 }
 
 interface VerifyOptions {
@@ -94,6 +111,17 @@ interface VerifyOptions {
   baselineOnFailure?: boolean;
   /** Run only the tests, not the gate's other checks (`--no-checks`). */
   skipChecks?: boolean;
+  /** False runs everything even when an earlier pass of the same tree covers it (`--no-reuse`). */
+  reuse?: boolean;
+  /** False keeps the selection's own order instead of likeliest failures first (`--no-rank`). */
+  rank?: boolean;
+  /** Run the likeliest failures first and stop there if one fails (`--fail-fast`). */
+  failFast?: boolean;
+  /** Run only this job's share of the selection (`--shard i/N`), balanced by `timings` when given. */
+  shard?: ShardSpec;
+  timings?: TimingsFile;
+  /** False ignores the coverage map (`--no-coverage`). */
+  coverage?: boolean;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -130,6 +158,7 @@ function baseReport(
       base_sha: snapshot.baseSha,
       before_tree_sha: snapshot.treeSha,
       unchanged: false,
+      ...(snapshot.lineEndingOnly ? { line_ending_only_changes: snapshot.lineEndingOnly.slice(0, 20) } : {}),
     },
   };
 }
@@ -184,7 +213,8 @@ async function executeWithPolicy(
   // Under enforce, a fired fallback runs the full suite even where plain verify would block: an
   // unusable analysis is a reason to run everything, never a reason to pass with nothing run.
   const enforcedFull = enforcement !== undefined && enforcement.fired_fallback !== null;
-  const result = observation.result;
+  // Under --shard, narrowed to this job's share once the commands are built.
+  let result = observation.result;
   const range = observation.commitRange;
   const boundRange = scope === "commit-range" ? range : undefined;
   const counts = {
@@ -199,7 +229,7 @@ async function executeWithPolicy(
     fallback_reasons: result?.fallbackReasons ?? [],
     error: observation.reason,
     ...(observation.timings?.totalMs !== undefined ? { duration_ms: observation.timings.totalMs } : {}),
-    ...(result?.graph ? { graph_confidence: result.graph.confidence, effective_graph_confidence: result.graph.effectiveConfidence } : {}),
+    ...(result?.graph ? { graph_confidence: result.graph.confidence, effective_graph_confidence: result.graph.effectiveConfidence, ...(result.graph.confidenceReasons?.length ? { graph_confidence_reasons: result.graph.confidenceReasons } : {}) } : {}),
   };
 
   if ((observation.status !== "OBSERVED" || !result) && !enforcedFull) {
@@ -233,9 +263,77 @@ async function executeWithPolicy(
     return report;
   }
 
-  const { selection, command, commands, reason, outsideSuite } = enforcedFull || !result
+  // Coverage edges, phase A (coverage-map.ts, 2026-11-06): tests the coverage map connects to a changed
+  // file and the graph did not select are added. Only ever adds; a selected command that cannot take them
+  // runs the full suite instead. Never under enforce or path redaction.
+  const coverageAdded: string[] = [];
+  if (result && result.mode === "SELECTIVE" && !enforcement && !options.redactPaths && options.coverage !== false) {
+    const map = readCoverageMap(options.repoPath);
+    const additions = map ? coverageAdditions(map, result.changedFiles, result.selectedTests) : [];
+    if (additions.length) {
+      const tests = additions.map((addition) => addition.test);
+      const extended = result.proposedCommands.length === 1 ? appendToCommand(result.proposedCommands[0]!, result.selectedTests, tests) : undefined;
+      coverageAdded.push(...tests);
+      result = extended
+        ? {
+            ...result,
+            selectedTests: [...result.selectedTests, ...tests],
+            proposedCommands: [extended],
+            selectionReasons: { ...result.selectionReasons, ...Object.fromEntries(additions.map((addition) => [addition.test, { reason: "COVERAGE", changed_file: addition.changed_file }])) },
+          }
+        : { ...result, mode: "FULL", fallbackReasons: [...result.fallbackReasons, `the coverage map adds ${tests.length} test file(s) the selected command cannot include, such as ${tests[0]}`] };
+      counts.testsSelected = result.selectedTests.length;
+      analysis.fallback_reasons = result.fallbackReasons;
+    }
+  }
+
+  // --shard i/N (test-shards.ts): this job's share of the selection, split the same way in every job.
+  const shard = options.shard;
+  const shardTests = shard && result && !enforcedFull && result.mode === "SELECTIVE"
+    ? assignShards(result.selectedTests, shard.total, options.timings)[shard.index - 1]!
+    : undefined;
+  const executable = enforcedFull || !result
     ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
-    : executableSelection(options.repoPath, result);
+    : executableSelection(options.repoPath, result, rankedOrdering(options, result), shard && shardTests ? { tests: new Set(shardTests), first: shard.index === 1 } : undefined);
+  const { selection, command, commands, outsideSuite } = executable;
+  // A full run first runs the tests the graph did find, and stops if one fails (2026-11-06 LobeHub catch
+  // study: both test-only failures were lost when the full suite reached the time limit first).
+  const firstPass = selection === "full" && !enforcedFull && !shard && !options.redactPaths && result ? firstPassParts(options.repoPath, result) : undefined;
+  const runCommands = firstPass ? [...firstPass.parts, ...commands] : commands;
+  const reason = coverageAdded.length && selection === "selected"
+    ? `${executable.reason}; the coverage map added ${coverageAdded.length} test file(s) the dependency graph did not select (${coverageAdded.slice(0, 3).join(", ")})`
+    : executable.reason;
+  const coverageField = coverageAdded.length && selection === "selected" ? { coverage_added: coverageAdded } : {};
+  const unshardable = "unshardable" in executable && executable.unshardable;
+  const shardField = shard ? { shard: { index: shard.index, total: shard.total, timings: options.timings ? "file" as const : "equal" as const } } : {};
+  if (shard) {
+    const label = `${shard.index}/${shard.total}`;
+    const elsewhere = selection === "full" ? `the full suite runs in shard 1/${shard.total}`
+      : unshardable ? `the selected command cannot be split, so the whole selection runs in shard 1/${shard.total}`
+      : undefined;
+    if ((elsewhere && shard.index !== 1) || commands.length === 0) {
+      const why = elsewhere && shard.index !== 1 ? elsewhere : `shard ${label} has no selected test files`;
+      return {
+        ...baseReport(before, scope, boundRange),
+        verification: "passed",
+        safe_to_continue: true,
+        reason: `nothing to run in shard ${label}: ${why}`,
+        changed_files: counts.changedFiles,
+        tests_available: counts.testsAvailable,
+        tests_selected: 0,
+        selection: "none",
+        snapshot: { ...baseReport(before, scope, boundRange).snapshot, after_base_sha: before.baseSha, after_tree_sha: before.treeSha, unchanged: true },
+        analysis,
+        required_actions: [],
+        ...shardField,
+      };
+    }
+    if (selection === "selected" && !unshardable && shardTests && result) {
+      const reasons = result.selectionReasons;
+      result = { ...result, selectedTests: shardTests, ...(reasons ? { selectionReasons: Object.fromEntries(shardTests.flatMap((test) => reasons[test] ? [[test, reasons[test]!]] : [])) } : {}) };
+      counts.testsSelected = shardTests.length;
+    }
+  }
 
   if (!command) {
     const inferred = inferFullCommand(options.repoPath);
@@ -247,6 +345,35 @@ async function executeWithPolicy(
   const checkBase = scope === "commit-range" ? range?.baseSha : before.baseSha;
   const checkHead = scope === "commit-range" ? range?.headSha : before.commitSha;
   const planned = options.skipChecks ? [] : plannedChecks(options.repoPath, checkBase && checkHead ? { baseSha: checkBase, headSha: checkHead } : undefined);
+  // An earlier pass of this exact tree that covers these tests and checks ends the run here (2026-11-06).
+  // Never under enforce, whose receipt must show the decision it applied, nor for tests outside the full
+  // suite, which a full run does not cover.
+  const reusable = options.reuse !== false && !enforcement && !outsideSuite
+    ? findReusablePass(options, before.treeSha, selection, result?.selectedTests ?? [], commands.join(" && "), planned)
+    : undefined;
+  if (reusable) {
+    const reused_from = { produced_at: reusable.produced_at, selection: reusable.selection as "selected" | "full", ...(reusable.command ? { command: reusable.command } : {}) };
+    return {
+      ...baseReport(before, scope, boundRange),
+      verification: "passed",
+      safe_to_continue: true,
+      reason: `reused the passing ${reused_from.selection} run of this exact tree from ${reused_from.produced_at}; nothing was run again (--no-reuse runs it)`,
+      changed_files: counts.changedFiles,
+      tests_available: counts.testsAvailable,
+      tests_selected: selection === "full" ? counts.testsAvailable : counts.testsSelected,
+      selection,
+      ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
+      ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
+      command,
+      ...(commands.length > 1 ? { commands } : {}),
+      snapshot: { ...baseReport(before, scope, boundRange).snapshot, after_base_sha: before.baseSha, after_tree_sha: before.treeSha, unchanged: true },
+      analysis,
+      required_actions: [],
+      reused_from,
+      ...shardField,
+      ...coverageField,
+    };
+  }
   const checkBaseline = options.baselineOnFailure && checkBase && checkHead
     ? (check: { command: string }, remainingMs: number) => checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: Math.max(remainingMs, 0) })
     : undefined;
@@ -256,22 +383,32 @@ async function executeWithPolicy(
   // Checks that also fail at the base: still a failed verdict (required CI fails either way), but they
   // no longer stop the run before the change's own failures.
   const preexistingChecks = checkRun?.preexisting ?? [];
-  const preexistingNote = preexistingChecks.length
+  const checksNote = preexistingChecks.length
     ? `; gate check(s) ${preexistingChecks.map((check) => check.id).join(", ")} also fail at the base commit (already broken before this change)`
     : "";
-  // Selected `node --test` files run under a probe that records which of them actually started.
+  // Every test run goes under a probe that records which `node --test` files started (selected ones must)
+  // and each one's duration and result for the outcome log (2026-11-06). Outside node:test it does nothing.
   const expectedNodeTests = selection === "selected" && result ? selectedNodeTests(command, result.selectedTests) : [];
-  const trace = expectedNodeTests.length && !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
+  const trace = !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
   let startedNodeTests: string[] | undefined;
   let execution: CommandMeasurement;
   try {
     execution = checkRun?.failure
       ? checkRun.failure.measurement
-      : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env });
+      : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
     startedNodeTests = trace?.read();
+    const nodeResults = trace?.results() ?? [];
+    if (nodeResults.length) execution = { ...execution, testResults: mergeTestFileResults(execution.testResults, nodeResults) };
   } finally {
     trace?.dispose();
   }
+  const stoppedInFirstPass = firstPass && execution.partsNotRun !== undefined && runCommands.length - execution.partsNotRun <= firstPass.parts.length;
+  const failFastNote = stoppedInFirstPass
+    ? `; ${firstPass.tests} test file(s) the dependency graph found affected ran before the full suite and failed, so the full suite was not run`
+    : execution.partsNotRun
+    ? `; --fail-fast stopped at the first failing part, so ${execution.partsNotRun} later part(s) of the selection did not run`
+    : "";
+  const preexistingNote = checksNote + failFastNote;
   let after: WorkingTreeSnapshot;
   try {
     after = captureWorkingTreeSnapshot(options.repoPath);
@@ -327,7 +464,8 @@ async function executeWithPolicy(
           : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
   const failureBaseline = verification === "failed" && !failedCheck && !execution.timedOut && options.baselineOnFailure && baselineSha
-    ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
+    // The base reruns only the parts that ran here: a first-pass failure is compared without the full suite.
+    ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands: stoppedInFirstPass ? firstPass.parts : commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
     : undefined;
   const baselineNote = failureBaseline && failureBaseline.status !== "unknown"
     ? `; ${failureBaseline.reason} (${failureBaseline.base_sha.slice(0, 12)})`
@@ -345,8 +483,9 @@ async function executeWithPolicy(
     selection,
     ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
     ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
-    command,
-    ...(commands.length > 1 ? { commands } : {}),
+    command: firstPass ? runCommands.join(" && ") : command,
+    ...(runCommands.length > 1 ? { commands: runCommands } : {}),
+    ...(firstPass ? { first_pass: { tests: firstPass.tests, commands: firstPass.parts, stopped_full_suite: Boolean(stoppedInFirstPass) } } : {}),
     execution,
     ...(checks ? { checks } : {}),
     snapshot: {
@@ -360,6 +499,8 @@ async function executeWithPolicy(
     analysis,
     required_actions: verification === "passed" ? [] : [finalReason + baselineNote],
     ...(failureBaseline ? { failure_baseline: failureBaseline } : {}),
+    ...shardField,
+    ...coverageField,
   };
 }
 
@@ -438,12 +579,16 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
     return blocked(unknownSnapshot(), "commit-range", message, { status: "ERROR", stage: "context", fallback_reasons: [], error: message });
   }
   if (before.changed) {
-    return blocked(
-      before,
-      "commit-range",
-      "commit-range verification requires a clean checkout; use verify --changed for uncommitted changes",
-      { status: "not_needed", fallback_reasons: [] },
-    );
+    const lineEndingOnly = lineEndingOnlyChanges(repoPath, before);
+    if (!lineEndingOnly) {
+      return blocked(
+        before,
+        "commit-range",
+        "commit-range verification requires a clean checkout; use verify --changed for uncommitted changes",
+        { status: "not_needed", fallback_reasons: [] },
+      );
+    }
+    before = { ...before, lineEndingOnly };
   }
 
   const temporaryDirectory = mkdtempSync(join(tmpdir(), "diffci-verify-"));
@@ -488,6 +633,10 @@ export function formatVerificationSummary(report: VerificationReport): string {
     `  snapshot: ${report.snapshot.before_tree_sha.slice(0, 12)} (${report.snapshot.unchanged ? "unchanged" : "not confirmed"})`,
   ];
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
+  const lineEndings = report.snapshot.line_ending_only_changes;
+  if (lineEndings?.length) {
+    lines.push(`  line endings only: ${lineEndings.length}${lineEndings.length === 20 ? "+" : ""} checked-out file(s) differ from HEAD only by CRLF (${lineEndings.slice(0, 3).join(", ")}${lineEndings.length > 3 ? ", ..." : ""}); verified as checked out`);
+  }
   const written = report.snapshot.written_during_verification;
   if (written?.length) lines.push(`  written by the run (not in .gitignore): ${written.slice(0, 5).join(", ")}${written.length > 5 ? ", ..." : ""}`);
   if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}${check.baseline?.status === "preexisting" ? " (also fails at base)" : ""}`).join(", ")}`);
@@ -517,8 +666,60 @@ function fullSelection(repoPath: string, reason: string) {
   return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0 };
 }
 
+/**
+ * The commands that run a FULL observation's affected tests on their own, before the full suite: the
+ * tests the dependency graph did find, which a fallback elsewhere in the change does not make less
+ * likely to fail. Only when they are under half the suite, so the extra pass stays small, and only when
+ * the planner can run every one of them (paths are not redacted).
+ */
+export function firstPassParts(repoPath: string, result: NonNullable<ObservationReport["result"]>): { parts: string[]; tests: number } | undefined {
+  const tests = result.selectedTests;
+  if (result.mode !== "FULL" || tests.length === 0 || !(tests.length * 2 < result.totalTestCount)) return undefined;
+  const planned = inferPlannedCommands(repoPath, tests);
+  if (!planned) return undefined;
+  if ("commands" in planned) return { parts: planned.commands, tests: tests.length };
+  // A selected file the runner's glob would not match never runs (as executableSelection checks).
+  if (unmatchedNodeTests(planned.single, tests).length) return undefined;
+  return { parts: batchCommand(planned.single, tests), tests: tests.length };
+}
+
+/** The order to run selected tests in, and under --fail-fast the ones to run first (test-ranking.ts). */
+export interface SelectedOrdering {
+  order: readonly string[];
+  first?: readonly string[];
+}
+
+/** Ranks the selected tests by the outcome log's history, or undefined when nothing in it says any is
+ * likelier to fail than another, so a repository without history runs its selection exactly as before. */
+function rankedOrdering(options: VerifyOptions, result: NonNullable<ObservationReport["result"]>): SelectedOrdering | undefined {
+  if (options.rank === false || result.mode !== "SELECTIVE") return undefined;
+  const path = outcomeLogPath(options.repoPath);
+  const history = testHistory(path ? readOutcomes(path) : []);
+  const reasons = result.selectionReasons ?? {};
+  const likely = likelyFailures(result.selectedTests, history, reasons);
+  if (likely.length === 0) return undefined;
+  const order = rankTests(result.selectedTests, history, reasons);
+  return { order, ...(options.failFast ? { first: order.filter((test) => likely.includes(test)) } : {}) };
+}
+
+/** The earlier pass in this repository's outcome log that covers this run, if any (reusablePass). */
+function findReusablePass(options: VerifyOptions, treeSha: string, selection: "selected" | "full", selectedTests: readonly string[], command: string, planned: readonly PlannedCheck[]) {
+  const path = outcomeLogPath(options.repoPath);
+  if (!path) return undefined;
+  return reusablePass(readOutcomes(path), {
+    tree_sha: treeSha,
+    diffci_version: options.version,
+    node_version: process.versions.node,
+    selection,
+    selected_tests: selectedTests,
+    command,
+    full_command: selection === "full" ? command : fullSelection(options.repoPath, "").command,
+    checks: planned.filter((check) => check.decision !== "SKIP").map(({ id, command: checkCommand }) => ({ id, command: checkCommand })),
+  });
+}
+
 /** Shared executable plan for read-only agent selection and verification. */
-export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>) {
+export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>, ordering?: SelectedOrdering, shard?: { tests: ReadonlySet<string>; first: boolean }) {
   let selection: "selected" | "full";
   let command: string | undefined;
   let reason: string;
@@ -584,17 +785,35 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
       outsideSuite = outside.length;
       reason = `${reason}; also ran ${outside.length} affected test file(s) the full test command does not run`;
     } else {
-      reason = `${reason}; ${outside.length} affected test file(s) outside the full test command were not run (${auxiliary?.reason ?? "no single command covers them"})`;
+      reason = `${reason}; ${outside.length} affected test file(s) outside the full test command were not run (${auxiliary?.reason ?? result.outsideSuiteRefusalReason ?? "no single command covers them"})`;
     }
   }
 
+  // Under --shard each selected command keeps only the shard's files, and the test-script phases and the
+  // outside-suite command run in shard 1 (test-shards.ts, 2026-11-06). A command that cannot be cut
+  // safely leaves the whole selection to shard 1.
+  let shardParts: string[] | undefined;
+  let unshardable = false;
+  if (shard && selection === "selected" && command) {
+    const cut = (selectedParts ?? [primary ?? command]).map((part) => subsetCommand(part, result.selectedTests, shard.tests));
+    if (cut.some((part) => part === undefined)) unshardable = true;
+    else shardParts = cut.filter((part): part is string => typeof part === "string");
+  }
+  // A single selected command runs its files likeliest failures first, and under --fail-fast as two
+  // invocations, the likely ones and then the rest (test-ranking.ts, 2026-11-06).
+  const singleSource = shardParts ? (shardParts.length === 1 ? shardParts[0] : undefined) : primary ?? command;
+  const single = selection === "selected" && !selectedParts && ordering ? singleSource : undefined;
+  const ordered = single ? orderCommand(single, ordering!.order) : undefined;
+  const primaryParts = ordered
+    ? (ordering!.first?.length ? splitCommand(ordered, result.selectedTests, ordering!.first) : [ordered]).flatMap((part) => batchCommand(part, result.selectedTests))
+    : undefined;
+  const extras = !shard || shard.first || unshardable ? [...primaryPhases, ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : [])] : [];
   // Each part stays within the shell's command-line limit (cmd.exe stops at 8,191 characters).
   const commands = command ? [
-    ...(selectedParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
-    ...primaryPhases,
-    ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : []),
+    ...(primaryParts ?? shardParts?.flatMap((part) => batchCommand(part, result.selectedTests)) ?? selectedParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
+    ...extras,
   ] : [];
-  return { selection, command: commands.length ? commands.join(" && ") : command, commands, reason, outsideSuite };
+  return { selection, command: commands.length ? commands.join(" && ") : shard ? undefined : command, commands, reason, outsideSuite, unshardable };
 }
 
 /** A test-script phase as a standalone command. `npm test` puts `node_modules/.bin` on PATH; outside

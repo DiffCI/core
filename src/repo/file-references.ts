@@ -173,6 +173,10 @@ export interface ReferenceResolution {
   code: string[];
   /** Why the file cannot be narrowed; empty when it can. */
   unresolvable: string[];
+  /** Each unresolvable reason with the readers leading to it, from the changed file to the file it was
+   * found through. Every blocker of the level where the first one appeared is reported, not only the first,
+   * so one run explains a fallback that used to take one fix per blocker to uncover (2026-11-05). */
+  blockers: Array<{ reason: string; chain: string[] }>;
   /** Every reader found, for evidence. */
   readers: Array<{ path: string; kind: ReaderKind; via: string }>;
   /** Phases of the root test script, verbatim, that run a reader directly; the caller must run them.
@@ -223,6 +227,10 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
   const targetBase = posix.basename(target);
   const dirs: string[] = [];
   for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
+  // A file name with an extension is the script's own directory's file (`vitest -c vitest.config.mts` in
+  // apps/cli/package.json is apps/cli's config, not packages/alint's; 2026-11-05) unless the script runs
+  // somewhere else: a `cd`, a workspace-wide run or a directory flag keeps any same-named file.
+  const elsewhere = /(?:^|[\s;&|(])(?:cd|pushd)\s|--(?:dir|cwd|prefix|filter|recursive|workspaces?)\b|(?:^|\s)-[rC]\s|\b(?:turbo|nx|lerna)\b/.test(body);
   for (const raw of body.split(/\s+/)) {
     const word = raw.replace(/^["']+|["']+$/g, "");
     if (!word) continue;
@@ -245,13 +253,60 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
         continue;
       }
       if (resolved === target || dirs.includes(resolved)) return true;
-      if (!candidate.includes("/") && (candidate === targetBase || dirs.some((dir) => posix.basename(dir) === candidate))) return true;
+      if (!candidate.includes("/") && ((candidate === targetBase && (elsewhere || !/\.[A-Za-z0-9]+$/.test(candidate))) || dirs.some((dir) => posix.basename(dir) === candidate))) return true;
     }
   }
   return false;
 }
 
 const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
+
+/** Keys whose list names files a tool skips: tsconfig and Vitest `exclude`, knip `ignore`, ESLint-style
+ * `ignores` and `ignorePatterns`, Jest `testPathIgnorePatterns` and its siblings. */
+const EXCLUSION_KEY = /^(?:ignored?|ignores|excluded?|excludes|ignorePatterns|\w*PathIgnorePatterns)$/;
+
+/**
+ * Whether the word at `index` is an element of a bracketed list assigned to an exclusion key
+ * (`exclude: [...]`, `"exclude": [...]`, `ignores = [...]`) (2026-11-05). A tool never reads what its
+ * own ignore list excludes, yet each such glob counted as a reader: on LobeHub, knip's
+ * `ignore: ['scripts/**']`, alint's `ignores = ["**\/fixtures/**"]` and a Vitest `exclude` named every
+ * data file of a migration under scripts/, and each change to one ran the full suite. YAML block lists
+ * and anything not directly inside such a list keep the conservative answer.
+ */
+function inExclusionList(content: string, index: number): boolean {
+  // Closers seen so far, so a balanced `{x,}` or `[!d]` in an earlier glob of the same list is skipped.
+  const open: Record<string, number> = { "[": 0, "{": 0, "(": 0 };
+  const opener: Record<string, string> = { "]": "[", "}": "{", ")": "(" };
+  for (let i = index - 1; i >= 0; i--) {
+    const char = content[i]!;
+    if (char in opener) { open[opener[char]!]!++; continue; }
+    if (!(char in open)) continue;
+    if (open[char]! > 0) { open[char]!--; continue; }
+    // The innermost unclosed bracket: a list, or an object or call the word sits directly inside.
+    if (char !== "[") return false;
+    const key = /["']?([A-Za-z_$][\w$]*)["']?\s*[:=]\s*$/.exec(content.slice(Math.max(0, i - 80), i));
+    return key !== null && EXCLUSION_KEY.test(key[1]!);
+  }
+  return false;
+}
+
+/**
+ * Whether code in `readerPath` could be naming `target` by its bare file name: it sits in the target's
+ * directory, or its text names one of the target's directories as a word (`"hotfixWorkflow"`,
+ * `scripts/`), which is how code elsewhere would reach that directory to run or read a file there. Only
+ * applied to a reader of a reader (`ancestors` false): 2026-11-06, a LobeHub root package.json edit
+ * reached scripts/hotfixWorkflow/index.ts, and every code file in the repository containing the word
+ * `index.ts` became a further reader until the 50-reader limit forced the full suite. Non-code readers
+ * (shell scripts, workflow and tool configuration) set their working directory in ways not modelled
+ * here, so they still count on the bare name.
+ */
+function namesDirectoryOf(content: string, readerPath: string, target: string): boolean {
+  if (!/\.[cm]?[jt]sx?$/.test(readerPath)) return true;
+  const dir = posix.dirname(target);
+  if (dir === "." || posix.dirname(readerPath) === dir) return true;
+  const names = dir.split("/").filter(Boolean);
+  return names.some((name) => new RegExp(`(?:^|["'\`/\s(])${escape(name)}(?=$|["'\`/\s),])`, "m").test(content));
+}
 
 /**
  * Whether `content`, read from `readerPath`, names `target` (or, with `ancestors`, one of its
@@ -262,7 +317,7 @@ const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
  * a different file names that file, and a glob names only what it matches (2026-11-04). Bare names and
  * variables inside a path keep the conservative answer.
  */
-export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean): boolean {
+export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean, readGlobs = true): boolean {
   if (!pattern.test(content)) return false;
   const dirs: string[] = [];
   for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
@@ -273,6 +328,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
     // Judged with the characters around it, so a bare directory name in prose (`the overlay packages,`
     // in a workflow comment) does not count, as the reference pattern intends (2026-11-04).
     if (!pattern.test(content.slice(Math.max(0, match.index - 1), match.index + word.length + 1))) continue;
+    if (inExclusionList(content, match.index)) continue;
     // A leading variable is a directory the content does not name (`$GITHUB_ACTION_PATH/../../scripts/x.sh`
     // names `scripts/x.sh` somewhere, not the repository's `scripts/`), so the rest is a path relative to
     // an unknown directory (2026-11-04: a LobeHub composite action blocked every changed file under scripts/).
@@ -282,8 +338,10 @@ export function contentNamesPath(content: string, readerPath: string, target: st
       if (names.some((name) => name === rest || name.endsWith(`/${rest}`) || rest.endsWith(`/${name}`))) return true;
       continue;
     }
+    if (!word.includes("/") && !/[!$]/.test(word) && !ancestors && !namesDirectoryOf(content, readerPath, target)) continue;
     if (!word.includes("/") || /[!$]/.test(word)) return true;
     if (/[*?{}[\]]/.test(word)) {
+      if (!readGlobs) continue;
       if (word.startsWith("../")) return true;
       // A glob names what it matches, from the reader's directory, the root, or any directory below the
       // root; `packages/sdk/**` in a workflow's `paths` filter does not name `packages/database/`.
@@ -333,6 +391,20 @@ export function directoryWalkers(filePath: string, tests: readonly string[], rea
  * non-default `wrangler.validation.json` is used only when a command names it. */
 const RUNS_FILES_WITHOUT_NAMING = /^(?:wrangler\.(?:toml|json|jsonc)|dockerfile.*|docker-compose.*|compose\.ya?ml|procfile|makefile|justfile|taskfile\.ya?ml|(?:vitest|vite|jest|playwright|cypress|ava|babel|webpack|rollup|esbuild|vue|nuxt|svelte|astro|next)\.config\..+|\.mocharc.*|\.babelrc.*|\.c8rc.*|\.nycrc.*)$/i;
 
+/** TypeScript project files: they list what to compile, and a non-code file they name is read only
+ * through an import, which the dependency graph already has. */
+const PATH_LIST_CONFIG = /^[jt]sconfig(?:\.[^/]+)?\.json$/i;
+const LINTERS = new Set(["eslint", "oxlint", "stylelint", "prettier", "alint", "cspell", "markdownlint", "commitlint", "lintstaged", "lint-staged", "biome", "knip", "dprint"]);
+
+/** A linter's or formatter's configuration (`alint.config.toml`, `.eslintrc.json`, `biome.json`). */
+export function isLintConfig(filePath: string): boolean {
+  const base = posix.basename(filePath).toLowerCase();
+  const stem = base.replace(/^\./, "").split(".")[0]!;
+  const tool = stem.replace(/rc$/, "");
+  if (!LINTERS.has(tool)) return false;
+  return stem !== tool || base.includes(".config.") || /^(?:biome|knip|dprint|cspell)\.(?:json|jsonc|ts|js|mjs|cjs|ya?ml)$/.test(base);
+}
+
 export function loadsWithoutNaming(path: string): boolean {
   return RUNS_FILES_WITHOUT_NAMING.test(posix.basename(path));
 }
@@ -340,7 +412,7 @@ export function loadsWithoutNaming(path: string): boolean {
 /** A root dependency manifest that a Dockerfile names only in `COPY`/`ADD` instructions, which put it
  * into the image for a package manager to install from. Any other instruction naming it (a `RUN` that
  * reads it) does not qualify. Comment lines execute nothing and are ignored, so a Dockerfile that names
- * the file only in comments qualifies too (2026-11-05: two DiffCI.com Dockerfiles' `# ... pinned in
+ * the file only in comments qualifies too (2026-11-05: two dogfood-repository Dockerfiles' `# ... pinned in
  * package.json` comments blocked every dependency bump). */
 function copiesOnly(content: string, target: string): boolean {
   if (target.includes("/") || !["package.json", ...LOCKFILES].includes(target)) return false;
@@ -453,18 +525,24 @@ function packageJsonNames(content: string, pattern: RegExp, target: string, ance
 
 /** Resolves who reads `filePath`. See the module comment for the rule and its limits. */
 export function resolveFileReferences(filePath: string, input: ReferenceResolutionInput): ReferenceResolution {
-  const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], readers: [], phases: [] };
+  const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], blockers: [], readers: [], phases: [] };
+  const parent = new Map<string, string>();
+  const chainOf = (path: string) => { const chain = [path]; while (parent.has(chain[0]!)) chain.unshift(parent.get(chain[0]!)!); return chain; };
+  const block = (reason: string, through: string) => { resolution.unresolvable.push(reason); resolution.blockers.push({ reason, chain: chainOf(through) }); };
   const phases = new Set<string>();
   const tests = new Set<string>();
   const code = new Set<string>();
   const visited = new Set<string>([filePath]);
-  let frontier: Array<{ path: string; via: string }> = [{ path: filePath, via: filePath }];
+  // `lint`: the file configures a linter, so only a test or graph code naming it is followed; anything else
+  // that reads it is lint tooling and runs no test (isLintConfig; 2026-11-05: LobeHub's oxlint.config.mts
+  // chain under scripts/stylexMigration/legacyFiles.json went past the depth limit).
+  let frontier: Array<{ path: string; via: string; lint?: boolean }> = [{ path: filePath, via: filePath }];
   let transitiveCount = 0;
   const contents = new Map<string, string | undefined>();
   const read = (path: string) => { if (!contents.has(path)) contents.set(path, input.read(path)); return contents.get(path); };
 
   for (let depth = 0; depth < MAX_DEPTH && frontier.length > 0; depth++) {
-    const next: Array<{ path: string; via: string }> = [];
+    const next: Array<{ path: string; via: string; lint?: boolean }> = [];
     for (const target of frontier) {
       // Directories are matched only for the changed file itself, which a test may find by listing its
       // directory. A reader reached through the changed file (a script, a manifest) matters only if
@@ -475,38 +553,50 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
       for (const candidate of input.files) {
         if (visited.has(candidate) || candidate === target.path || LOCKFILES.has(posix.basename(candidate))) continue;
         const base = posix.basename(candidate);
+        // A lint step in a workflow or a package's lint script reads a linter's configuration to lint,
+        // which no test observes; a test or graph code naming it is still followed (2026-11-05: LobeHub's
+        // alint.config.toml names fixture directories and its test workflow runs alint before the tests).
+        if (target.lint && (base === "package.json" || candidate.startsWith(".github/"))) continue;
         if (base === "package.json") {
           const content = read(candidate);
           if (content === undefined) {
-            if (input.allowNoReaders) resolution.unresolvable.push(`${candidate} could not be read`);
+            if (input.allowNoReaders) block(`${candidate} could not be read`, target.path);
             continue;
           }
           const named = packageJsonNames(content, pattern, target.path, ancestors, posix.dirname(candidate));
           if (named === "no") continue;
           visited.add(candidate);
-          if (named === "unparseable") { resolution.unresolvable.push(`${candidate} could not be parsed`); continue; }
+          if (named === "unparseable") { block(`${candidate} could not be parsed`, target.path); continue; }
           resolution.readers.push({ path: candidate, kind: "package-script", via: target.path });
           const direct = input.testPhases && candidate === "package.json" ? directTestPhases(content, target.path, pattern, ancestors) : undefined;
           if (direct) { for (const phase of direct) phases.add(phase); continue; }
-          resolution.unresolvable.push(`${candidate} runs ${target.path} as part of its test script`);
+          block(`${candidate} runs ${target.path} as part of its test script`, target.path);
           continue;
         }
         if (input.isDocumentation(candidate)) continue;
+        // 2026-11-05: LobeHub's root tsconfig `include` names scripts/, and with every tsconfig extending it
+        // the readers of scripts/stylexMigration/legacyFiles.json passed the transitive limit. tsc compiles
+        // what a tsconfig lists and runs none of it, and changed code it compiles is a compiled project's.
+        if (PATH_LIST_CONFIG.test(base)) continue;
         const content = read(candidate);
         if (content === undefined && input.allowNoReaders && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate) || isImplicitlyLoadedFile(candidate))) {
-          resolution.unresolvable.push(`${candidate} could not be read`);
+          block(`${candidate} could not be read`, target.path);
           continue;
         }
-        if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors)) continue;
+        // A test runner's include and exclude globs select test files, so one matching a data file does not
+        // make the runner read it; an exact path in the config still counts (2026-11-05: LobeHub's
+        // packages/alint/vitest.config.mts excludes fixture directories under scripts/).
+        const globsSelectTests = loadsWithoutNaming(candidate) && !input.isCodeFile(target.path);
+        if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors, !globsSelectTests)) continue;
         visited.add(candidate);
         if (input.allowNoReaders && /^dockerfile/i.test(base) && copiesOnly(content, target.path)) {
           // The caller modelled what the file does when installed (dependency selection); a Dockerfile
-          // that only copies it into the image to install from it adds nothing (2026-11-04: DentalPresence's
+          // that only copies it into the image to install from it adds nothing (2026-11-04: a dogfood repository's
           // `COPY package.json package-lock.json ./` made every dependency bump a full run).
           resolution.readers.push({ path: candidate, kind: "documentation", via: target.path });
         } else if (input.implicitReadersUnresolvable && loadsWithoutNaming(candidate)) {
           resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
-          resolution.unresolvable.push(`${candidate} is loaded by tooling and names ${target.path}`);
+          block(`${candidate} is loaded by tooling and names ${target.path}`, target.path);
         } else if (candidate.startsWith(".github/")) {
           // A workflow step that comes before a test step in its job, or a composite action, may feed
           // the file to the suite's environment; issue templates and standalone CI checks do not.
@@ -516,37 +606,38 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
             || (/^\.github\/workflows\//.test(candidate) && !input.contentCleared?.has(target.path) && input.workflowFeedsTests(content, (text) => contentNamesPath(text, candidate, target.path, pattern, ancestors)));
           if (!executes) continue;
           resolution.readers.push({ path: candidate, kind: "unresolvable", via: target.path });
-          resolution.unresolvable.push(`${candidate} names ${target.path}`);
+          block(`${candidate} names ${target.path}`, target.path);
         } else if (input.isCodeFile(candidate) && input.isTestFile(candidate)) {
           resolution.readers.push({ path: candidate, kind: "test", via: target.path });
           tests.add(candidate);
         } else if (input.isCodeFile(candidate) && input.inGraph(candidate)) {
           resolution.readers.push({ path: candidate, kind: "graph-code", via: target.path });
           code.add(candidate);
-        } else if (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate)) {
+        } else if (!target.lint && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate))) {
           resolution.readers.push({ path: candidate, kind: "transitive", via: target.path });
-          if (++transitiveCount > MAX_TRANSITIVE_READERS) { resolution.unresolvable.push(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`); break; }
-          next.push({ path: candidate, via: target.path });
+          if (++transitiveCount > MAX_TRANSITIVE_READERS) { block(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`, target.path); break; }
+          parent.set(candidate, target.path);
+          next.push({ path: candidate, via: target.path, lint: isLintConfig(candidate) });
         } else {
           // Markup, prose, images and licences name paths in links and URLs but execute nothing and
           // direct no reads, so nothing reaches the suite through them.
           resolution.readers.push({ path: candidate, kind: "documentation", via: target.path });
         }
       }
-      if (resolution.unresolvable.length > 0) break;
+      if (transitiveCount > MAX_TRANSITIVE_READERS) break;
     }
     if (resolution.unresolvable.length > 0) break;
     frontier = next;
   }
   if (resolution.unresolvable.length === 0 && frontier.length > 0) {
-    resolution.unresolvable.push(`reference chain from ${filePath} is deeper than ${MAX_DEPTH} files`);
+    block(`reference chain from ${filePath} is deeper than ${MAX_DEPTH} files`, filePath);
   }
   // Found readers that something could run (check scripts, manifests), none of which any test, test
   // script or test-feeding workflow step reaches: the suite cannot observe the file. Finding no such
   // reader at all is different - the file's reader is unknown, so it stays unknown.
   const executableReaders = resolution.readers.some((reader) => reader.kind === "transitive");
   if (resolution.unresolvable.length === 0 && tests.size === 0 && code.size === 0 && !executableReaders && !input.allowNoReaders && !input.removed && !loadedOnlyOutsideTests(filePath, input, read)) {
-    resolution.unresolvable.push(`no test or source file names ${filePath}`);
+    block(`no test or source file names ${filePath}`, filePath);
   }
   resolution.phases = resolution.unresolvable.length === 0 ? [...phases].sort() : [];
   resolution.tests = [...tests].sort();

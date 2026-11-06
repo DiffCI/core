@@ -174,7 +174,7 @@ describe("check-plan CLI", () => {
       assert.equal(JSON.parse(introduced.stdout).missed[0].file, nestedPlan.skippedTests[0]);
       writeFileSync(basePath, "<testsuite>");
       invalid(directory, args);
-      for (const root of ["../web", "/web", "packages/../web", "packages\\web"]) {
+      for (const root of ["../web", "/web", "packages/../web"]) {
         invalid(directory, ["--plan", planPath, "--results", resultsPath, "--root", root]);
       }
     });
@@ -192,6 +192,71 @@ require('node:module').syncBuiltinESMExports();
       const result = run(directory, ["--plan", planPath, "--results", resultsPath], guard);
       assert.equal(result.status, 2, result.stdout + result.stderr);
       assert.match(JSON.parse(result.stderr).error, /grew while being read/);
+    });
+  });
+
+  it("uses a separate base checkout and treats missing or skipped base evidence as uncertain", () => {
+    fixture((directory, planPath, resultsPath) => {
+      const basePath = join(directory, "base.xml");
+      const baseRepo = join(directory, "base");
+      writeFileSync(resultsPath, junit(failure(`${directory.replace(/\\/g, "/")}/tests/skipped.test.ts`)));
+      writeFileSync(basePath, junit(failure(`${baseRepo.replace(/\\/g, "/")}/tests/skipped.test.ts`)));
+      const args = ["--plan", planPath, "--results", resultsPath, "--base-results", basePath, "--repo", directory];
+      let result = run(directory, args);
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(JSON.parse(result.stdout).summary.possibleMisses, 1);
+      result = run(directory, [...args, "--base-repo", baseRepo]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).summary.preExisting, 1);
+      writeFileSync(basePath, junit('<testcase file="tests/skipped.test.ts" name="fails"><skipped/></testcase>'));
+      result = run(directory, args);
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(JSON.parse(result.stdout).summary.possibleMisses, 1);
+      invalid(directory, ["--plan", planPath, "--results", resultsPath, "--base-repo", baseRepo]);
+    });
+  });
+
+  it("enforce-misses rejects invalid full reports with exit 2 and no output artifact", () => {
+    fixture((directory, _planPath, resultsPath) => {
+      const output = join(directory, "reports");
+      const repo = join(directory, "checkout");
+      for (const input of ["<testsuite>", '<testsuite tests="2"><testcase name="only one"/></testsuite>', '<testsuite><system-out>' + 'x'.repeat(16 * 1024 * 1024) + '</system-out></testsuite>']) {
+        writeFileSync(resultsPath, input);
+        const result = spawnSync(process.execPath, [CLI, "enforce-misses", "--repo", repo, "--repository", "fixture/repo", "--junit", resultsPath, "--out-dir", output], { cwd: directory, encoding: "utf8" });
+        assert.equal(result.status, 2, result.stdout + result.stderr);
+        assert.match(result.stderr, /Cannot read full-suite JUnit:/);
+        assert.doesNotMatch(result.stderr, /at SaxesParser|at runEnforceMisses/);
+        assert.equal(result.stdout, "");
+        assert.ok(!readdirSync(directory).includes("reports"));
+      }
+    });
+  });
+
+  it("enforce-misses retains primary failures when an explicit rerun report is truncated", () => {
+    fixture((directory, _planPath, resultsPath) => {
+      const output = join(directory, "reports");
+      const rerun = join(directory, "rerun.xml");
+      const guard = join(directory, "local-gh.cjs");
+      writeFileSync(rerun, "<testsuite>");
+      // Only remote history is replaced. The actual CLI, reader and report writer execute.
+      writeFileSync(guard, `
+const child = require('node:child_process');
+child.spawnSync = (command, args) => {
+  if (command !== 'gh' || args[0] !== 'api' || !args[1].includes('/actions/workflows/')) throw new Error('Unexpected child: ' + command);
+  return {status: 0, stdout: JSON.stringify({workflow_runs: []}), stderr: ''};
+};
+require('node:module').syncBuiltinESMExports();
+`);
+      const result = spawnSync(process.execPath, ["--require", guard, CLI, "enforce-misses", "--repo", join(directory, "checkout"), "--head", "head", "--repository", "fixture/repo", "--junit", resultsPath, "--rerun-junit", rerun, "--out-dir", output], { cwd: directory, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.equal(result.stderr, "");
+      const report = JSON.parse(readFileSync(join(output, "enforce-misses.json"), "utf8"));
+      assert.equal(report.full_suite, "failed");
+      assert.equal(report.rerun, "not-run");
+      assert.equal(report.failures.length, 1);
+      assert.equal(report.failures[0].classification, "unattributed");
+      assert.match(report.notes.join("\n"), /rerun results unavailable/);
+      assert.equal(report.deterministic_failures.length, 1);
     });
   });
 

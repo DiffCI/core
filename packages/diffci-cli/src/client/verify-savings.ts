@@ -5,6 +5,7 @@ import { arch, cpus, platform, release, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { failingTestNames } from "./failure-baseline.js";
 import { runnerTestCount } from "./selected-coverage.js";
+import { parseTestFileResults, type TestFileResult } from "./test-results.js";
 
 import { classifyFailureFromEvidence, computeFailureFingerprint } from "../preflight/fingerprint.js";
 import type { FailureClass } from "../preflight/taxonomy.js";
@@ -27,6 +28,11 @@ export interface CommandMeasurement {
   /** node:test's reported test count, or vitest's or jest's test-file total, from the complete output.
    * Each file contributes at least one, so fewer than the selected files means some never ran. */
   runnerTestCount?: number;
+  /** Each test file's result and duration, where the runner's output or the node:test probe shows them
+   * (test-results.ts). */
+  testResults?: TestFileResult[];
+  /** Parts left unrun because an earlier one failed under `--fail-fast` (command-batches.ts). */
+  partsNotRun?: number;
 }
 
 export interface VerifySavingsReport {
@@ -452,6 +458,8 @@ export function measureCommand(command: string, options: Pick<VerifySavingsOptio
   const failingTests = result.status === 0 ? [] : failingTestNames(`${result.stdout ?? ""}
 ${result.stderr ?? ""}`);
   const testCount = runnerTestCount(result.stdout ?? "");
+  const testResults = parseTestFileResults(`${result.stdout ?? ""}
+${result.stderr ?? ""}`);
   return {
     command,
     exitCode: result.status,
@@ -464,6 +472,7 @@ ${result.stderr ?? ""}`);
     stderrTail: tail(result.stderr ?? "", options.tailBytes),
     ...(failingTests.length ? { failingTests } : {}),
     ...(testCount !== undefined ? { runnerTestCount: testCount } : {}),
+    ...(testResults.length ? { testResults } : {}),
   };
 }
 

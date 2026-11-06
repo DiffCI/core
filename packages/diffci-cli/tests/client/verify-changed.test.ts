@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -120,6 +120,149 @@ describe("verify --changed", () => {
       assert.equal(summary.runs, 1);
       assert.equal(summary.selected, 1);
       assert.equal(summary.passed, 1);
+      // Each test file's result and duration, from the node:test probe (2026-11-06).
+      const record = JSON.parse(readFileSync(join(dir, ".git", "diffci", "outcomes.jsonl"), "utf8").trim());
+      assert.deepEqual(record.test_results.map(({ file, status }: { file: string; status: string }) => ({ file, status })), [{ file: "test/alpha.test.js", status: "passed" }]);
+      assert.equal(typeof record.test_results[0].ms, "number");
+      assert.equal(record.node_version, process.versions.node);
+      assert.match(record.command, /node --test/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses an earlier pass of the same tree and runs nothing, unless --no-reuse", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/alpha.js", "export const alpha = () => 3;\n");
+      write(dir, "test/alpha.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {alpha} from '../src/alpha.js'; test('alpha', () => assert.equal(alpha(), 3));\n");
+      const first = JSON.parse(runVerify(dir).stdout);
+      assert.equal(first.verification, "passed");
+      assert.equal(first.reused_from, undefined);
+
+      const second = runVerify(dir);
+      assert.equal(second.status, 0, second.stdout + second.stderr);
+      const reused = JSON.parse(second.stdout);
+      assert.equal(reused.verification, "passed");
+      assert.equal(reused.reused_from.produced_at, first.produced_at);
+      assert.equal(reused.execution, undefined, "nothing ran");
+      assert.match(reused.reason, /reused the passing selected run/);
+
+      const again = spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--no-reuse"], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() });
+      const rerun = JSON.parse(again.stdout);
+      assert.equal(rerun.reused_from, undefined);
+      assert.equal(rerun.execution.exitCode, 0);
+
+      // A different tree is never covered.
+      write(dir, "src/beta.js", "export const beta = () => 2; // touched\n");
+      assert.equal(JSON.parse(runVerify(dir).stdout).reused_from, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs a test that failed before first, and --fail-fast stops after it", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+      write(dir, "src/beta.js", "export const beta = () => 5;\n");
+      const first = JSON.parse(runVerify(dir).stdout);
+      assert.equal(first.verification, "failed");
+      assert.match(first.command, /alpha\.test\.js.*beta\.test\.js/, "no history yet: the selection's own order");
+
+      const fast = spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--fail-fast"], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() });
+      const stopped = JSON.parse(fast.stdout);
+      assert.equal(stopped.verification, "failed");
+      assert.equal(stopped.commands.length, 2);
+      assert.match(stopped.commands[0], /beta\.test\.js$/);
+      assert.equal(stopped.execution.partsNotRun, 1);
+      assert.match(stopped.reason, /--fail-fast stopped at the first failing part/);
+
+      write(dir, "src/beta.js", "export const beta = () => 2; // fixed\n");
+      const fixed = JSON.parse(runVerify(dir).stdout);
+      assert.equal(fixed.verification, "passed");
+      assert.match(fixed.command, /beta\.test\.js.*alpha\.test\.js/, "beta failed before, so it runs first");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs the affected tests before a full fallback and stops there when one fails", () => {
+    // LobeHub catch study (2026-11-06): a fallback's full suite reached the time limit before the failing test.
+    const dir = fixture();
+    try {
+      write(dir, "src/gamma.js", "export const gamma = () => 3;\n");
+      write(dir, "test/gamma.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {gamma} from '../src/gamma.js'; test('gamma', () => assert.equal(gamma(), 3));\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "--quiet", "-m", "gamma");
+      write(dir, "src/beta.js", "export const beta = () => 5;\n");
+      write(dir, "settings.custom", "unknown to DiffCI\n");
+      const report = JSON.parse(runVerify(dir).stdout);
+      assert.equal(report.selection, "full", report.reason);
+      assert.equal(report.verification, "failed");
+      assert.equal(report.first_pass?.tests, 1);
+      assert.equal(report.first_pass?.stopped_full_suite, true);
+      assert.match(report.commands[0], /beta\.test\.js$/);
+      assert.equal(report.execution.partsNotRun, 1);
+      assert.match(report.reason, /ran before the full suite and failed, so the full suite was not run/);
+
+      write(dir, "src/beta.js", "export const beta = () => 2; // fixed\n");
+      const fixed = JSON.parse(runVerify(dir).stdout);
+      assert.equal(fixed.verification, "passed", fixed.reason);
+      assert.equal(fixed.first_pass?.stopped_full_suite, false);
+      assert.equal(fixed.commands.length, 2, "the first pass, then the full suite");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("splits a selection across shards, each test in exactly one, and runs the full suite in shard 1 only", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+      write(dir, "src/beta.js", "export const beta = () => 2; // touched\n");
+      const verifyShard = (shard: string) => JSON.parse(spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--no-log", "--shard", shard], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() }).stdout);
+      const shards = [verifyShard("1/2"), verifyShard("2/2")];
+      for (const report of shards) {
+        assert.equal(report.verification, "passed", report.reason);
+        assert.equal(report.selection, "selected");
+        assert.equal(report.selected_tests.length, 1);
+        assert.ok(report.command.endsWith(report.selected_tests[0]), report.command);
+      }
+      assert.deepEqual(shards.map((report) => report.selected_tests[0]).sort(), ["test/alpha.test.js", "test/beta.test.js"]);
+      assert.deepEqual(shards[1].shard, { index: 2, total: 2, timings: "equal" });
+
+      // An unknown file falls back to the full suite, which only shard 1 runs.
+      write(dir, "data.bin", "x");
+      const second = verifyShard("2/2");
+      assert.equal(second.verification, "passed");
+      assert.equal(second.selection, "none");
+      assert.match(second.reason, /the full suite runs in shard 1\/2/);
+      assert.equal(verifyShard("1/2").selection, "full");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds the tests the coverage map connects to a changed file, unless --no-coverage", () => {
+    const dir = fixture();
+    try {
+      // The map says beta's test also loads alpha (as a framework or a computed path would); the graph cannot see it.
+      write(dir, ".git/diffci/coverage-map.json", JSON.stringify({ schema: "diffci.coverage-map.v1", produced_at: "", command: "npm test", tests: {
+        "test/alpha.test.js": ["src/alpha.js"], "test/beta.test.js": ["src/alpha.js", "src/beta.js"],
+      } }));
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+      const report = JSON.parse(runVerify(dir).stdout);
+      assert.equal(report.verification, "passed", report.reason);
+      assert.deepEqual(report.selected_tests, ["test/alpha.test.js", "test/beta.test.js"]);
+      assert.deepEqual(report.coverage_added, ["test/beta.test.js"]);
+      assert.deepEqual(report.selection_reasons["test/beta.test.js"], { reason: "COVERAGE", changed_file: "src/alpha.js" });
+      assert.match(report.command, /alpha\.test\.js.*beta\.test\.js/);
+      assert.match(report.reason, /the coverage map added 1 test file/);
+
+      const off = JSON.parse(spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--no-coverage", "--no-reuse"], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() }).stdout);
+      assert.deepEqual(off.selected_tests, ["test/alpha.test.js"]);
+      assert.equal(off.coverage_added, undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -193,6 +336,41 @@ describe("verify commit range", () => {
       assert.equal(report.safe_to_continue, false);
       assert.equal(report.analysis.status, "not_needed");
       assert.match(report.reason, /requires a clean checkout/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies a commit range when the checkout differs from HEAD only by CRLF line endings", () => {
+    const dir = fixture();
+    try {
+      commitAlphaChange(dir);
+      // The state a system-wide core.autocrlf=true checkout leaves behind once the repository sets it to false.
+      write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
+      const run = runVerifyRange(dir);
+      assert.equal(run.status, 0, run.stdout + run.stderr);
+      const report = JSON.parse(run.stdout);
+      assert.equal(report.verification, "passed");
+      assert.deepEqual(report.snapshot.line_ending_only_changes, ["src/beta.js"]);
+
+      const summary = spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--repo", dir], { cwd: ROOT, encoding: "utf8", env: localTestEnv() });
+      assert.match(summary.stdout, /line endings only: 1 checked-out file\(s\) differ from HEAD only by CRLF \(src\/beta\.js\)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks when a CRLF-only file comes with a real change", () => {
+    const dir = fixture();
+    try {
+      commitAlphaChange(dir);
+      write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
+      write(dir, "README.md", "not committed\n");
+      const run = runVerifyRange(dir);
+      assert.equal(run.status, 2, run.stdout + run.stderr);
+      const report = JSON.parse(run.stdout);
+      assert.match(report.reason, /requires a clean checkout/);
+      assert.equal(report.snapshot.line_ending_only_changes, undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

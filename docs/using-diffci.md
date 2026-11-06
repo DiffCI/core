@@ -24,6 +24,53 @@ npx @diffci.com/diffci@latest observe --no-send
 
 `observe --no-send` reports selected tests, fallback reasons, and command availability without executing the repository's tests or sending a report. It does not establish runtime savings.
 
+## Watch your changes
+
+```sh
+npx @diffci.com/diffci@latest watch
+```
+
+`watch` verifies the uncommitted changes after each save, the way `verify --changed` does, so the selection, result reuse, test order and coverage map all apply. A pass prints one line; anything else prints the full summary, failing tests included. It runs tests only; `--checks` adds lint, typecheck and the other checks. Saves made during a run start one more run after it, and files a run writes do not start another. Each run analyses the repository afresh, so it takes as long as `verify --changed`. Agents get the same answer without watching: `diffci init` installs a stop hook that verifies when the agent finishes a turn (see `docs/agent-installation.md`).
+
+## The outcome log, result reuse and test order
+
+Each `verify` run is appended to `.git/diffci/outcomes.jsonl`: the selection and why, the checks, the result, each test file's result and duration, and the failing tests. The file sits inside `.git`, so it is never committed and never sent. `diffci outcomes` summarises it. `--no-log` or `DIFFCI_OUTCOME_LOG=0` skips writing it.
+
+When the log already holds a pass of the exact same tree that covers the current run, `verify` reuses it and runs nothing. The receipt then carries `reused_from`. A pass covers the run when it was made with the same DiffCI and Node.js versions and either ran the full test command or selected every test selected now, and when every gate check the run would execute passed in it with the identical command. Failures are never reused. The tree includes the lockfile but not `node_modules`, so after reinstalling dependencies without changing the lockfile, pass `--no-reuse` (or set `DIFFCI_REUSE=0`) to run everything again. Reuse is off under `--policy enforce`.
+
+The log also orders the selection. Selected test files that failed in earlier runs (recent failures count more) and tests the change itself edited run first, so a failure shows up sooner. Ordering never drops a test, and it applies only when the selected command ends in the selected file paths; `--no-rank` keeps the selection's own order. `--fail-fast` runs those likely failures as a first batch and stops there if one fails, reporting how much of the selection did not run. `diffci outcomes --curve` replays the failing runs in the log, ranking each one only by the runs before it, and shows how much of the test time passes before the first failure, ranked against path order. With fewer than ten failing runs, read it as an early signal.
+
+## Tests the dependency graph cannot see
+
+Some tests reach a file without importing it: a fixture read by name, a directory listed, a module loaded through a framework or a computed path. `diffci coverage` runs your full test command once, with every `node --test` process under a probe and V8 coverage, and keeps, per test file, the files it loaded or read and the directories it listed in `.git/diffci/coverage-map.json`. It never leaves the machine. Rerun it when tests change; an old map only adds tests, it never drops one.
+
+`verify` then also runs the tests that map connects to a changed file when the dependency graph did not select them, with the reason `COVERAGE`, and lists them in the receipt's `coverage_added`. If the selected command cannot take an extra file safely, it runs the full suite instead. The map does not yet replace a full-suite fallback; that waits for a replay showing it misses nothing. Only `node --test` is supported, because Vitest and Jest run many files in one worker. `--no-coverage` or `DIFFCI_COVERAGE=0` ignores the map.
+
+## End-to-end specs and the routes they visit
+
+A Playwright spec reaches your application through a URL, not an import, so the dependency graph alone never connects `page.goto("/blog/hello")` to `app/blog/[slug]/page.tsx`. In a Next.js App Router project, DiffCI reads the literal URLs each spec visits (`page.goto(...)` and `request.get/post/...(...)` in files that import `@playwright/test`) and selects the specs that visit a route an affected page, route handler, layout or middleware serves, with the reason `ROUTE_VISIT`. Dynamic, catch-all and optional catch-all segments match as Next matches them, and route groups and parallel slots are ignored. A spec that visits a URL built at run time, such as `` `/blog/${slug}` ``, is selected whenever any route is affected, and so is every spec when an affected file's route cannot be derived. The Pages Router, intercepting routes and other frameworks' file routes are not modelled yet; their specs are still selected through any imports they have.
+
+## Split a selection across CI jobs
+
+`verify --shard i/N` runs job `i`'s share of the selection in an `N`-job matrix. Every job computes the same selection from the same commits and splits it the same way, so each selected test file runs in exactly one job:
+
+```yaml
+jobs:
+  verify:
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: npm ci
+      - run: npx @diffci.com/diffci@latest verify --base ${{ github.event.pull_request.base.sha }} --head ${{ github.sha }} --shard ${{ matrix.shard }}/3 --timings .diffci/timings.json
+```
+
+Without `--timings`, files are split by count. With it, they are split by time: `diffci outcomes --timings > .diffci/timings.json` writes each test file's typical duration from your local outcome log, and every job must read the same copy, for example a committed file. The jobs' own outcome logs are never used for the split, because they differ between jobs. When the change needs the full suite, or the selected command cannot be split, shard 1 runs everything and the other shards pass without running anything. Test-script phases and affected tests outside the full suite also run in shard 1.
+
 ## Recover a missing base in a shallow checkout
 
 DiffCI must be able to read both revisions, and the checkout must still be at the requested head. In CI, set `BASE` and `HEAD` to the full commit IDs supplied by the pull-request or merge-request event, then verify them before asking DiffCI for a plan:
@@ -100,8 +147,8 @@ five arrays of failures, plus `baselineProvided`:
 
 | Group | Meaning |
 | --- | --- |
-| `missed` | A skipped failure not present in the supplied base report. |
-| `possibleMisses` | A skipped failure with no base report or an ambiguous base identity; it may already have existed. |
+| `missed` | A skipped failure whose unique matching testcase passed in the supplied base report. |
+| `possibleMisses` | A skipped failure with no matching base pass, including absent, skipped or ambiguous base identities. |
 | `preExisting` | The same testcase failed in the supplied base report. |
 | `selected` | The failure maps to a file in `selectedTests`. |
 | `unattributed` | The file is missing, unknown or ambiguous; `reason` explains why. |
@@ -120,7 +167,8 @@ unattributed failures still exit 1, and invalid XML still exits 2.
 
 Run the command from the repository root, or supply `--repo /absolute/checkout`.
 Set `--root packages/web` when the reporter writes paths relative to that nested
-runner root. The default is `--root .`; neither root is guessed from report paths.
+runner root. Leading `./`, trailing slashes and Windows separators are accepted.
+The default is `--root .`; neither root is guessed from report paths.
 For example:
 
 ```sh
@@ -142,16 +190,20 @@ diffci check-plan --plan plan.json --results head-junit.xml --base-results base-
 ```
 
 Produce the base report from the plan's base revision using the same full-suite
-scope, reporter configuration and checkout path (or relative file metadata).
-Base failures match by mapped file, enclosing suite names, classname and testcase
-name, only when that identity occurs once in each report. Duplicate or missing
-testcase names cannot prove an old failure and stay possible misses when skipped.
-Unknown identities and
-suite-level errors remain unattributed even if they appear at base. Renamed tests
-or changed reporter labels do not match. The command cannot verify report
-provenance, completeness or whether a failure is flaky; `missed` means absent
-from the supplied base failures, not proven causation. With no base report,
-skipped failures are `possibleMisses`, never confirmed new misses.
+scope and reporter configuration. If it ran in a separate checkout, supply
+`--base-repo /base/checkout`; otherwise its absolute paths use `--repo` too.
+Relative file metadata uses the same `--root` for both reports. Base failures
+match by mapped file, enclosing suite names, classname and testcase name, only
+when that identity occurs once in each report. JS/TS path-valued suite names and
+classnames are normalized against their respective checkout roots.
+
+A skipped failure is `missed` only when its unique matching base testcase passed.
+Missing, skipped, duplicate or unnamed base identities stay `possibleMisses`.
+Unknown files and suite-level errors remain unattributed even if they appear at
+base. Renamed tests or changed reporter labels cannot establish a match. The
+command cannot verify report provenance, completeness or whether a failure is
+flaky; a base pass does not prove that the change caused the head failure.
+Without a base report, skipped failures are always `possibleMisses`.
 
 Both `--flag value` and `--flag=value` work. `check-plan --help` prints usage and
 exits 0 without reading inputs.
@@ -191,14 +243,18 @@ this first implementation.
 ### Scheduled full-suite check
 
 The [scheduled-job example](../examples/github-actions-check-plan.yml) builds
-DiffCI from source, saves a plan for the scheduled checkout, runs `npm run
-test:junit` in full, and compares the report even if that test step fails. Configure
-`test:junit` to run the project's normal complete suite with one of the reporters
-above. Pin the DiffCI checkout to a reviewed revision containing `check-plan`.
-The example leaves full-suite failures visible and also runs the full suite when
-plan creation fails. It supplies no base report, so skipped failures are possible
-misses. To classify existing failures, retain a full report for the plan's base
-revision and pass it with `--base-results`; do not substitute an unrelated green run.
+DiffCI from source, saves a plan for the scheduled checkout, and runs `npm run
+test:junit` in full at both the plan's base and head revisions. The base runs in
+a separate Git worktree with its own dependencies. Configure `test:junit` to run
+the project's normal complete suite with one of the reporters above. Pin the
+DiffCI checkout to a reviewed revision containing `check-plan`.
+
+The comparison receives both reports and their checkout roots, so matching old
+failures do not become possible-miss alarms. A failing base suite is valid
+comparison evidence. Head full-suite failures remain visible, and the head full
+suite also runs when plan creation fails. Missing or invalid reports fail the
+comparison; do not substitute an unrelated green run. Both reports, the plan and
+the comparison are retained as artifacts.
 
 The plan and head report must describe the same head revision and complete test
 scope; the optional base report must describe the plan's base revision. Standard
@@ -208,6 +264,11 @@ In particular, an error omitted by a reporter cannot be recovered. Each UTF-8 in
 is limited to 16 MiB. XML must contain a testcase or a suite-level failure. Suite-level failures/errors
 are retained as unattributed evidence alongside ordinary testcase failures. Both
 `check-plan` and `enforce-misses` use the same strict XML reader and file mapping.
+Enforcement keeps its existing v1 testcase IDs for stored baselines, separately
+from file attribution. A suite crash or missing file identity cannot create an
+unsafe-miss entry against a pull request. Invalid full-suite reports return exit
+2 without writing a miss report; invalid rerun reports leave the original
+failures in place and are treated as an unavailable rerun.
 Malformed XML, DOCTYPE declarations, namespaced elements, unsupported qualified
 metadata, excessive nesting/tags, more than 16 MiB of
 accumulated failure metadata and headers claiming
@@ -301,6 +362,23 @@ Dependency graph confidence is UNSAFE; full validation required
 
 Run `npm test` for this revision. Even though the report lists one selected test out of one discovered test, that count is not a runtime measurement or a savings claim. The computed import could reach modules static analysis did not discover, so only the repository's normal full validation remains authoritative. CLI behavior may evolve after version 0.3.2; keep the pinned version when reproducing this exact output.
 
+## Declare inputs the graph can't see
+
+Some files reach tests without an import: fixtures loaded by name, `.env.test`, a Prisma schema that generates the client, a migration a test applies. DiffCI looks for tests that name such a file and runs the full suite when it finds none. Declare the edge in `diffci.json` (or the `diffci` key in `package.json`) instead:
+
+```json
+{
+  "inputs": [
+    { "files": ["prisma/schema.prisma", "migrations/**"], "tests": ["src/db/**/*.test.ts"] },
+    { "files": ["fixtures/**", ".env.test"], "tests": ["tests/integration/**"] }
+  ]
+}
+```
+
+When a changed file matches `files`, every test matching `tests` is selected, with the reason `DECLARED_INPUT`. Declared tests are always added to what the dependency graph selects. For an unknown file, an unread asset or fixture, code under `ops/` outside the graph, a deleted file, and a database or infrastructure definition, a declaration that selects at least one test also replaces the full-suite fallback.
+
+Some changes still run the full suite whatever `inputs` says, because they change how every test runs: test-runner and tool configuration, `package.json` and workspace manifests, lockfiles and CI workflows. So does a declaration whose `tests` match no test file, and so does any edit to `diffci.json` itself, so a change cannot narrow its own selection.
+
 ## Interpret the result
 
 - A full-validation fallback means DiffCI could not justify a smaller selection for that change. Run the repository's normal tests.
@@ -312,20 +390,23 @@ Run `npm test` for this revision. Even though the report lists one selected test
 
 Each reason below is a message `check`, `observe` and `plan` can print when they fall back to the full suite. `…` stands for the part that changes per run, usually a path, package name or count. A reason that comes from a test-runner config or a workspace package starts with that file or package path. **Narrow** says whether a `diffci.json` (or `diffci` key in `package.json`) setting can avoid the fallback. "Fix" means the fallback comes from an invalid setting, and correcting it removes the fallback.
 
+For `Unknown changed file` and `Deleted source/asset`, `observe --json` also returns `fallbackDetails`: for each such file, every reader DiffCI could not resolve, with the files that lead to it (`.github/actions/a/action.yml names scripts/load.sh (via scripts/load.sh)` means the action runs a script that reads the changed file). The human report prints them under `why … is unknown`.
+
 ### Repository-wide changes
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
 | `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts` or `.babelrc` | No |
 | `Dependency manifest changed; full validation required` | Add `peerDependencies` or `engines` to `package.json` | No |
-| `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency or edit `scripts` or `exports` in `packages/a/package.json` (a `version` bump is narrowed) | No |
+| `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency in `packages/a/package.json` while a lockfile governs it, edit its `scripts`, or change `exports` to a `*` pattern (a `version` bump, a dependency bump in a repository that commits no lockfile, and an `exports` remap between files are narrowed) | No |
+| `… remaps an export to …, which is outside the dependency graph; full validation required` | Point an `exports` subpath at a file DiffCI does not analyse, such as a `.d.ts` outside every tsconfig | No |
 | `Lockfile changed; full validation required` | Regenerate `pnpm-lock.yaml` after changing its `settings` | No |
 | `CI workflow definition(s) changed; full validation required` | Change a step in `.github/workflows/ci.yml` that runs `npm test` | No |
-| `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | No |
-| `Database definition(s) changed; full validation required` | Add a file under `migrations/` | No |
+| `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | Yes: declare it in `inputs` |
+| `Database definition(s) changed; full validation required` | Add a file under `migrations/` | Yes: declare it in `inputs` |
 | `Language/framework configuration changed: …` | Edit `go.mod` or `pom.xml` | No |
-| `Unknown changed file: …` | Change a file type no adapter models, such as `data.bin` read at runtime | No |
-| `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | No |
+| `Unknown changed file: …` | Change a file type no adapter models, such as `data.bin` read at runtime | Yes: declare it in `inputs` |
+| `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | Yes: declare it in `inputs` |
 | `Lockfile readers could not be resolved: …; full validation required` | Change `yarn.lock` while repository code reads it in a way DiffCI cannot trace | No |
 
 ### Dependencies
@@ -350,7 +431,9 @@ Each reason below is a message `check`, `observe` and `plan` can print when they
 | `Repository declares … but no test files were discovered; full validation required` | `jest` is a dependency but every test lives under a directory DiffCI does not search | No |
 | `Changed test selection invariant violated: … directly changed test(s) not selected (…)` | Edit a test file DiffCI could not attach to the suite (an internal error) | No |
 | `Deleted test …; legacy coverage/dependents cannot be established safely` | Delete `src/a.test.ts` | No |
-| `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.ts` | No |
+| `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.css` while an unchanged `src/app.tsx` still imports it, or while a workflow step names it (renamed or deleted files whose importers all changed are narrowed) | Yes: declare it in `inputs` |
+| `Declared input … selects no tests; full validation required` | `inputs` names the changed file, but its `tests` globs match no test file | Fix: point `tests` at existing tests |
+| `Invalid inputs: each entry needs non-empty files and tests glob lists` | `"inputs": [{ "files": ["fixtures/**"] }]` | Fix: give every entry `files` and `tests` |
 | `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json` | No |
 | `Unsupported … …; root-relative test discovery requires full validation` | Set `root: "./src"` in `vitest.config.ts` or `rootDir` in `jest.config.js` | No |
 | `Multiple runner configurations require completely understood explicit test includes; full validation required` | Keep both `vitest.config.ts` and `jest.config.js` without explicit `include`/`testMatch` | No |

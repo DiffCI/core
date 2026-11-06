@@ -39,16 +39,20 @@ import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook, isGitRepository } from "./hook.js";
-import { MCP_CONFIG_PATHS, SKILL_PATH, writeMcpConfig, writeSkill } from "./agent-setup.js";
+import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATH, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
 import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
+import { formatJobSummary } from "./job-summary.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
-import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange } from "./verify.js";
+import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, type VerificationReport } from "./verify.js";
+import { startWatch } from "./watch.js";
+import { captureWorkingTreeSnapshot } from "./working-tree.js";
+import { decideStop, HOOK_AGENTS, maxAttempts, parseStopPayload, sessionAttempts, stopRepoPath, type HookAgent } from "./agent-stop.js";
 import { formatGateSummary, gateExitCode, planGate, runGate } from "./gate.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditEnforceWorkflows, auditWorkflows, isNonInterfering } from "./workflow-guard.js";
@@ -58,6 +62,9 @@ import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import { checkPlan } from "./check-plan.js";
+import { buildCoverageMap, formatCoverageRun } from "./coverage-map.js";
+import { confidenceCurve, formatConfidenceCurve } from "./test-ranking.js";
+import { parseShard, readTimings, timingsFromOutcomes, type TimingsFile } from "./test-shards.js";
 import {
   findReceipt,
   findWindowStart,
@@ -125,14 +132,14 @@ function runCheckPlanCommand(args: readonly string[]): number {
   try {
     const files = new Map<string, string>();
     if (args.length === 1 && args[0] === "--help") {
-      console.log("Usage: diffci check-plan --plan <file> --results <file> [--base-results <file>] [--root <reporter-root>] [--repo <checkout-root>]\nAccepts --flag=value. Without base results, skipped failures are possibleMisses. Exit 1: missed, possibleMisses or unattributed; exit 2: invalid input.");
+      console.log("Usage: diffci check-plan --plan <file> --results <file> [--base-results <file>] [--root <reporter-root>] [--repo <checkout-root>] [--base-repo <base-checkout-root>]\nAccepts --flag=value. Without base results, skipped failures are possibleMisses. Exit 1: missed, possibleMisses or unattributed; exit 2: invalid input.");
       return 0;
     }
     for (let index = 0; index < args.length; index += 1) {
       const token = args[index]!;
       const equals = token.indexOf("=");
       const flag = equals < 0 ? token : token.slice(0, equals);
-      if (!["--plan", "--results", "--base-results", "--root", "--repo"].includes(flag)) throw new Error(`Unsupported check-plan argument: ${flag}`);
+      if (!["--plan", "--results", "--base-results", "--root", "--repo", "--base-repo"].includes(flag)) throw new Error(`Unsupported check-plan argument: ${flag}`);
       if (files.has(flag)) throw new Error(`Repeated check-plan argument: ${flag}`);
       const value = equals < 0 ? args[++index] : token.slice(equals + 1);
       if (!value || value.startsWith("--")) throw new Error(`Missing file path for ${flag}`);
@@ -141,10 +148,12 @@ function runCheckPlanCommand(args: readonly string[]): number {
     const planPath = files.get("--plan");
     const resultsPath = files.get("--results");
     if (!planPath || !resultsPath) throw new Error("check-plan requires --plan <file> and --results <file>");
+    if (files.has("--base-repo") && !files.has("--base-results")) throw new Error("--base-repo requires --base-results");
     const plan: unknown = JSON.parse(readCheckPlanInput(planPath));
     const basePath = files.get("--base-results");
     const report = checkPlan(plan, readCheckPlanInput(resultsPath), {
       root: files.get("--root"), repoRoot: resolve(files.get("--repo") ?? process.cwd()),
+      baseRepoRoot: files.has("--base-repo") ? resolve(files.get("--base-repo")!) : undefined,
       baseResults: basePath === undefined ? undefined : readCheckPlanInput(basePath),
     });
     console.log(JSON.stringify(report));
@@ -194,7 +203,7 @@ What this does:
 New files the run writes are listed in the receipt (snapshot.written_during_verification) and do not block it;
 consider adding them to .gitignore. If verification changes existing files, review those changes and rerun DiffCI
 so the new snapshot is verified.
-If the repository has the DiffCI pre-push hook (\`diffci init --hook\`), a push verifies the pushed commits again; do not bypass it with \`--no-verify\` unless the user asks.
+If the repository has the DiffCI pre-push hook (\`diffci init\` installs it), a push verifies the pushed commits again; do not bypass it with \`--no-verify\` unless the user asks.
 Use \`observe --no-send\` when analysis without test execution is needed.
 
 Do not propose, commit, push, or deploy when \`safe_to_continue\` is false. If DiffCI is blocked, run the repository's normal required verification and report the blocker; required project CI remains authoritative.
@@ -369,6 +378,8 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   else for (const path of MCP_CONFIG_PATHS) writes.push(writeMcpConfig(repoPath, path, identity.version, force));
   if (flags["no-skill"] === true) skipped.push(`skipped ${SKILL_PATH} (--no-skill)`);
   else writes.push(writeSkill(repoPath, force));
+  if (flags["no-agent-hooks"] === true) skipped.push("skipped the agent stop hooks (--no-agent-hooks)");
+  else for (const agent of HOOK_AGENTS) writes.push(writeAgentStopHook(repoPath, agent, hookCommand(manager, identity.version)));
   if (flags["no-hook"] === true) skipped.push("skipped the pre-push hook (--no-hook)");
   else if (!isGitRepository(repoPath)) skipped.push("skipped the pre-push hook (not a Git repository; rerun init after git init)");
   else writes.push(installPrePushHook(repoPath, hookCommand(manager, identity.version), force));
@@ -378,6 +389,12 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   if (installed) console.log(`  ${installed}`);
   else console.log("  skipped package installation (pass --install to add an exact dev dependency)");
   for (const line of skipped) console.log(`  ${line}`);
+  const ignored = ignoredWrites(repoPath, writes);
+  if (ignored.length > 0) {
+    console.log(`\nWarning: .gitignore keeps ${ignored.length === 1 ? "this file" : "these files"} out of commits, so other checkouts and agent sessions will not get ${ignored.length === 1 ? "it" : "them"}:`);
+    for (const path of ignored) console.log(`  ${path}`);
+    console.log("Add an exception (for example !/.claude/skills/ after /.claude/*) or commit with git add -f.");
+  }
   if (!includeWorkflow) console.log("  skipped .github/workflows/diffci.yml (pass --workflow to add it)");
   if (!includeVerificationWorkflow) console.log("  skipped .github/workflows/diffci-verify.yml (pass --verification-workflow to add it)");
   console.log(`\nDefault agent command: ${agentCommand}`);
@@ -395,6 +412,95 @@ function runMcp(): number {
   if (typeof result.status === "number") return result.status;
   if (result.error) throw result.error;
   return 0;
+}
+
+async function runAgentStopCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
+  const agent = stringFlag(flags, "agent") as HookAgent | undefined;
+  if (!agent || !HOOK_AGENTS.includes(agent)) {
+    console.error(`diffci agent-stop needs --agent ${HOOK_AGENTS.join("|")}`);
+    return 2;
+  }
+  // Every exit is 0 with JSON on stdout: a hook that fails would neither stop the agent nor tell it why.
+  if (env.DIFFCI_AGENT_HOOK === "0") {
+    console.log("{}");
+    return 0;
+  }
+  const payload = parseStopPayload(await readStdin());
+  const repoPath = resolve(stopRepoPath(payload, env as Record<string, string | undefined>, process.cwd()));
+  const attempts = sessionAttempts(repoPath, payload);
+  let report: VerificationReport | undefined;
+  try {
+    const identity = observerIdentity();
+    report = await verifyChanged({
+      repoPath,
+      env: env as Record<string, string | undefined>,
+      version: identity.version,
+      engineSha: identity.sha,
+      // Below the hook's own timeout (agent-setup.ts), so the hook always answers.
+      timeoutMs: (AGENT_HOOK_TIMEOUT_SECONDS - 120) * 1000,
+      tailBytes: 12_000,
+      skipChecks: env.DIFFCI_CHECKS === "0",
+    });
+    appendOutcome(repoPath, report, env as Record<string, string | undefined>);
+  } catch {
+    report = undefined;
+  }
+  const decision = decideStop(agent, report, attempts.failures, maxAttempts(env as Record<string, string | undefined>));
+  attempts.record(decision.failures);
+  console.log(decision.stdout);
+  return 0;
+}
+
+function readStdin(): Promise<string> {
+  if (process.stdin.isTTY) return Promise.resolve("");
+  return new Promise((resolveText) => {
+    let text = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { text += chunk; });
+    process.stdin.on("end", () => resolveText(text));
+    process.stdin.on("error", () => resolveText(text));
+  });
+}
+
+async function runWatchCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? process.cwd());
+  const identity = observerIdentity();
+  const checks = flags.checks === true;
+  console.log(`DiffCI watching ${repoPath}: verifies the uncommitted changes after each save${checks ? "" : " (tests only; --checks adds lint, typecheck and other checks)"}. Ctrl+C stops.`);
+  const session = startWatch({
+    repoPath,
+    debounceMs: numberFlag(flags, "debounce-ms") ?? 300,
+    currentTree: () => { try { return captureWorkingTreeSnapshot(repoPath).treeSha; } catch { return undefined; } },
+    run: async () => {
+      const started = Date.now();
+      const report = await verifyChanged({
+        repoPath,
+        env: env as Record<string, string | undefined>,
+        version: identity.version,
+        engineSha: identity.sha,
+        timeoutMs: numberFlag(flags, "timeout-ms") ?? 30 * 60 * 1000,
+        tailBytes: 12_000,
+        skipChecks: !checks,
+      });
+      if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
+      console.log(formatWatchRun(report, Date.now() - started));
+      return { treeSha: report.snapshot.after_tree_sha ?? report.snapshot.before_tree_sha };
+    },
+  });
+  await new Promise<void>((resolveStop) => process.once("SIGINT", () => { session.stop(); resolveStop(); }));
+  return 0;
+}
+
+/** One line for a pass, the full summary for anything else, so a failure shows what broke. */
+function formatWatchRun(report: VerificationReport, wallMs: number): string {
+  const time = new Date().toTimeString().slice(0, 8);
+  if (report.selection === "none" && report.verification === "passed") return `${time}  no uncommitted changes`;
+  if (report.verification === "passed") {
+    const how = report.reused_from ? "reused an earlier pass of this tree" : `${report.selection} ${report.tests_selected} of ${report.tests_available} test files`;
+    return `${time}  passed  ${how}  (${(wallMs / 1000).toFixed(1)}s)`;
+  }
+  return `${time}  ${report.verification.toUpperCase()}
+${formatVerificationSummary(report)}`;
 }
 
 async function runVerifyCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
@@ -419,6 +525,25 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     console.error(`Refusing to write the verification receipt inside the repository: ${reportPath}. Use --out with a path outside the checkout.`);
     return 2;
   }
+  const shardFlag = stringFlag(flags, "shard");
+  const shard = shardFlag === undefined ? undefined : parseShard(shardFlag);
+  if (shardFlag !== undefined && !shard) {
+    console.error(`diffci verify --shard takes i/N with 1 <= i <= N, got ${JSON.stringify(shardFlag)}`);
+    return 2;
+  }
+  const timingsFlag = stringFlag(flags, "timings");
+  let timings: TimingsFile | undefined;
+  if (timingsFlag !== undefined) {
+    if (!shard) {
+      console.error("diffci verify --timings balances --shard; pass both");
+      return 2;
+    }
+    try { timings = readTimings(resolve(timingsFlag)); }
+    catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
+  }
   const identity = observerIdentity();
   const common = {
     repoPath,
@@ -431,6 +556,12 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     baselineOnFailure: flags["baseline-on-failure"] === true || env.DIFFCI_BASELINE_ON_FAILURE === "1",
     // Gate checks are for before push; in CI the repository's own check jobs already run them.
     skipChecks: flags["no-checks"] === true || env.DIFFCI_CHECKS === "0" || (Boolean(env.CI) && env.CI !== "false" && flags.checks !== true),
+    reuse: flags["no-reuse"] !== true && env.DIFFCI_REUSE !== "0",
+    rank: flags["no-rank"] !== true && env.DIFFCI_RANK !== "0",
+    failFast: flags["fail-fast"] === true,
+    coverage: flags["no-coverage"] !== true && env.DIFFCI_COVERAGE !== "0",
+    ...(shard ? { shard } : {}),
+    ...(timings ? { timings } : {}),
   };
   const report = changed
     ? await verifyChanged(common)
@@ -454,6 +585,18 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
   return verificationExitCode(report);
 }
 
+function runCoverageCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
+  const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  const command = stringFlag(flags, "command") ?? inferFullCommand(repoPath).command;
+  if (!command) {
+    console.error(`diffci coverage: no full test command could be inferred for ${repoPath}; pass --command`);
+    return 2;
+  }
+  const run = buildCoverageMap(repoPath, command, { timeoutMs: numberFlag(flags, "timeout-ms") ?? 60 * 60 * 1000 });
+  console.log(flags.json === true ? JSON.stringify({ ...(run.path ? { path: run.path } : {}), ...(run.error ? { error: run.error } : {}), exit_code: run.execution.exitCode, ...(run.map ? { tests: Object.keys(run.map.tests).length } : {}) }, null, 2) : formatCoverageRun(run));
+  return run.map ? 0 : 1;
+}
+
 function runOutcomesCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
   const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
   const path = outcomeLogPath(repoPath);
@@ -461,7 +604,17 @@ function runOutcomesCommand(flags: Record<string, string | boolean>, env: NodeJS
     console.error(`Not a Git repository: ${repoPath}`);
     return 2;
   }
-  const summary = summarizeOutcomes(readOutcomes(path));
+  const records = readOutcomes(path);
+  if (flags.timings === true) {
+    console.log(JSON.stringify(timingsFromOutcomes(records), null, 2));
+    return 0;
+  }
+  if (flags.curve === true) {
+    const curve = confidenceCurve(records);
+    console.log(flags.json === true ? JSON.stringify({ log: path, ...curve }, null, 2) : formatConfidenceCurve(curve));
+    return 0;
+  }
+  const summary = summarizeOutcomes(records);
   console.log(flags.json === true ? JSON.stringify({ log: path, ...summary }, null, 2) : formatOutcomeSummary(summary, path));
   return 0;
 }
@@ -578,9 +731,17 @@ function summarise(report: ObservationReport, executionFollows = false): string 
     } else {
       lines.push("  planned reduction: unavailable (no discovered tests); runtime savings unmeasured");
     }
-    lines.push(`  graph: ${result.graph.nodes} nodes, confidence ${result.graph.effectiveConfidence ?? result.graph.confidence}`);
+    const changeConfidence = result.graph.effectiveConfidence ?? result.graph.confidence;
+    lines.push(`  graph: ${result.graph.nodes} nodes, confidence ${changeConfidence} for this change`);
+    if (result.graph.confidence !== changeConfidence || (result.graph.confidenceReasons?.length && changeConfidence !== "COMPLETE")) {
+      lines.push(`  repository graph: ${result.graph.confidence}${result.graph.confidenceReasons?.length ? ` (${result.graph.confidenceReasons.join("; ")})` : ""}`);
+    }
     if (result.fallbackReasons.length > 0) {
       lines.push(`  fallback: ${result.fallbackReasons.join("; ")}`);
+      for (const [path, blockers] of Object.entries(result.fallbackDetails ?? {})) {
+        lines.push(`  why ${path} is unknown:`);
+        for (const blocker of blockers) lines.push(`    - ${blocker}`);
+      }
     }
     for (const command of result.proposedCommands) lines.push(`  would have run: ${command}`);
     if (result.commandRefusalReason) lines.push(`  no command: ${result.commandRefusalReason}`);
@@ -797,11 +958,7 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
   // says the same thing the report says, including when the answer is "refused" or "not sent".
   if (env.GITHUB_STEP_SUMMARY) {
     try {
-      writeFileSync(
-        env.GITHUB_STEP_SUMMARY,
-        `### DiffCI (observation only)\n\n\`\`\`\n${summary}${delivery ? `\n  delivery: ${delivery}` : ""}\n\`\`\`\n\n[Open-source engine: DiffCI/core](https://github.com/DiffCI/core)\n`,
-        { flag: "a" },
-      );
+      writeFileSync(env.GITHUB_STEP_SUMMARY, formatJobSummary(report, summary, delivery), { flag: "a" });
     } catch {
       // Losing the summary is cosmetic; the report on disk is the record.
     }
@@ -898,8 +1055,13 @@ function runEnforceMisses(flags: Record<string, string | boolean>, env: NodeJS.P
     console.error(`No full-suite results at ${junitPath}: nothing can be classified, so no miss can be ruled out.`);
     return 2;
   }
+  let fullRun: ReturnType<typeof parseJunit>;
+  try { fullRun = parseJunit(readCheckPlanInput(junitPath), repoPath); }
+  catch (error) {
+    console.error(`Cannot read full-suite JUnit: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
   const headSha = stringFlag(flags, "head") ?? execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim();
-  const fullRun = parseJunit(readFileSync(junitPath, "utf8"), repoPath);
   const failing = fullRun.filter((outcome) => outcome.failed);
   const runUrl = env.GITHUB_RUN_ID ? `${env.GITHUB_SERVER_URL ?? "https://github.com"}/${repository}/actions/runs/${env.GITHUB_RUN_ID}` : undefined;
   const notes: string[] = [];
@@ -913,9 +1075,13 @@ function runEnforceMisses(flags: Record<string, string | boolean>, env: NodeJS.P
     const rerunJunit = stringFlag(flags, "rerun-junit");
     const rerunArgs = inferRerunArgs(repoPath);
     const files = [...new Set(failing.map((outcome) => outcome.file).filter(Boolean))];
-    const rerun = rerunJunit
-      ? parseJunit(readFileSync(rerunJunit, "utf8"), repoPath)
-      : rerunArgs && files.length > 0 ? rerunFailingFiles(repoPath, rerunArgs, files) : undefined;
+    let rerun: ReturnType<typeof parseJunit> | undefined;
+    try {
+      rerun = rerunJunit ? parseJunit(readCheckPlanInput(rerunJunit), repoPath)
+        : rerunArgs && files.length > 0 ? rerunFailingFiles(repoPath, rerunArgs, files) : undefined;
+    } catch (error) {
+      notes.push(`rerun results unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (!rerun) notes.push("failures were not re-run, so none could be ruled flaky; every failure was treated as deterministic");
 
     const collect: CollectOptions = {
@@ -1159,11 +1325,15 @@ Open-source engine: https://github.com/DiffCI/core
 Pilot a repository: https://diffci.com/#pilot
 
 Usage:
-  diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--no-hook] [--no-mcp] [--no-skill] [--force]
+  diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--no-hook] [--no-mcp] [--no-skill]
+              [--no-agent-hooks] [--force]
+  diffci watch [--repo <path>] [--checks] [--debounce-ms <ms>] [--no-log]
+  diffci agent-stop --agent claude|codex|cursor   (run by the agent stop hooks init installs; reads the hook JSON on stdin)
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
-                [--share-usage] [--no-send] [--no-log]
+                [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
+                [--shard <i/N> [--timings <file>]] [--no-coverage]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -1189,13 +1359,17 @@ Usage:
   diffci gate --plan-out <file> [--base <sha> --head <sha>] [--script <name,...>] [--repo <path>]
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
-  diffci outcomes [--repo <path>] [--json]
+  diffci outcomes [--repo <path>] [--curve | --timings] [--json]
+  diffci coverage [--repo <path>] [--command <cmd>] [--timeout-ms <ms>] [--json]
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
 registers the DiffCI MCP server in .mcp.json (Claude Code) and .cursor/mcp.json (Cursor), keeping other
-servers, adds the diffci-verify skill to .claude/skills, and installs the pre-push hook; --no-mcp,
---no-skill and --no-hook leave each out. --workflow adds a separate non-blocking observation workflow. --install detects npm, pnpm, Yarn,
+servers, adds the diffci-verify skill to .claude/skills, installs the pre-push hook, and adds stop hooks
+(.claude/settings.json, .codex/hooks.json, .cursor/hooks.json) that run diffci agent-stop when an agent ends a
+turn: it verifies the uncommitted changes and, when tests or checks fail, asks the agent to fix them before
+finishing, at most DIFFCI_AGENT_HOOK_MAX times a session (default 3; DIFFCI_AGENT_HOOK=0 turns it off).
+--no-mcp, --no-skill, --no-hook and --no-agent-hooks leave each out. --workflow adds a separate non-blocking observation workflow. --install detects npm, pnpm, Yarn,
 or Bun, installs this DiffCI version as an exact dev dependency, updates the manager's lockfile,
 and adds diffci:verify, diffci:check, and diffci:observe package scripts without replacing existing scripts.
 --verification-workflow adds a blocking GitHub check that uploads a commit-bound verification receipt.
@@ -1210,7 +1384,7 @@ verify without --changed resolves the CI event range (or HEAD^..HEAD locally), r
 and exits zero only when the analyzed head is the commit that actually passed verification.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
 check-plan reads one saved plan and one full-suite JUnit result, and prints a JSON failure comparison.
-It exits 1 for missed or unattributed failures, 2 for invalid inputs, and 0 otherwise. It runs no tests,
+It exits 1 for missed, possible-miss or unattributed failures, 2 for invalid inputs, and 0 otherwise. It runs no tests,
 reads no Git state, writes no reports, and sends nothing. Each UTF-8 input must be at most 16 MiB.
 pilot runs observe and verify-savings together, writing reports to ../diffci-output by default.
 pilot-packet writes a shareable compatibility summary, raw observation, and non-blocking workflow
@@ -1232,10 +1406,24 @@ and writes DiffCI's decisions, for a gate that runs without git history; --plan 
 analysing, and --expect-head ignores a plan made for another commit. It sends nothing.
 enforce-misses classifies a full run's failures on main against the enforce dry-run receipts of the pull
 requests merged since the last recorded run, and exits 1 on a miss. It never edits configuration.
-verify appends each run (plan, selection reasons, checks, results, durations, failing tests) to
+verify appends each run (plan, selection reasons, checks, results, per-file durations, failing tests) to
 .git/diffci/outcomes.jsonl, which is never committed and never sent; --no-log or DIFFCI_OUTCOME_LOG=0 skips it.
+When an earlier run in that log passed on the exact same tree and covered the same tests and checks, verify
+reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again. Selected tests that have
+failed before in that log, or that the change edited, run first (--no-rank keeps the selection's order);
+--fail-fast runs them as a first batch and stops there if one fails. --shard i/N runs job i's share of the
+selection in an N-job CI matrix; every job splits it the same way, balanced by --timings (a file from
+diffci outcomes --timings that every job reads) or else by file count. The full suite, test-script phases
+and a selection that cannot be split run in shard 1.
+coverage runs the full node:test suite once under a probe and V8 coverage and keeps, per test file, the files
+it loaded, read or listed in .git/diffci/coverage-map.json. verify then also runs tests that map connects to a
+changed file when the dependency graph did not select them; it only ever adds tests (--no-coverage ignores it).
+watch verifies the uncommitted changes after each save, as verify --changed would, and prints one line per
+pass and the full summary on a failure; tests only unless --checks.
 outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
-misses (a selected run that passed and a later full run of the same tree that failed).
+misses (a selected run that passed and a later full run of the same tree that failed). --curve replays the
+failing runs to show how soon the first failure is seen, ranked by history against path order. --timings
+prints each test file's typical duration as JSON, for verify --shard --timings.
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.
 
 The report is sent only when both --api-url and --api-token are given (or DIFFCI_API_URL and
@@ -1293,6 +1481,12 @@ async function main(): Promise<void> {
     case "verify":
       process.exitCode = await runVerifyCommand(flags, env);
       return;
+    case "watch":
+      process.exitCode = await runWatchCommand(flags, env);
+      return;
+    case "agent-stop":
+      process.exitCode = await runAgentStopCommand(flags, env);
+      return;
     case "check":
       process.exitCode = await runCheck(flags, env);
       maybeShowFeedbackPrompt(flags, env);
@@ -1321,6 +1515,9 @@ async function main(): Promise<void> {
       return;
     case "enforce-misses":
       process.exitCode = runEnforceMisses(flags, env);
+      return;
+    case "coverage":
+      process.exitCode = runCoverageCommand(flags, env);
       return;
     case "outcomes":
       process.exitCode = runOutcomesCommand(flags, env);

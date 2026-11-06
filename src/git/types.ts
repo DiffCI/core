@@ -58,6 +58,15 @@ export interface GitDeltaAnalysis {
    * accounts for (2026-11-02). Its dependency effect is in changedDependencies, so ImpactAnalyzer
    * accepts no readers of the file itself. */
   packageJsonSpecifiersOnly?: boolean;
+  /** Every package.json, root or workspace, whose edit only changed dependency requests that
+   * changedDependencies accounts for (2026-11-05, lockfile-free repositories). Like
+   * packageJsonSpecifiersOnly, ImpactAnalyzer accepts no readers of these files. */
+  specifiersOnlyManifests?: string[];
+  /** Workspace manifests whose only behavioral edit remaps `exports` subpaths, with the repository paths
+   * those subpaths name before and after (exportsRemapTargets, 2026-11-06). ImpactAnalyzer treats each
+   * target as changed. With `dataChanged` (a version bump alongside) the manifest's readers are resolved
+   * like a data edit; without it the edit is fully modelled, so finding no reader is not a gap. */
+  exportsRemaps?: Record<string, { targets: string[]; dataChanged: boolean }>;
   /** The changed paths behind each flag above, so a fallback reason can name its files (2026-10-21:
    * "Configuration file(s) changed" was the most frequent reason in both telemetry cohorts and never
    * said which file). Absent on analyses produced before this field existed. */

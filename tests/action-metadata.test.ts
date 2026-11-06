@@ -45,7 +45,7 @@ async function cliVersion(): Promise<string> {
 test("public observer Action preserves the reviewed observer contract", async () => {
   const { raw, action } = await readAction();
 
-  assert.equal(action.name, "DiffCI Core observer");
+  assert.equal(action.name, "DiffCI change impact");
   assert.equal(action.runs.using, "composite");
   assert.deepEqual(Object.keys(action.inputs), [
     "repository-path",

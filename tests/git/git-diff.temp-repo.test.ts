@@ -187,6 +187,9 @@ describe("analyzeGitDelta temp repo", () => {
 
     it("still sets dependencyManifestChanged when dependencies actually change", async () => {
       writeFileSync(join(repoPath, "package.json"), JSON.stringify({ name: "fixture", version: "1.0.0", dependencies: { "left-pad": "1.0.0" } }));
+      // A committed lockfile that this change leaves alone: without one, the request change is attributed
+      // to right-pad instead (lockfile-free-dependencies.test.ts).
+      writeFileSync(join(repoPath, "package-lock.json"), JSON.stringify({ name: "fixture", lockfileVersion: 3, packages: {} }));
       commitAll(repoPath, "seed package.json with a dependency");
       const base = getSha(repoPath);
 

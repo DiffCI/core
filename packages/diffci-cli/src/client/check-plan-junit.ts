@@ -7,8 +7,8 @@ export interface JunitFailure {
   classname?: string;
   suite?: string;
   file?: string;
-  suiteFiles: string[];
-  suiteNames: string[];
+  suiteFiles: readonly string[];
+  suiteNames: readonly string[];
   suiteLevel?: boolean;
 }
 
@@ -18,6 +18,7 @@ export interface JunitFailures {
 }
 
 interface Suite {
+  metadata: Pick<JunitFailure, "suite" | "suiteFiles" | "suiteNames">;
   element: string;
   name?: string;
   file?: string;
@@ -78,21 +79,19 @@ export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boo
   const parser = new SaxesParser({ xmlns: true });
 
   function emit(failure: JunitFailure, failed: boolean, skipped: boolean): void {
-    // Bound inherited metadata for both consumers, including passing cases in enforce-misses.
-    for (const value of [failure.name, failure.classname, failure.file, failure.suite,
-      ...failure.suiteFiles, ...failure.suiteNames]) {
-      metadataBytes += value === undefined ? 0 : Buffer.byteLength(value, "utf8");
-      if (metadataBytes > MAX_BYTES) invalid("Failure metadata exceeds the 16 MiB limit.");
+    // Passing cases are transient callback data, not retained failure output.
+    if (failed) {
+      for (const value of [failure.name, failure.classname, failure.file, failure.suite,
+        ...failure.suiteFiles, ...failure.suiteNames]) {
+        metadataBytes += value === undefined ? 0 : Buffer.byteLength(value, "utf8");
+        if (metadataBytes > MAX_BYTES) invalid("Failure metadata exceeds the 16 MiB limit.");
+      }
+      result.failures.push(failure);
     }
-    if (failed) result.failures.push(failure);
     onCase?.(failure, failed, skipped);
   }
   function inherited(): Pick<JunitFailure, "suite" | "suiteFiles" | "suiteNames"> {
-    return {
-      suite: [...suites].reverse().find((suite) => suite.element === "testsuite")?.name,
-      suiteFiles: suites.flatMap((suite) => suite.file === undefined ? [] : [suite.file]),
-      suiteNames: suites.flatMap((suite) => suite.element !== "testsuite" || suite.name === undefined ? [] : [suite.name]),
-    };
+    return suites[suites.length - 1]?.metadata ?? { suiteFiles: [], suiteNames: [] };
   }
 
   // Keep the parser's default throwing error handler: partial XML is not evidence.
@@ -128,7 +127,13 @@ export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boo
       if (parent && parent.name !== "testsuite" && parent.name !== "testsuites") {
         invalid("A test suite must be inside a suite container.");
       }
+      const outer = inherited();
       const suite: Suite = {
+        metadata: {
+          suite: name === "testsuite" ? attributes.name : outer.suite,
+          suiteFiles: attributes.file === undefined ? outer.suiteFiles : [...outer.suiteFiles, attributes.file],
+          suiteNames: name !== "testsuite" || attributes.name === undefined ? outer.suiteNames : [...outer.suiteNames, attributes.name],
+        },
         element: name,
         name: attributes.name,
         file: attributes.file,
@@ -148,7 +153,7 @@ export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boo
         failed: attributes.failure !== undefined,
         errored: false,
         failure: {
-          name: attributes.name ?? "(unnamed testcase)",
+          name: attributes.name ?? "",
           classname: attributes.classname,
           file: attributes.file,
         },
@@ -200,10 +205,6 @@ export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boo
   return result;
 }
 
-export function parseJunitFailures(xml: string): JunitFailures {
-  return readJunit(xml);
-}
-
 /** Lexical mapping only: never guess the checkout root from a suffix or access the filesystem. */
 export function normalizeTestPath(value: string, repoRoot: string, root = "."): string {
   const slashed = value.replace(/\\/g, "/");
@@ -221,11 +222,24 @@ export function normalizeTestPath(value: string, repoRoot: string, root = "."): 
   return posix.normalize(posix.join(root, slashed));
 }
 
-export function junitFile(test: JunitFailure, repoRoot: string, root = "."): string {
-  if (test.suiteLevel) return "";
+export type JunitAttribution = { file: string } | { reason: string; candidates?: string[] };
+
+export function attributeJunitFile(test: JunitFailure, repoRoot: string, root = "."): JunitAttribution {
+  if (test.suiteLevel) return { reason: "Suite-level failure has no testcase file identity" };
   const explicit = test.file !== undefined ? [test.file] : test.suiteFiles;
   const values = explicit.length ? explicit : [test.classname, ...test.suiteNames]
     .filter((value): value is string => value !== undefined && /\.[cm]?[jt]sx?$/.test(value));
-  const candidates = values.map(value => normalizeTestPath(value, repoRoot, root));
-  return candidates.length && candidates.every(value => value !== "" && value === candidates[0]) ? candidates[0]! : "";
+  if (!values.length) return { reason: "No file attribute or recognizable JavaScript file metadata" };
+  const paths = values.map(value => normalizeTestPath(value, repoRoot, root));
+  const candidates = [...new Set(paths.filter(Boolean))].sort();
+  if (paths.some(path => !path || posix.isAbsolute(path) || win32.isAbsolute(path))) {
+    return { reason: "File path is invalid or outside the checkout; check --repo/--base-repo", candidates };
+  }
+  if (candidates.length !== 1) return { reason: "File metadata identifies multiple files", candidates };
+  return { file: candidates[0]! };
+}
+
+export function junitFile(test: JunitFailure, repoRoot: string, root = "."): string {
+  const attribution = attributeJunitFile(test, repoRoot, root);
+  return "file" in attribution ? attribution.file : "";
 }

@@ -12,6 +12,7 @@ import { directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, listsDirect
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
+import { isPlaywrightSpec, nextAppRoute, routeMatches, visitedRoutes } from "./route-visits.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
@@ -257,6 +258,8 @@ export class ImpactAnalyzer {
   private contentCleared: ReadonlySet<string> = new Set();
   private dependencyLockfile: string | undefined;
   private packageJsonSpecifiersOnly = false;
+  private specifiersOnlyManifests: ReadonlySet<string> = new Set();
+  private exportsRemaps: ReadonlyMap<string, { targets: readonly string[]; dataChanged: boolean }> = new Map();
   private readRepositoryFile: ((path: string) => string | undefined) | undefined;
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
@@ -266,7 +269,36 @@ export class ImpactAnalyzer {
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
   private unresolved: readonly UnresolvedDependency[] = [];
+  /** Why each changed file the reference resolver could not narrow is unresolvable, for fallbackDetails. */
+  private referenceBlockers = new Map<string, string[]>();
   private walkerTests: string[] | undefined;
+  private knownTests: string[] | undefined;
+  private declaredCovered = new Set<string>();
+
+  /** Test files known to the graph: nodes matching the profile's test globs or the test-file matcher. */
+  private knownTestPaths(profile: RepositoryProfile, graph: DependencyGraph): string[] {
+    if (this.knownTests) return this.knownTests;
+    const known = new Set<string>();
+    for (const testLocation of profile.tests) {
+      for (const node of graph.nodes) {
+        if (matchesTestGlob(node.path, testLocation.glob) || this.isTestFile(node.path)) known.add(node.path);
+      }
+    }
+    this.knownTests = [...known].sort();
+    return this.knownTests;
+  }
+
+  /**
+   * The tests the repository's declared inputs (src/repo/repo-config.ts, `inputs`) select for a changed
+   * path, or undefined when no declaration names the path (2026-11-05). An empty array means a declaration
+   * names it but its `tests` globs match nothing: a stale declaration, which must not stand in for evidence.
+   */
+  private declaredTests(path: string, profile: RepositoryProfile, graph: DependencyGraph): string[] | undefined {
+    const inputs = (profile.diffciConfig?.inputs ?? []).filter((input) => input.files.some((glob) => matchesTestGlob(path, glob)));
+    if (inputs.length === 0) return undefined;
+    const globs = inputs.flatMap((input) => input.tests);
+    return this.knownTestPaths(profile, graph).filter((test) => globs.some((glob) => matchesTestGlob(test, glob)));
+  }
 
   /** Dependents whose tests a change to `path` can affect. When the graph allows runtime selection
    * (DependencyGraphResult.runtimeTestSelection) an `import type` edge selects only type tests. */
@@ -298,8 +330,11 @@ export class ImpactAnalyzer {
     this.testPhases = new Set();
     this.workersOutsideSuite = undefined;
     this.walkerTests = undefined;
+    this.knownTests = undefined;
+    this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
     this.unresolved = graphResult.unresolved ?? [];
+    this.referenceBlockers = new Map();
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
     this.compiledProjectCache = undefined;
     // One read per file per analysis, however many changed files ask who reads them.
@@ -313,6 +348,8 @@ export class ImpactAnalyzer {
     this.contentCleared = referenceResolved;
     this.dependencyLockfile = delta.analysis.dependencyLockfile;
     this.packageJsonSpecifiersOnly = delta.analysis.packageJsonSpecifiersOnly === true;
+    this.specifiersOnlyManifests = new Set(delta.analysis.specifiersOnlyManifests ?? []);
+    this.exportsRemaps = new Map(Object.entries(delta.analysis.exportsRemaps ?? {}));
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
@@ -345,6 +382,18 @@ export class ImpactAnalyzer {
       if (allChangePaths(file).some((path) => /(?:^|\/)(?:diffci\.json|go\.(?:mod|sum|work)|go\.work\.sum|(?:vite|vue|nuxt)\.config\.[^/]+)$/.test(path))) {
         fallbackReasons.push(`Language/framework configuration changed: ${file.path}`);
       }
+    }
+
+    // Declared inputs (2026-11-05): a changed path a declaration names, with at least one test behind it,
+    // is covered - its tests are selected below instead of the unknown-file or database/infrastructure
+    // fallback. A declaration whose tests match nothing is stale and falls back.
+    for (const path of new Set(delta.files.flatMap(allChangePaths))) {
+      const tests = this.declaredTests(path, profile, graph);
+      if (tests === undefined) continue;
+      if (tests.length > 0) { this.declaredCovered.add(path); continue; }
+      const message = `Declared input ${path} selects no tests; full validation required`;
+      riskSignals.push({ level: "critical", reason: "DECLARED_INPUT", message, paths: [path] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
     }
 
     this.applyGlobalRiskRules(delta, riskSignals, fallbackReasons);
@@ -394,6 +443,7 @@ export class ImpactAnalyzer {
     this.collectDependencyChangeTests(delta, graphResult, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, riskSignals, fallbackReasons);
     this.handleStructuralNextLayout(changedImpacts, profile, affectedEntryPoints, affectedSources, evidence);
     this.handleAddedEntryPoints(delta, affectedEntryPoints, affectedSources, affectedTests, evidence, fallbackReasons);
+    this.collectRouteVisitTests(profile, graph, affectedEntryPoints, affectedTests, evidence);
     this.collectAlwaysRunTests(profile, graph, affectedTests, evidence, graphResult.profile.vueRuntimeAlwaysRunPaths ?? []);
     this.collectComputedImportTests(graphResult, graph, changedImpacts, affectedTests, evidence, riskSignals, fallbackReasons);
 
@@ -446,11 +496,22 @@ export class ImpactAnalyzer {
       riskSignals: dedupedRiskSignals,
       fallbackRequired,
       fallbackReasons,
+      ...(fallbackRequired && this.referenceBlockers.size ? { fallbackDetails: this.fallbackDetails(fallbackReasons) } : {}),
       analysisStatus,
       effectiveGraphConfidence,
       evidence: evidence.sort((a, b) => { const c = a.changedFile.localeCompare(b.changedFile); if (c !== 0) return c; return a.message.localeCompare(b.message); }),
       performance: { durationMs: Number(process.hrtime.bigint() - start) / 1_000_000 },
     };
+  }
+
+  /** Blockers of each file a fallback reason names, at most 20 files and 10 blockers each. */
+  private fallbackDetails(fallbackReasons: readonly string[]): Record<string, string[]> {
+    const details: Record<string, string[]> = {};
+    for (const [path, blockers] of [...this.referenceBlockers].sort(([a], [b]) => a.localeCompare(b))) {
+      if (Object.keys(details).length >= 20) break;
+      if (fallbackReasons.some((reason) => reason.includes(path))) details[path] = blockers.slice(0, 10);
+    }
+    return details;
   }
 
   private applyGlobalRiskRules(delta: GitDelta, riskSignals: ImpactRiskSignal[], fallbackReasons: string[]): void {
@@ -472,6 +533,12 @@ export class ImpactAnalyzer {
           // A wrangler config cannot reach a suite that never runs a Worker; processChangedPath resolves
           // its readers instead (2026-10-29).
           paths = paths.filter((path) => !isWorkerConfig(path));
+          if (paths.length === 0) continue;
+        }
+        if ((rule.signal === "infrastructure" || rule.signal === "database") && paths.length > 0) {
+          // A database or deployment definition the repository declared inputs for selects those tests in
+          // processChangedPath. Configuration, manifests, lockfiles and workflows stay global (2026-11-05).
+          paths = paths.filter((path) => !this.declaredCovered.has(path));
           if (paths.length === 0) continue;
         }
         const message = paths.length === 0 ? rule.message
@@ -673,6 +740,25 @@ export class ImpactAnalyzer {
     riskSignals: ImpactRiskSignal[],
     fallbackReasons: string[],
   ): void {
+    // Declared inputs add their tests to whatever the graph finds. For a covered path they also stand in
+    // for the reader evidence whose absence would otherwise fall back below (2026-11-05).
+    for (const test of this.declaredTests(changedPath, profile, graph) ?? []) {
+      this.addAffectedTest(changedPath, test, graph, affectedTests, "DECLARED_INPUT", evidence);
+    }
+    const covered = this.declaredCovered.has(changedPath);
+    // An `exports` remap reaches the importers of each subpath it changed, which depend on the subpath's
+    // target at HEAD or at the base. A target gone at HEAD is a changed file of this delta or was never
+    // importable; one present but outside the graph has unknown importers.
+    for (const target of this.exportsRemaps.get(changedPath)?.targets ?? []) {
+      if (hasNode(graph, target)) {
+        evidence.push(makeEvidence("DEPENDENCY_MANIFEST", changedPath, `${changedPath} remaps an export to ${target}`, target));
+        this.processSourceChange(target, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+      } else if (this.repositoryFiles?.has(target) ?? true) {
+        const message = `${changedPath} remaps an export to ${target}, which is outside the dependency graph; full validation required`;
+        riskSignals.push({ level: "critical", reason: "DEPENDENCY_MANIFEST", message, paths: [changedPath] });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+      }
+    }
     // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
     // Traverse it before generic unknown/docs classification can discard the dependency.
     if (this.goEmbedPaths.has(changedPath)) {
@@ -712,25 +798,18 @@ export class ImpactAnalyzer {
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       return;
     }
-    if (category === "test-fixture") {
-      // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
-      // degrades to the unknown-file fallback below rather than being silently dropped.
-      const ownership = resolveTestFixtureOwners(changedPath, this.isTestFile, this.repositoryFiles);
-      if (ownership) {
-        for (const owner of ownership.owners) {
-          this.addAffectedTest(changedPath, owner, graph, affectedTests, "TEST_FIXTURE_OWNER", evidence);
-        }
-        evidence.push(makeEvidence("TEST_FIXTURE_OWNER", changedPath, `Test fixture ${changedPath} under ${ownership.fixtureDir} is owned by ${ownership.owners.length} test(s) in ${ownership.testsDir} (${ownership.scope})`));
-        return;
-      }
-    }
+    // Resolved per change PATH (a rename's old path resolves independently); an unresolvable side
+    // degrades to the unknown-file fallback below rather than being silently dropped.
+    if (category === "test-fixture" && this.claimFixture(changedPath, graph, affectedTests, evidence)) return;
     if (category === "unknown" || category === "test-fixture") {
       // A package.json edit limited to dependency requests is covered by dependency selection, like
       // the lockfile above, so finding no reader is not a gap. Tooling that loads a file naming it
       // still is (2026-11-02).
-      const specifiersOnly = changedPath === "package.json" && this.packageJsonSpecifiersOnly;
+      const specifiersOnly = (changedPath === "package.json" && this.packageJsonSpecifiersOnly) || this.specifiersOnlyManifests.has(changedPath)
+        || this.exportsRemaps.get(changedPath)?.dataChanged === false;
       const options = specifiersOnly ? { allowNoReaders: true, implicitReadersUnresolvable: true } : {};
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)) return;
+      if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -743,8 +822,12 @@ export class ImpactAnalyzer {
     if (isAssetFilePath(changedPath) && !hasNode(graph, changedPath) && !removed && !isDocumentationFile(changedPath, this.layout) && !isLockfile(changedPath)) {
       // An asset no module imports can still be read from disk by a test. It used to select nothing
       // and require nothing, which is a silent skip; it now needs reader evidence like any other
-      // non-code file (2026-10-21).
+      // non-code file (2026-10-21). Assets (`.json`, `.txt`) are classified before fixture ownership is
+      // tried, so a fixture no module imports is claimed here (2026-11-05: LobeHub's
+      // src/spawn/__fixtures__/copilotAcp/handshake.json beside the spawn tests).
+      if (this.claimFixture(changedPath, graph, affectedTests, evidence)) return;
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -754,6 +837,7 @@ export class ImpactAnalyzer {
     if (isAssetFilePath(changedPath)) {
       if (removed && !hasNode(graph, changedPath)) {
         if (this.resolveRemovedFile(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+        if (covered) return;
         const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
         evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
         riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
@@ -765,6 +849,7 @@ export class ImpactAnalyzer {
     }
     if (category === "infrastructure" && isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite()) {
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (covered) return;
       const message = `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
@@ -782,6 +867,7 @@ export class ImpactAnalyzer {
       // its readers are resolved like any other non-code file. A deployment definition that names it
       // (wrangler.*, Dockerfile) runs it without naming anything a test would, so that stays global.
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { implicitReadersUnresolvable: true })) return;
+      if (covered) return;
       const message = `Infrastructure code ${changedPath} is outside the dependency graph; full validation required`;
       evidence.push(makeEvidence("INFRASTRUCTURE_GLOBAL", changedPath, message));
       riskSignals.push({ level: "critical", reason: "INFRASTRUCTURE_GLOBAL", message, paths: [changedPath] });
@@ -794,6 +880,7 @@ export class ImpactAnalyzer {
     }
     if (changedImpact.file.changeType === "deleted" && !hasNode(graph, changedPath)) {
       if (this.resolveRemovedFile(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (covered) return;
       const message = `Deleted source/asset ${changedPath} not present in HEAD dependency graph; legacy dependents cannot be determined`;
       evidence.push(makeEvidence("DELETED_FILE_UNKNOWABLE_GRAPH", changedPath, message));
       riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
@@ -801,6 +888,15 @@ export class ImpactAnalyzer {
       return;
     }
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+  }
+
+  /** Selects the tests that own `path` as a test fixture (src/repo/test-fixture-ownership.ts), if any do. */
+  private claimFixture(path: string, graph: DependencyGraph, affectedTests: Map<string, TestImpact>, evidence: ImpactEvidence[]): boolean {
+    const ownership = resolveTestFixtureOwners(path, this.isTestFile, this.repositoryFiles);
+    if (!ownership) return false;
+    for (const owner of ownership.owners) this.addAffectedTest(path, owner, graph, affectedTests, "TEST_FIXTURE_OWNER", evidence);
+    evidence.push(makeEvidence("TEST_FIXTURE_OWNER", path, `Test fixture ${path} under ${ownership.fixtureDir} is owned by ${ownership.owners.length} test(s) in ${ownership.testsDir} (${ownership.scope})`));
+    return true;
   }
 
   /**
@@ -829,7 +925,9 @@ export class ImpactAnalyzer {
     // Conservative: any unresolved import whose last segment could name the file blocks, wherever it is.
     const importer = this.unresolved.find((ref) => !ref.computed && names.has(posix.basename(ref.specifier.split(/[?#]/)[0]!)));
     if (importer) {
-      evidence.push(makeEvidence("UNKNOWN_FILE", removedPath, `${importer.importer} imports ${importer.specifier}, which may have resolved to the removed ${removedPath}`));
+      const blocker = `${importer.importer} imports ${importer.specifier}, which may have resolved to the removed ${removedPath}`;
+      evidence.push(makeEvidence("UNKNOWN_FILE", removedPath, blocker));
+      this.referenceBlockers.set(removedPath, [blocker]);
       return false;
     }
     if (!this.resolveByReference(removedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { implicitReadersUnresolvable: true, removed: true })) return false;
@@ -910,7 +1008,9 @@ export class ImpactAnalyzer {
       workerConfigsOutsideSuite: this.workerConfigsOutsideSuite(),
     });
     if (resolution.unresolvable.length > 0) {
-      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, `References to ${changedPath} could not be resolved: ${resolution.unresolvable[0]}`));
+      const blockers = resolution.blockers.map(({ reason, chain }) => chain.length > 1 ? `${reason} (via ${chain.slice(1).join(" <- ")})` : reason);
+      this.referenceBlockers.set(changedPath, blockers);
+      evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, `References to ${changedPath} could not be resolved: ${blockers.slice(0, 5).join("; ")}${blockers.length > 5 ? `; and ${blockers.length - 5} more` : ""}`));
       return false;
     }
     for (const reader of resolution.readers) {
@@ -1205,6 +1305,39 @@ export class ImpactAnalyzer {
     }
   }
 
+  /** Playwright specs that visit an affected Next.js route (route-visits.ts, 2026-11-06). Without the
+   * repository's contents no spec can be read, which leaves selection as the graph made it. */
+  private collectRouteVisitTests(
+    profile: RepositoryProfile,
+    graph: DependencyGraph,
+    affectedEntryPoints: Map<string, EntryPointImpact>,
+    affectedTests: Map<string, TestImpact>,
+    evidence: ImpactEvidence[],
+  ): void {
+    const read = this.readRepositoryFile;
+    if (!read) return;
+    const entries = [...affectedEntryPoints.values()].filter((entry) => entry.kind.startsWith("next-"));
+    if (entries.length === 0) return;
+    const specs = this.knownTestPaths(profile, graph).flatMap((path) => {
+      const source = read(path);
+      return source !== undefined && isPlaywrightSpec(source) ? [{ path, visits: visitedRoutes(source) }] : [];
+    });
+    if (specs.length === 0) return;
+    for (const entry of entries) {
+      const route = nextAppRoute(entry.path, entry.kind);
+      for (const spec of specs) {
+        const visited = route ? spec.visits.paths.find((path) => routeMatches(route, path)) : undefined;
+        const why = !route ? `${entry.path} has no route DiffCI can derive, so every end-to-end spec may reach it`
+          : visited ? `${spec.path} visits ${visited}, served by ${entry.path}`
+          : spec.visits.computed ? `${spec.path} visits a URL built at run time, which may be served by ${entry.path}`
+          : undefined;
+        if (!why) continue;
+        this.addAffectedTest(entry.path, spec.path, graph, affectedTests, "ROUTE_VISIT", evidence);
+        evidence.push(makeEvidence("ROUTE_VISIT", entry.path, why, spec.path));
+      }
+    }
+  }
+
   private collectAlwaysRunTests(
     profile: RepositoryProfile,
     graph: DependencyGraph,
@@ -1213,16 +1346,8 @@ export class ImpactAnalyzer {
     graphRuntimeTests: readonly string[],
   ): void {
     const alwaysRunPaths = new Set<string>([...(profile.vueTypeTestPaths ?? []), ...(profile.vueRuntimeAlwaysRunPaths ?? []), ...graphRuntimeTests]);
-    const knownTestPaths = new Set<string>();
-    for (const testLocation of profile.tests) {
-      for (const node of graph.nodes) {
-        if (matchesTestGlob(node.path, testLocation.glob) || this.isTestFile(node.path)) {
-          knownTestPaths.add(node.path);
-        }
-      }
-    }
     for (const check of [...this.alwaysRunChecks, ...alwaysRunChecksFromProfile(profile)]) {
-      for (const path of knownTestPaths) {
+      for (const path of this.knownTestPaths(profile, graph)) {
         if (check.patterns.some((pattern) => pattern.test(path))) { alwaysRunPaths.add(path); continue; }
         if (check.globs?.some((glob) => matchesTestGlob(path, glob))) alwaysRunPaths.add(path);
       }

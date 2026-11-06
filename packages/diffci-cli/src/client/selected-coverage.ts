@@ -2,6 +2,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join, matchesGlob, relative, sep } from "node:path";
 
+import { mergeTestFileResults, type TestFileResult } from "./test-results.js";
+
 /**
  * Selected tests the runner would never execute (2026-11-01).
  *
@@ -95,10 +97,20 @@ export function selectedNodeTests(command: string, selectedTests: readonly strin
 
 /** Records the file each node:test process starts for. node --test runs every file in a child process
  * with NODE_TEST_CONTEXT set and the file as argv[1]; NODE_OPTIONS reaches it through npx and tsx.
- * Under `--test-isolation=none` no child starts and the trace stays empty, which proves nothing. */
+ * Under `--test-isolation=none` no child starts and the trace stays empty, which proves nothing.
+ * Since 2026-11-06 the process also records, on exit, its file, its duration and its exit code: the
+ * per-file results test-results.ts cannot read from node:test's output. */
 const PROBE = `"use strict";
 if (process.env.NODE_TEST_CONTEXT && process.argv[1] && process.env.DIFFCI_NODE_TEST_TRACE) {
-  try { require("node:fs").appendFileSync(process.env.DIFFCI_NODE_TEST_TRACE, process.argv[1] + "\\n"); } catch {}
+  const fs = require("node:fs");
+  const file = process.argv[1];
+  const started = Date.now();
+  try { fs.appendFileSync(process.env.DIFFCI_NODE_TEST_TRACE, file + "\\n"); } catch {}
+  if (process.env.DIFFCI_NODE_TEST_RESULTS) {
+    process.on("exit", (code) => {
+      try { fs.appendFileSync(process.env.DIFFCI_NODE_TEST_RESULTS, JSON.stringify({ file, ms: Date.now() - started, code }) + "\\n"); } catch {}
+    });
+  }
 }
 `;
 
@@ -107,6 +119,8 @@ export interface NodeTestTrace {
   env: Record<string, string>;
   /** Repository-relative paths of the files that started, or undefined when none did. */
   read(): string[] | undefined;
+  /** Each test process that exited: its file, duration and whether it passed. */
+  results(): TestFileResult[];
   dispose(): void;
 }
 
@@ -114,18 +128,31 @@ export function traceNodeTestFiles(cwd: string, nodeOptions = process.env.NODE_O
   const dir = mkdtempSync(join(tmpdir(), "diffci-node-test-trace-"));
   const probe = join(dir, "probe.cjs");
   const log = join(dir, "started.txt");
+  const resultsLog = join(dir, "results.jsonl");
   writeFileSync(probe, PROBE);
   // NODE_OPTIONS reads a backslash inside double quotes as an escape; forward slashes work on Windows.
   const required = `--require "${probe.split(sep).join("/")}"`;
   const real = (path: string) => { try { return realpathSync.native(path); } catch { return path; } };
+  const repoRelative = (file: string) => relative(real(cwd), real(file)).split(sep).join("/");
   return {
-    env: { NODE_OPTIONS: nodeOptions?.trim() ? `${nodeOptions} ${required}` : required, DIFFCI_NODE_TEST_TRACE: log },
+    env: { NODE_OPTIONS: nodeOptions?.trim() ? `${nodeOptions} ${required}` : required, DIFFCI_NODE_TEST_TRACE: log, DIFFCI_NODE_TEST_RESULTS: resultsLog },
     read() {
       let lines: string[];
       try { lines = readFileSync(log, "utf8").split("\n").filter(Boolean); } catch { return undefined; }
-      const root = real(cwd);
-      const files = lines.map((file) => relative(root, real(file)).split(sep).join("/"));
+      const files = lines.map(repoRelative);
       return files.length ? [...new Set(files)].sort() : undefined;
+    },
+    results() {
+      let lines: string[];
+      try { lines = readFileSync(resultsLog, "utf8").split("\n").filter(Boolean); } catch { return []; }
+      return mergeTestFileResults(lines.flatMap((line) => {
+        try {
+          const { file, ms, code } = JSON.parse(line) as { file: string; ms: number; code: number };
+          return [{ file: repoRelative(file), status: code === 0 ? "passed" as const : "failed" as const, ms }];
+        } catch {
+          return [];
+        }
+      }));
     },
     dispose() { rmSync(dir, { recursive: true, force: true }); },
   };

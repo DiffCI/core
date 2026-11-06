@@ -77,3 +77,61 @@ describe("maintainer review regressions", () => {
     assert.throws(() => parseJunit('<testsuite><testcase file="a" name="broken"><failure/>', "/repo"));
   });
 });
+
+describe("second maintainer review regressions", () => {
+  it("keeps a suite crash unattributed instead of blaming selected receipts", async () => {
+    const { buildMissReport } = await import("../../src/client/enforce-misses.js");
+    const report = buildMissReport({
+      fullRun: parseJunit('<testsuite><error message="setup crashed at /tmp/123"/></testsuite>', "/repo"),
+      rerun: undefined, baseline: [], headSha: "head", producedAt: "now", window: { from_sha: "base", source: "detector-record" },
+      pullRequests: [{ number: 7, mergeSha: "merge", headSha: "pr", receipt: { artifact: "receipt", report: { schema: "diffci.verification.v1", selection: "selected", selected_tests: ["tests/other.js"] } } }],
+    });
+    assert.equal(report.failures[0].classification, "unattributed");
+    assert.deepEqual(report.open_unsafe_misses, []);
+  });
+  it("retains stored enforcement ids when file identity comes from a suite or classname", async () => {
+    const input = '<testsuite name="suite" file="tests/a.test.js"><testcase name="old" classname="tests/a.test.js"><failure/></testcase></testsuite>';
+    assert.equal(parseJunit(input, "/repo")[0].id, " > suite > old");
+    const { buildMissReport } = await import("../../src/client/enforce-misses.js");
+    const report = buildMissReport({
+      fullRun: parseJunit(input, "/repo"), rerun: undefined, baseline: [" > suite > old"],
+      headSha: "head", producedAt: "now", window: { from_sha: "base", source: "detector-record" },
+      pullRequests: [{ number: 7, mergeSha: "merge", headSha: "pr", receipt: { artifact: "receipt", report: { schema: "diffci.verification.v1", selection: "selected", selected_tests: ["tests/other.js"] } } }],
+    });
+    assert.equal(report.failures[0].classification, "pre-existing");
+    assert.deepEqual(report.open_unsafe_misses, []);
+    assert.equal(parseJunit(xml(tc("tests/../tests/a.test.js")), "/repo")[0].id, "tests/../tests/a.test.js > suite > fails");
+  });
+  it("treats absent base identities as uncertain rather than proven new failures", () => {
+    const r = checkPlan(plan, xml(tc(plan.skippedTests[0])), { baseResults: xml(tc("unmapped.js", "other", false)) });
+    assert.equal(r.summary.missed, 0);
+    assert.equal(r.summary.possibleMisses, 1);
+  });
+  it("maps base identities from a separate checkout, including path-valued suite names", () => {
+    const report = (checkout: string) => `<testsuite name="${checkout}/packages/web/tests/a.test.js"><testcase file="${checkout}/packages/web/tests/a.test.js" classname="${checkout}/packages/web/tests/a.test.js" name="old"><failure/></testcase></testsuite>`;
+    const r = checkPlan(plan, report("/head"), { repoRoot: "/head", baseRepoRoot: "/base", baseResults: report("/base") });
+    assert.equal(r.summary.preExisting, 1);
+    assert.equal(r.summary.missed, 0);
+  });
+  it("does not collapse distinct invalid path-valued labels into one base identity", () => {
+    const report = (label: string) => `<testsuite name="${label}"><testcase file="${plan.skippedTests[0]}" name="fails"><failure/></testcase></testsuite>`;
+    const r = checkPlan(plan, report("../head.test.js"), { baseResults: report("../base.test.js") });
+    assert.equal(r.summary.preExisting, 0);
+    assert.equal(r.summary.possibleMisses, 1);
+  });
+  it("accepts conventional spellings of the reporter root", () => {
+    for (const root of ["./packages/web", "packages/web/", "packages\\web"]) {
+      assert.equal(checkPlan(plan, xml(tc("tests/a.test.js")), { root }).summary.possibleMisses, 1);
+    }
+  });
+  it("does not charge repeated passing metadata against the failure budget", () => {
+    const input = `<testsuite name="${'s'.repeat(32768)}">${'<testcase name="passes"/>'.repeat(300)}</testsuite>`;
+    assert.equal(checkPlan(plan, input, { baseResults: input }).summary.failedTests, 0);
+  });
+  it("distinguishes missing, conflicting and unknown file metadata", () => {
+    assert.match(checkPlan(plan, xml('<testcase name="no metadata"><failure/></testcase>')).unattributed[0].reason, /No file/);
+    const r = checkPlan(plan, `<testsuite file="${plan.skippedTests[0]}"><testsuite file="${plan.selectedTests[0]}"><testcase name="conflict"><failure/></testcase></testsuite></testsuite>`);
+    assert.equal(r.unattributed[0].candidates?.length, 2);
+    assert.match(r.unattributed[0].reason, /multiple/);
+  });
+});

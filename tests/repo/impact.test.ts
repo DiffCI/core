@@ -541,3 +541,101 @@ describe("deleted asset safety", () => {
     });
   }
 });
+
+describe("end-to-end specs by the routes they visit (2026-11-06)", () => {
+  const sources: Record<string, string> = {
+    "e2e/blog.spec.ts": "import { test } from '@playwright/test'; test('blog', async ({ page }) => { await page.goto('/blog/hello'); });",
+    "e2e/about.spec.ts": "import { test } from '@playwright/test'; test('about', async ({ page }) => { await page.goto('/about'); });",
+    "e2e/search.spec.ts": "import { test } from '@playwright/test'; test('search', async ({ page }) => { await page.goto(`/search?q=${q}`); });",
+    "e2e/helpers.spec.ts": "import { test } from 'vitest'; test('not playwright', () => {});",
+  };
+  const graph = makeGraph(
+    ["src/app/blog/[slug]/page.tsx", "src/app/about/page.tsx", "src/components/header.tsx", ...Object.keys(sources)],
+    [["src/app/about/page.tsx", "src/components/header.tsx"]],
+  );
+  const profile = makeProfile({ next: true, entryPoints: ["src/app/blog/[slug]/page.tsx", "src/app/about/page.tsx"], tests: ["e2e/**/*.spec.ts"] });
+  const options = { readRepositoryFile: (path: string) => sources[path], repositoryFiles: new Set(graph.nodes.map((node) => node.path)) };
+  const selected = (r: ReturnType<typeof analyzer.analyze>) => r.affectedTests.map((t) => t.path);
+
+  it("selects specs visiting a route a changed component reaches, and specs with computed URLs", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/components/header.tsx", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), profile, options);
+    assert.strictEqual(result.fallbackRequired, false, result.fallbackReasons.join("; "));
+    assert.deepStrictEqual(selected(result), ["e2e/about.spec.ts", "e2e/search.spec.ts"]);
+    assert.ok(result.affectedTests.every((t) => t.reasons.includes("ROUTE_VISIT")));
+    assert.ok(result.evidence.some((e) => e.message === "e2e/about.spec.ts visits /about, served by src/app/about/page.tsx"));
+  });
+
+  it("matches a dynamic segment", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/app/blog/[slug]/page.tsx", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), profile, options);
+    assert.deepStrictEqual(selected(result), ["e2e/blog.spec.ts", "e2e/search.spec.ts"]);
+  });
+
+  it("leaves selection to the graph without repository contents", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/components/header.tsx", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), profile, { repositoryFiles: options.repositoryFiles });
+    assert.deepStrictEqual(selected(result), []);
+  });
+});
+
+describe("declared inputs (2026-11-05)", () => {
+  const graph = makeGraph(
+    ["src/db/client.ts", "src/db/client.test.ts", "src/db/query.test.ts", "src/ui/button.ts", "src/ui/button.test.ts"],
+    [["src/db/client.test.ts", "src/db/client.ts"], ["src/ui/button.test.ts", "src/ui/button.ts"]],
+  );
+  const declaring = (inputs: Array<{ files: string[]; tests: string[] }>): RepositoryProfile => ({ ...makeProfile(), diffciConfig: { inputs } });
+  const dbInputs = [{ files: ["prisma/**", "fixtures/users.csv"], tests: ["src/db/**/*.test.ts"] }];
+  const selected = (r: ReturnType<typeof analyzer.analyze>) => r.affectedTests.map((t) => t.path);
+
+  it("selects the declared tests for an otherwise unknown file instead of falling back", () => {
+    const delta = makeDelta("base", "head", [{ path: "fixtures/users.csv", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), declaring(dbInputs));
+    assert.strictEqual(result.fallbackRequired, false, result.fallbackReasons.join("; "));
+    assert.deepStrictEqual(selected(result), ["src/db/client.test.ts", "src/db/query.test.ts"]);
+    assert.ok(result.affectedTests.every((t) => t.reasons.includes("DECLARED_INPUT")));
+  });
+
+  it("still falls back for the same file when nothing declares it", () => {
+    const delta = makeDelta("base", "head", [{ path: "fixtures/users.csv", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), makeProfile());
+    assert.strictEqual(result.fallbackRequired, true);
+    assert.ok(result.riskSignals.some((s) => s.reason === "UNKNOWN_FILE"));
+  });
+
+  it("covers a database definition it declares, but not one it does not", () => {
+    const declared = makeDelta("base", "head", [{ path: "prisma/schema.prisma", changeType: "modified" }],
+      { databaseChanged: true, signalPaths: { database: ["prisma/schema.prisma"] } }, { modified: 1 });
+    const covered = analyzer.analyze(declared, makeDependencyGraphResult(graph), declaring(dbInputs));
+    assert.strictEqual(covered.fallbackRequired, false, covered.fallbackReasons.join("; "));
+    assert.deepStrictEqual(selected(covered), ["src/db/client.test.ts", "src/db/query.test.ts"]);
+
+    const mixed = makeDelta("base", "head", [{ path: "prisma/schema.prisma", changeType: "modified" }, { path: "migrations/001.sql", changeType: "added" }],
+      { databaseChanged: true, signalPaths: { database: ["prisma/schema.prisma", "migrations/001.sql"] } }, { modified: 1, added: 1 });
+    const partial = analyzer.analyze(mixed, makeDependencyGraphResult(graph), declaring(dbInputs));
+    assert.strictEqual(partial.fallbackRequired, true);
+    assert.ok(partial.fallbackReasons.some((r) => r.includes("migrations/001.sql") && !r.includes("prisma/schema.prisma")));
+  });
+
+  it("falls back when a declaration's tests match no test", () => {
+    const delta = makeDelta("base", "head", [{ path: "fixtures/users.csv", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), declaring([{ files: ["fixtures/**"], tests: ["src/gone/**/*.test.ts"] }]));
+    assert.strictEqual(result.fallbackRequired, true);
+    assert.ok(result.riskSignals.some((s) => s.reason === "DECLARED_INPUT"));
+  });
+
+  it("adds declared tests but keeps lockfiles global", () => {
+    const delta = makeDelta("base", "head", [{ path: "package-lock.json", changeType: "modified" }],
+      { lockfileChanged: true, signalPaths: { lockfile: ["package-lock.json"] } }, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), declaring([{ files: ["package-lock.json"], tests: ["src/db/**/*.test.ts"] }]));
+    assert.strictEqual(result.fallbackRequired, true);
+    assert.ok(result.riskSignals.some((s) => s.reason === "LOCKFILE_GLOBAL"));
+  });
+
+  it("adds declared tests to what the graph selects for a source change", () => {
+    const delta = makeDelta("base", "head", [{ path: "src/ui/button.ts", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(graph), declaring([{ files: ["src/ui/**"], tests: ["src/db/query.test.ts"] }]));
+    assert.strictEqual(result.fallbackRequired, false, result.fallbackReasons.join("; "));
+    assert.deepStrictEqual(selected(result), ["src/db/query.test.ts", "src/ui/button.test.ts"]);
+  });
+});

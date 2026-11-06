@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { it } from "node:test";
 import { analyzeRepository } from "../../src/repo/analyzer.js";
-import { planSelectiveTestCommands } from "../../src/planner/test-command.js";
+import { planSelectiveTestCommands, workspaceVitestScript } from "../../src/planner/test-command.js";
 import { declaredWorkspaceRoots } from "../../src/repo/workspaces.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
 
@@ -225,5 +225,35 @@ it("reports tests every including project excludes as outside the full suite, no
     // A test script that could run the excluded files keeps the refusal.
     write("package.json", JSON.stringify({ packageManager: "pnpm@10.0.0", scripts: { test: "vitest run && node --test apps/desktop" }, devDependencies: { vitest: "4.1.8" } }));
     assert.match(planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), selected).refusalReason!, /no declared Vitest project/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("parses launcher, config and output-only forms of a workspace Vitest script", () => {
+  assert.deepEqual(workspaceVitestScript("bunx vitest run --config vitest.config.mts --silent='passed-only'"), { config: "vitest.config.mts", typecheck: false });
+  assert.deepEqual(workspaceVitestScript("vitest --run"), { typecheck: false });
+  assert.deepEqual(workspaceVitestScript("pnpm exec vitest run -c ./vitest.unit.config.ts --typecheck"), { config: "vitest.unit.config.ts", typecheck: true });
+  for (const script of ["vitest --coverage", "lint && vitest run", "vitest run --config a.ts --config b.ts", "jest", undefined]) assert.equal(workspaceVitestScript(script), undefined, String(script));
+});
+
+it("routes a package script that names its config, and leaves a package without a test script to the root suite (2026-11-05)", () => {
+  const { dir, write } = rootProjectsFixture();
+  try {
+    write("pnpm-workspace.yaml", "packages:\n  - 'packages/**'\n  - 'apps/*'\n  - .\n  - e2e\n");
+    write("apps/server/package.json", JSON.stringify({ scripts: { build: "tsc" } }));
+    write("apps/desktop/package.json", JSON.stringify({ scripts: { test: "vitest --run" }, devDependencies: { vitest: "4.1.8" } }));
+    write("apps/desktop/vitest.config.mts", "export default {test:{include:['src/**/*.test.ts']}};");
+    write("apps/cli/package.json", JSON.stringify({ scripts: { test: "bunx vitest run --config vitest.config.mts --silent='passed-only'", "test:e2e": "bunx vitest run --config vitest.e2e.config.mts" }, devDependencies: { vitest: "4.1.8" } }));
+    write("apps/cli/vitest.config.mts", "export default {test:{include:['src/**/*.test.ts']}};");
+    write("apps/cli/vitest.e2e.config.mts", "export default {test:{include:['e2e/**/*.test.ts']}};");
+    write("apps/cli/src/c.test.ts", "import {test} from 'vitest'; test('c',()=>{});");
+    write("apps/cli/e2e/flow.test.ts", "import {test} from 'vitest'; test('f',()=>{});");
+    const plan = planSelectiveTestCommands(analyzeRepository({ repoPath: dir }), ["apps/cli/e2e/flow.test.ts", "apps/cli/src/c.test.ts", "apps/desktop/src/main/app.test.ts", "apps/server/src/router.test.ts"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands.map(c => [c.executable, ...c.args].join(" ")), [
+      "pnpm exec vitest run --config vitest.config.mts --project server apps/server/src/router.test.ts",
+      "pnpm --dir apps/cli exec vitest run --config vitest.config.mts src/c.test.ts",
+      "pnpm --dir apps/desktop exec vitest run --config vitest.config.mts src/main/app.test.ts",
+    ]);
+    assert.deepEqual(plan.outsideSuitePaths, ["apps/cli/e2e/flow.test.ts"]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

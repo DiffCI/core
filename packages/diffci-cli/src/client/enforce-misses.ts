@@ -14,7 +14,7 @@
  * a human to add; re-enabling enforcement is never automatic.
  */
 import { readJunit, junitFile } from "./check-plan-junit.js";
-export { normalizeTestPath } from "./check-plan-junit.js";
+import { isAbsolute, relative, resolve } from "node:path";
 
 import type { VerificationReport } from "./verify.js";
 
@@ -28,6 +28,7 @@ export interface TestOutcome {
   name: string;
   failed: boolean;
   skipped: boolean;
+  suiteLevel?: boolean;
 }
 
 /** The receipt fields the detector reads; older receipts may lack `selected_tests`. */
@@ -109,18 +110,29 @@ export interface MissReport {
 // ---------------------------------------------------------------------------------------------------
 // JUnit (node:test's `--test-reporter=junit`, which also matches the common Jest/Vitest shape)
 
+/** Legacy identity normalization: stored v1 detector baselines depend on these exact rules. */
+export function normalizeTestPath(path: string, repoRoot: string): string {
+  const slashed = path.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!slashed) return "";
+  if (!isAbsolute(path)) return slashed;
+  const inside = relative(resolve(repoRoot), resolve(path));
+  return inside && !inside.startsWith("..") && !isAbsolute(inside) ? inside.replace(/\\/g, "/") : slashed;
+}
+
 /** Testcases in document order. Repeated ids are merged: any failure wins. */
 export function parseJunit(xml: string, repoRoot: string): TestOutcome[] {
   const byId = new Map<string, TestOutcome>();
   readJunit(xml, (test, failed, skipped) => {
     const file = junitFile(test, repoRoot);
     const name = [...test.suiteNames, test.name].filter(Boolean).join(" > ");
-    const id = `${file} > ${name}`;
+    const id = `${normalizeTestPath(test.file ?? "", repoRoot)} > ${name}`;
     const seen = byId.get(id);
     if (seen) {
       seen.failed ||= failed;
       seen.skipped &&= skipped;
-    } else byId.set(id, { id, file, name, failed, skipped });
+      if (test.suiteLevel) seen.suiteLevel = true;
+      if (seen.file !== file) seen.file = "";
+    } else byId.set(id, { id, file, name, failed, skipped, ...(test.suiteLevel ? { suiteLevel: true } : {}) });
   });
   return [...byId.values()];
 }
@@ -177,6 +189,9 @@ export function classifyFailures(input: ClassifyInput): ClassifiedFailure[] {
     .filter((outcome) => outcome.failed)
     .map((outcome): ClassifiedFailure => {
       const base = { id: outcome.id, file: outcome.file, name: outcome.name };
+      if (outcome.suiteLevel || !outcome.file) {
+        return { ...base, classification: "unattributed", pull_requests: [], detail: "no testcase file identity; cannot attribute this failure to a pull request" };
+      }
       const again = rerun.get(outcome.id);
       if (again && !again.failed && !again.skipped) {
         return { ...base, classification: "flaky", pull_requests: [], detail: "passed when re-run" };
