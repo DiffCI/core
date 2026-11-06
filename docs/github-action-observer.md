@@ -1,7 +1,11 @@
-# DiffCI Core observer Action
+# DiffCI change impact Action
 
-The public `DiffCI/core` Action is an observation-only wrapper around the
-pinned published DiffCI CLI. It analyzes a checkout and writes a JSON report;
+The public `DiffCI/core` Action ("DiffCI change impact", formerly "DiffCI Core
+observer") is an observation-only wrapper around the pinned published DiffCI
+CLI. Its job summary leads with what the change affects: how many test files
+are affected and why each was selected, or that the full suite is needed and
+why, with the full text report collapsed below. It analyzes a checkout and
+writes a JSON report;
 it never runs tests, skips tests, cancels jobs, edits the checkout, comments on
 pull requests, or changes a check result unless `fail-on-error` is explicitly
 enabled for installation debugging.

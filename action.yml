@@ -1,5 +1,5 @@
-name: DiffCI Core observer
-description: Observation-only change-aware CI analysis. Runs nothing, changes nothing, skips nothing.
+name: DiffCI change impact
+description: Shows which tests a change affects, and why, in the job summary of every pull request. Observation only; skips nothing.
 branding:
   icon: eye
   color: gray-dark

@@ -44,6 +44,7 @@ import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
 import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
+import { formatJobSummary } from "./job-summary.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
@@ -847,11 +848,7 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
   // says the same thing the report says, including when the answer is "refused" or "not sent".
   if (env.GITHUB_STEP_SUMMARY) {
     try {
-      writeFileSync(
-        env.GITHUB_STEP_SUMMARY,
-        `### DiffCI (observation only)\n\n\`\`\`\n${summary}${delivery ? `\n  delivery: ${delivery}` : ""}\n\`\`\`\n\n[Open-source engine: DiffCI/core](https://github.com/DiffCI/core)\n`,
-        { flag: "a" },
-      );
+      writeFileSync(env.GITHUB_STEP_SUMMARY, formatJobSummary(report, summary, delivery), { flag: "a" });
     } catch {
       // Losing the summary is cosmetic; the report on disk is the record.
     }
