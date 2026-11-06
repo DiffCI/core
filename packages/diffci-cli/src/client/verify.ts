@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { batchCommand, measureCommands, orderCommand, splitCommand } from "./command-batches.js";
+import { batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
@@ -12,6 +12,7 @@ import type { ObservationCommitRange, ObservationReport, SelectionReason } from 
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
 import { outcomeLogPath, readOutcomes, reusablePass } from "./outcome-log.js";
 import { likelyFailures, rankTests, testHistory } from "./test-ranking.js";
+import { assignShards, type ShardSpec, type TimingsFile } from "./test-shards.js";
 import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
@@ -85,6 +86,8 @@ export interface VerificationReport {
   enforcement?: EnforcementDecision & { applied: boolean };
   /** Present when nothing ran because an earlier pass of this exact tree covered it (outcome-log.ts, reusablePass). */
   reused_from?: { produced_at: string; selection: "selected" | "full"; command?: string };
+  /** Present under `--shard i/N`: this job's share of the selection (test-shards.ts). */
+  shard?: { index: number; total: number; timings: "file" | "equal" };
 }
 
 interface VerifyOptions {
@@ -105,6 +108,9 @@ interface VerifyOptions {
   rank?: boolean;
   /** Run the likeliest failures first and stop there if one fails (`--fail-fast`). */
   failFast?: boolean;
+  /** Run only this job's share of the selection (`--shard i/N`), balanced by `timings` when given. */
+  shard?: ShardSpec;
+  timings?: TimingsFile;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -195,7 +201,8 @@ async function executeWithPolicy(
   // Under enforce, a fired fallback runs the full suite even where plain verify would block: an
   // unusable analysis is a reason to run everything, never a reason to pass with nothing run.
   const enforcedFull = enforcement !== undefined && enforcement.fired_fallback !== null;
-  const result = observation.result;
+  // Under --shard, narrowed to this job's share once the commands are built.
+  let result = observation.result;
   const range = observation.commitRange;
   const boundRange = scope === "commit-range" ? range : undefined;
   const counts = {
@@ -244,9 +251,45 @@ async function executeWithPolicy(
     return report;
   }
 
-  const { selection, command, commands, reason, outsideSuite } = enforcedFull || !result
+  // --shard i/N (test-shards.ts): this job's share of the selection, split the same way in every job.
+  const shard = options.shard;
+  const shardTests = shard && result && !enforcedFull && result.mode === "SELECTIVE"
+    ? assignShards(result.selectedTests, shard.total, options.timings)[shard.index - 1]!
+    : undefined;
+  const executable = enforcedFull || !result
     ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
-    : executableSelection(options.repoPath, result, rankedOrdering(options, result));
+    : executableSelection(options.repoPath, result, rankedOrdering(options, result), shard && shardTests ? { tests: new Set(shardTests), first: shard.index === 1 } : undefined);
+  const { selection, command, commands, reason, outsideSuite } = executable;
+  const unshardable = "unshardable" in executable && executable.unshardable;
+  const shardField = shard ? { shard: { index: shard.index, total: shard.total, timings: options.timings ? "file" as const : "equal" as const } } : {};
+  if (shard) {
+    const label = `${shard.index}/${shard.total}`;
+    const elsewhere = selection === "full" ? `the full suite runs in shard 1/${shard.total}`
+      : unshardable ? `the selected command cannot be split, so the whole selection runs in shard 1/${shard.total}`
+      : undefined;
+    if ((elsewhere && shard.index !== 1) || commands.length === 0) {
+      const why = elsewhere && shard.index !== 1 ? elsewhere : `shard ${label} has no selected test files`;
+      return {
+        ...baseReport(before, scope, boundRange),
+        verification: "passed",
+        safe_to_continue: true,
+        reason: `nothing to run in shard ${label}: ${why}`,
+        changed_files: counts.changedFiles,
+        tests_available: counts.testsAvailable,
+        tests_selected: 0,
+        selection: "none",
+        snapshot: { ...baseReport(before, scope, boundRange).snapshot, after_base_sha: before.baseSha, after_tree_sha: before.treeSha, unchanged: true },
+        analysis,
+        required_actions: [],
+        ...shardField,
+      };
+    }
+    if (selection === "selected" && !unshardable && shardTests && result) {
+      const reasons = result.selectionReasons;
+      result = { ...result, selectedTests: shardTests, ...(reasons ? { selectionReasons: Object.fromEntries(shardTests.flatMap((test) => reasons[test] ? [[test, reasons[test]!]] : [])) } : {}) };
+      counts.testsSelected = shardTests.length;
+    }
+  }
 
   if (!command) {
     const inferred = inferFullCommand(options.repoPath);
@@ -283,6 +326,7 @@ async function executeWithPolicy(
       analysis,
       required_actions: [],
       reused_from,
+      ...shardField,
     };
   }
   const checkBaseline = options.baselineOnFailure && checkBase && checkHead
@@ -405,6 +449,7 @@ async function executeWithPolicy(
     analysis,
     required_actions: verification === "passed" ? [] : [finalReason + baselineNote],
     ...(failureBaseline ? { failure_baseline: failureBaseline } : {}),
+    ...shardField,
   };
 }
 
@@ -598,7 +643,7 @@ function findReusablePass(options: VerifyOptions, treeSha: string, selection: "s
 }
 
 /** Shared executable plan for read-only agent selection and verification. */
-export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>, ordering?: SelectedOrdering) {
+export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>, ordering?: SelectedOrdering, shard?: { tests: ReadonlySet<string>; first: boolean }) {
   let selection: "selected" | "full";
   let command: string | undefined;
   let reason: string;
@@ -668,20 +713,31 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
     }
   }
 
+  // Under --shard each selected command keeps only the shard's files, and the test-script phases and the
+  // outside-suite command run in shard 1 (test-shards.ts, 2026-11-06). A command that cannot be cut
+  // safely leaves the whole selection to shard 1.
+  let shardParts: string[] | undefined;
+  let unshardable = false;
+  if (shard && selection === "selected" && command) {
+    const cut = (selectedParts ?? [primary ?? command]).map((part) => subsetCommand(part, result.selectedTests, shard.tests));
+    if (cut.some((part) => part === undefined)) unshardable = true;
+    else shardParts = cut.filter((part): part is string => typeof part === "string");
+  }
   // A single selected command runs its files likeliest failures first, and under --fail-fast as two
   // invocations, the likely ones and then the rest (test-ranking.ts, 2026-11-06).
-  const single = selection === "selected" && !selectedParts && ordering ? primary ?? command : undefined;
+  const singleSource = shardParts ? (shardParts.length === 1 ? shardParts[0] : undefined) : primary ?? command;
+  const single = selection === "selected" && !selectedParts && ordering ? singleSource : undefined;
   const ordered = single ? orderCommand(single, ordering!.order) : undefined;
   const primaryParts = ordered
     ? (ordering!.first?.length ? splitCommand(ordered, result.selectedTests, ordering!.first) : [ordered]).flatMap((part) => batchCommand(part, result.selectedTests))
     : undefined;
+  const extras = !shard || shard.first || unshardable ? [...primaryPhases, ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : [])] : [];
   // Each part stays within the shell's command-line limit (cmd.exe stops at 8,191 characters).
   const commands = command ? [
-    ...(selectedParts ?? primaryParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
-    ...primaryPhases,
-    ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : []),
+    ...(primaryParts ?? shardParts?.flatMap((part) => batchCommand(part, result.selectedTests)) ?? selectedParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
+    ...extras,
   ] : [];
-  return { selection, command: commands.length ? commands.join(" && ") : command, commands, reason, outsideSuite };
+  return { selection, command: commands.length ? commands.join(" && ") : shard ? undefined : command, commands, reason, outsideSuite, unshardable };
 }
 
 /** A test-script phase as a standalone command. `npm test` puts `node_modules/.bin` on PATH; outside

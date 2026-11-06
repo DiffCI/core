@@ -57,6 +57,7 @@ import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import { confidenceCurve, formatConfidenceCurve } from "./test-ranking.js";
+import { parseShard, readTimings, timingsFromOutcomes, type TimingsFile } from "./test-shards.js";
 import {
   findReceipt,
   findWindowStart,
@@ -359,6 +360,25 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     console.error(`Refusing to write the verification receipt inside the repository: ${reportPath}. Use --out with a path outside the checkout.`);
     return 2;
   }
+  const shardFlag = stringFlag(flags, "shard");
+  const shard = shardFlag === undefined ? undefined : parseShard(shardFlag);
+  if (shardFlag !== undefined && !shard) {
+    console.error(`diffci verify --shard takes i/N with 1 <= i <= N, got ${JSON.stringify(shardFlag)}`);
+    return 2;
+  }
+  const timingsFlag = stringFlag(flags, "timings");
+  let timings: TimingsFile | undefined;
+  if (timingsFlag !== undefined) {
+    if (!shard) {
+      console.error("diffci verify --timings balances --shard; pass both");
+      return 2;
+    }
+    try { timings = readTimings(resolve(timingsFlag)); }
+    catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
+  }
   const identity = observerIdentity();
   const common = {
     repoPath,
@@ -374,6 +394,8 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     reuse: flags["no-reuse"] !== true && env.DIFFCI_REUSE !== "0",
     rank: flags["no-rank"] !== true && env.DIFFCI_RANK !== "0",
     failFast: flags["fail-fast"] === true,
+    ...(shard ? { shard } : {}),
+    ...(timings ? { timings } : {}),
   };
   const report = changed
     ? await verifyChanged(common)
@@ -405,6 +427,10 @@ function runOutcomesCommand(flags: Record<string, string | boolean>, env: NodeJS
     return 2;
   }
   const records = readOutcomes(path);
+  if (flags.timings === true) {
+    console.log(JSON.stringify(timingsFromOutcomes(records), null, 2));
+    return 0;
+  }
   if (flags.curve === true) {
     const curve = confidenceCurve(records);
     console.log(flags.json === true ? JSON.stringify({ log: path, ...curve }, null, 2) : formatConfidenceCurve(curve));
@@ -1113,6 +1139,7 @@ Usage:
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
                 [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
+                [--shard <i/N> [--timings <file>]]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -1137,7 +1164,7 @@ Usage:
   diffci gate --plan-out <file> [--base <sha> --head <sha>] [--script <name,...>] [--repo <path>]
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
-  diffci outcomes [--repo <path>] [--curve] [--json]
+  diffci outcomes [--repo <path>] [--curve | --timings] [--json]
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
@@ -1182,10 +1209,14 @@ verify appends each run (plan, selection reasons, checks, results, per-file dura
 When an earlier run in that log passed on the exact same tree and covered the same tests and checks, verify
 reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again. Selected tests that have
 failed before in that log, or that the change edited, run first (--no-rank keeps the selection's order);
---fail-fast runs them as a first batch and stops there if one fails.
+--fail-fast runs them as a first batch and stops there if one fails. --shard i/N runs job i's share of the
+selection in an N-job CI matrix; every job splits it the same way, balanced by --timings (a file from
+diffci outcomes --timings that every job reads) or else by file count. The full suite, test-script phases
+and a selection that cannot be split run in shard 1.
 outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
 misses (a selected run that passed and a later full run of the same tree that failed). --curve replays the
-failing runs to show how soon the first failure is seen, ranked by history against path order.
+failing runs to show how soon the first failure is seen, ranked by history against path order. --timings
+prints each test file's typical duration as JSON, for verify --shard --timings.
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.
 
 The report is sent only when both --api-url and --api-token are given (or DIFFCI_API_URL and

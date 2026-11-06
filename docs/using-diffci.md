@@ -32,6 +32,27 @@ When the log already holds a pass of the exact same tree that covers the current
 
 The log also orders the selection. Selected test files that failed in earlier runs (recent failures count more) and tests the change itself edited run first, so a failure shows up sooner. Ordering never drops a test, and it applies only when the selected command ends in the selected file paths; `--no-rank` keeps the selection's own order. `--fail-fast` runs those likely failures as a first batch and stops there if one fails, reporting how much of the selection did not run. `diffci outcomes --curve` replays the failing runs in the log, ranking each one only by the runs before it, and shows how much of the test time passes before the first failure, ranked against path order. With fewer than ten failing runs, read it as an early signal.
 
+## Split a selection across CI jobs
+
+`verify --shard i/N` runs job `i`'s share of the selection in an `N`-job matrix. Every job computes the same selection from the same commits and splits it the same way, so each selected test file runs in exactly one job:
+
+```yaml
+jobs:
+  verify:
+    strategy:
+      matrix:
+        shard: [1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: npm ci
+      - run: npx @diffci.com/diffci@latest verify --base ${{ github.event.pull_request.base.sha }} --head ${{ github.sha }} --shard ${{ matrix.shard }}/3 --timings .diffci/timings.json
+```
+
+Without `--timings`, files are split by count. With it, they are split by time: `diffci outcomes --timings > .diffci/timings.json` writes each test file's typical duration from your local outcome log, and every job must read the same copy, for example a committed file. The jobs' own outcome logs are never used for the split, because they differ between jobs. When the change needs the full suite, or the selected command cannot be split, shard 1 runs everything and the other shards pass without running anything. Test-script phases and affected tests outside the full suite also run in shard 1.
+
 ## Recover a missing base in a shallow checkout
 
 DiffCI must be able to read both revisions, and the checkout must still be at the requested head. In CI, set `BASE` and `HEAD` to the full commit IDs supplied by the pull-request or merge-request event, then verify them before asking DiffCI for a plan:

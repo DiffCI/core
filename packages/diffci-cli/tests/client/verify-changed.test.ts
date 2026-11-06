@@ -187,6 +187,34 @@ describe("verify --changed", () => {
     }
   });
 
+  it("splits a selection across shards, each test in exactly one, and runs the full suite in shard 1 only", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+      write(dir, "src/beta.js", "export const beta = () => 2; // touched\n");
+      const verifyShard = (shard: string) => JSON.parse(spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--no-log", "--shard", shard], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() }).stdout);
+      const shards = [verifyShard("1/2"), verifyShard("2/2")];
+      for (const report of shards) {
+        assert.equal(report.verification, "passed", report.reason);
+        assert.equal(report.selection, "selected");
+        assert.equal(report.selected_tests.length, 1);
+        assert.ok(report.command.endsWith(report.selected_tests[0]), report.command);
+      }
+      assert.deepEqual(shards.map((report) => report.selected_tests[0]).sort(), ["test/alpha.test.js", "test/beta.test.js"]);
+      assert.deepEqual(shards[1].shard, { index: 2, total: 2, timings: "equal" });
+
+      // An unknown file falls back to the full suite, which only shard 1 runs.
+      write(dir, "data.bin", "x");
+      const second = verifyShard("2/2");
+      assert.equal(second.verification, "passed");
+      assert.equal(second.selection, "none");
+      assert.match(second.reason, /the full suite runs in shard 1\/2/);
+      assert.equal(verifyShard("1/2").selection, "full");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when selected verification fails", () => {
     const dir = fixture();
     try {

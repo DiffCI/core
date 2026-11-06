@@ -65,6 +65,17 @@ export function splitCommand(command: string, paths: readonly string[], first: r
   return [early, late].map((part) => `${tail.prefix} ${part.map((entry) => entry.token).join(" ")}`);
 }
 
+/**
+ * `command` keeping only the `keep` paths (`verify --shard`, test-shards.ts), `null` when it keeps none,
+ * or undefined when `command` does not end in exactly selected paths and so cannot be cut safely.
+ */
+export function subsetCommand(command: string, paths: readonly string[], keep: ReadonlySet<string>): string | null | undefined {
+  const tail = selectedTail(command, paths);
+  if (!tail) return undefined;
+  const kept = tail.tokens.filter((entry) => keep.has(entry.path));
+  return kept.length ? `${tail.prefix} ${kept.map((entry) => entry.token).join(" ")}` : null;
+}
+
 /** `command` split so each part fits `limit`, or `[command]` when it fits or cannot be split safely. */
 export function batchCommand(command: string, paths: readonly string[], limit = COMMAND_LINE_LIMIT): string[] {
   if (command.length <= limit || paths.length === 0) return [command];
