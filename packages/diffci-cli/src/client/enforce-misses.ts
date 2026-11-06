@@ -189,9 +189,6 @@ export function classifyFailures(input: ClassifyInput): ClassifiedFailure[] {
     .filter((outcome) => outcome.failed)
     .map((outcome): ClassifiedFailure => {
       const base = { id: outcome.id, file: outcome.file, name: outcome.name };
-      if (outcome.suiteLevel || !outcome.file) {
-        return { ...base, classification: "unattributed", pull_requests: [], detail: "no testcase file identity; cannot attribute this failure to a pull request" };
-      }
       const again = rerun.get(outcome.id);
       if (again && !again.failed && !again.skipped) {
         return { ...base, classification: "flaky", pull_requests: [], detail: "passed when re-run" };
@@ -201,6 +198,9 @@ export function classifyFailures(input: ClassifyInput): ClassifiedFailure[] {
       const rerunNote = !input.rerun ? "not re-run" : again ? "failed again when re-run" : "absent from the re-run";
       if (baseline.has(outcome.id)) {
         return { ...base, classification: "pre-existing", pull_requests: [], detail: `already failing at the start of the window; ${rerunNote}` };
+      }
+      if (outcome.suiteLevel || !outcome.file) {
+        return { ...base, classification: "unattributed", pull_requests: [], detail: `no testcase file identity; cannot attribute this failure to a pull request; ${rerunNote}` };
       }
       const pullRequests = input.pullRequests.map((pr) => ({
         number: pr.number,

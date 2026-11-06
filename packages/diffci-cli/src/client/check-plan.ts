@@ -121,7 +121,7 @@ export function checkPlan(planInput: unknown, junitXml: string, options: PlanChe
   function count(test: JunitFailure, counts: Map<string, number>, checkout: string): string | undefined {
     const file = junitFile(test, checkout, root);
     // Missing names and ambiguous file identities cannot establish an old failure.
-    if (!known.has(file) || !test.name || test.name === "(unnamed testcase)") return undefined;
+    if (!known.has(file) || !test.name) return undefined;
     const key = identity(test, file, checkout, root);
     counts.set(key, (counts.get(key) ?? 0) + 1);
     return key;
@@ -164,7 +164,7 @@ export function checkPlan(planInput: unknown, junitXml: string, options: PlanChe
       // Repeated or unnamed identities cannot tell whether the failing occurrence changed.
       const uncertain = !basePassed.has(key) || (headCounts.get(key) ?? 0) > 1
         || (baseCounts.get(key) ?? 0) > 1
-        || !failure.name || failure.name === "(unnamed testcase)";
+        || !failure.name;
       (uncertain ? possibleMisses : missed).push({ ...details, file });
     } else selected.push({ ...details, file });
   }

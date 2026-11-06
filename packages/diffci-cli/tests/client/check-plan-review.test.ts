@@ -79,6 +79,14 @@ describe("maintainer review regressions", () => {
 });
 
 describe("second maintainer review regressions", () => {
+  it("reports a suite crash already in the window baseline as pre-existing", async () => {
+    const { classifyFailures } = await import("../../src/client/enforce-misses.js");
+    const fullRun = parseJunit('<testsuite name="s"><error message="setup crashed"/></testsuite>', "/repo");
+    const [failure] = classifyFailures({ fullRun, rerun: undefined, baseline: [fullRun[0]!.id], pullRequests: [] });
+    assert.equal(failure!.classification, "pre-existing");
+    const [fresh] = classifyFailures({ fullRun, rerun: undefined, baseline: [], pullRequests: [] });
+    assert.equal(fresh!.classification, "unattributed");
+  });
   it("keeps a suite crash unattributed instead of blaming selected receipts", async () => {
     const { buildMissReport } = await import("../../src/client/enforce-misses.js");
     const report = buildMissReport({
