@@ -7,7 +7,8 @@ import type { DependencyGraphResult } from "../repo/types.js";
 // 4: bounded computed loads have edges, and results carry runtimeTestSelection (2026-11-03).
 // 5: inline type-only imports are type edges and vi.mock/jest.mock targets are edges (2026-11-04).
 // 6: the profile's diffciConfig carries declared `inputs` (2026-11-05).
-export const GRAPH_CACHE_SCHEMA_VERSION = "6";
+// 7: folded computed specifiers and root-absolute Vite globs have edges (2026-11-06).
+export const GRAPH_CACHE_SCHEMA_VERSION = "7";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

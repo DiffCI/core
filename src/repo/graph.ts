@@ -30,7 +30,7 @@ interface ImportRef {
   /** For a computed load whose target set is still bounded by literal text: `` import(`./x/${a}.json`) ``
    * or `import.meta.glob("./x/*.json")`. `base` is the literal directory prefix (a specifier ending in
    * "/"); `regex` matches paths relative to it. Unresolvable patterns keep the load computed. */
-  patterns?: { base: string; regex: string; negated: boolean }[];
+  patterns?: { base: string; regex: string; negated: boolean; viteRoot?: boolean }[];
   /** `import { type A, type B }` or `export { type A } from`: every specifier is inline `type`, so the
    * statement is erased unless the importer's tsconfig preserves imports (see `keepsTypeOnlyImports`). */
   inlineTypeOnly?: boolean;
@@ -59,15 +59,93 @@ const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"
 // A specifier may omit the extension or name a directory's index module.
 const OPTIONAL_MODULE_SUFFIX = "(?:\\.[A-Za-z0-9]+|/index\\.[A-Za-z0-9]+)?";
 
-/** `` `@/../locales/${lng}/${ns}.json` `` -> base "@/../locales/", each substitution matching any text. A
- * substitution can hold "/" so it matches across directories, which can only over-select. */
-function templatePattern(template: ts.TemplateExpression): ImportRef["patterns"] {
-  const head = template.head.text;
-  const cut = head.lastIndexOf("/");
-  if (cut < 0) return undefined;
-  const regex = escapeRegex(head.slice(cut + 1)) + template.templateSpans.map((span) => `.*${escapeRegex(span.literal.text)}`).join("");
-  return [{ base: head.slice(0, cut + 1), regex: `${regex}${OPTIONAL_MODULE_SUFFIX}`, negated: false }];
+/** A specifier expression folded into literal text and unknown holes (`undefined`), adjacent text joined. */
+type SpecifierParts = (string | undefined)[];
+
+/** `const` bindings with an initializer, by name, for names the file binds exactly once. A name bound
+ * twice anywhere (a parameter, a `let`, a second `const` in another scope) could mean either binding at
+ * a given use, so it is left out and its uses stay unknown. */
+function singleConstBindings(sourceFile: ts.SourceFile): Map<string, ts.Expression> {
+  const counts = new Map<string, number>();
+  const consts = new Map<string, ts.Expression>();
+  const count = (name: ts.BindingName | undefined) => {
+    if (!name) return;
+    if (ts.isIdentifier(name)) { counts.set(name.text, (counts.get(name.text) ?? 0) + 1); return; }
+    for (const element of name.elements) if (!ts.isOmittedExpression(element)) count(element.name);
+  };
+  // Source files parsed by the Program have no parent pointers, so `const` is read from the list.
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclarationList(node)) {
+      const isConst = (node.flags & ts.NodeFlags.Const) !== 0;
+      for (const declaration of node.declarations) {
+        if (isConst && ts.isIdentifier(declaration.name) && declaration.initializer) consts.set(declaration.name.text, declaration.initializer);
+      }
+    } else if (ts.isVariableDeclaration(node)) count(node.name);
+    else if (ts.isParameter(node) || ts.isBindingElement(node)) count(node.name);
+    else if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isFunctionExpression(node)) && node.name) count(node.name);
+    else if (ts.isImportClause(node) && node.name) count(node.name);
+    else if (ts.isImportSpecifier(node) || ts.isNamespaceImport(node)) count(node.name);
+    else if (ts.isImportEqualsDeclaration(node)) count(node.name);
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  for (const name of [...consts.keys()]) if (counts.get(name) !== 1) consts.delete(name);
+  return consts;
 }
+
+/** Folds string concatenation, templates and single `const` bindings (2026-11-06: LobeHub's
+ * `import('./genServerAiProviderConfig?v=' + Date.now())` and `const modulePath = '../x' + '.mts'`
+ * made both tests COMPUTED_IMPORT selections on every commit). Anything else is an unknown hole. */
+function specifierParts(expression: ts.Expression, consts: ReadonlyMap<string, ts.Expression>, depth = 0): SpecifierParts {
+  const join = (parts: SpecifierParts): SpecifierParts => {
+    const joined: SpecifierParts = [];
+    for (const part of parts) {
+      const last = joined.length - 1;
+      if (typeof part === "string" && typeof joined[last] === "string") joined[last] += part;
+      else if (part !== undefined || joined[last] !== undefined || last < 0) joined.push(part);
+    }
+    return joined;
+  };
+  if (depth > 8) return [undefined];
+  if (ts.isStringLiteral(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) return [expression.text];
+  if (ts.isParenthesizedExpression(expression)) return specifierParts(expression.expression, consts, depth + 1);
+  if (ts.isTemplateExpression(expression)) {
+    return join([expression.head.text, ...expression.templateSpans.flatMap((span) => [...specifierParts(span.expression, consts, depth + 1), span.literal.text])]);
+  }
+  if (ts.isBinaryExpression(expression) && expression.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = specifierParts(expression.left, consts, depth + 1);
+    // `+` concatenates only when one side is a string; two unknowns could be a numeric sum.
+    if (!left.some((part) => typeof part === "string")) {
+      const right = specifierParts(expression.right, consts, depth + 1);
+      return right.some((part) => typeof part === "string") ? join([...left, ...right]) : [undefined];
+    }
+    return join([...left, ...specifierParts(expression.right, consts, depth + 1)]);
+  }
+  if (ts.isIdentifier(expression)) {
+    const initializer = consts.get(expression.text);
+    if (initializer) return specifierParts(initializer, consts, depth + 1);
+  }
+  return [undefined];
+}
+
+/** A folded specifier: its literal text, or the patterns bounding it. A query (`?v=...`) selects no file
+ * of its own: Vite and Node strip it before resolving, so text after the first `?` is dropped. */
+function foldedSpecifier(parts: SpecifierParts): { literal: string } | { patterns: ImportRef["patterns"] } {
+  const cut: SpecifierParts = [];
+  for (const part of parts) {
+    if (typeof part === "string" && part.includes("?")) { cut.push(part.slice(0, part.indexOf("?"))); break; }
+    cut.push(part);
+  }
+  if (cut.every((part) => typeof part === "string")) return { literal: cut.join("") };
+  const head = typeof cut[0] === "string" ? cut[0] : "";
+  const slash = head.lastIndexOf("/");
+  if (slash < 0) return { patterns: undefined };
+  // A hole can hold "/" so it matches across directories, which can only over-select.
+  const regex = escapeRegex(head.slice(slash + 1)) + cut.slice(1).map((part) => part === undefined ? ".*" : escapeRegex(part)).join("");
+  return { patterns: [{ base: head.slice(0, slash + 1), regex: `${regex}${OPTIONAL_MODULE_SUFFIX}`, negated: false }] };
+}
+
+const VITE_CONFIG_NAMES = ["vite", "vitest"].flatMap((tool) => ["ts", "mts", "cts", "js", "mjs", "cjs"].map((ext) => `${tool}.config.${ext}`));
 
 /** One Vite `import.meta.glob` pattern; `[...]` classes are not translated and keep the load computed. */
 function globPattern(glob: string): NonNullable<ImportRef["patterns"]>[number] | undefined {
@@ -91,7 +169,8 @@ function globPattern(glob: string): NonNullable<ImportRef["patterns"]>[number] |
       i = close;
     } else regex += escapeRegex(char);
   }
-  return { base: body.slice(0, cut + 1), regex, negated };
+  // Vite resolves a glob starting with "/" from its project root, not the filesystem root.
+  return { base: body.slice(0, cut + 1), regex, negated, ...(body.startsWith("/") ? { viteRoot: true } : {}) };
 }
 
 function isImportMetaGlob(expression: ts.Expression): boolean {
@@ -190,6 +269,7 @@ function scopeShadowsRequire(scope: ts.Node): boolean {
 function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
   const refs: ImportRef[] = [];
   let shadowDepth = 0;
+  let consts: Map<string, ts.Expression> | undefined;
 
   function visit(node: ts.Node) {
     const shadows = scopeShadowsRequire(node);
@@ -221,12 +301,14 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       const isImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require" && shadowDepth === 0;
       if ((isImport || isRequire) && firstArg) {
-        const literal = ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg);
-        const patterns = ts.isTemplateExpression(firstArg) ? templatePattern(firstArg) : undefined;
+        const syntaxLiteral = ts.isStringLiteral(firstArg) || ts.isNoSubstitutionTemplateLiteral(firstArg);
+        const folded = foldedSpecifier(specifierParts(firstArg, consts ??= singleConstBindings(sourceFile)));
+        const literal = "literal" in folded;
+        const patterns = "patterns" in folded ? folded.patterns : undefined;
         refs.push({
-          specifier: literal ? firstArg.text : firstArg.getText(sourceFile).slice(0, 200),
+          specifier: syntaxLiteral ? firstArg.text : literal ? folded.literal : firstArg.getText(sourceFile).slice(0, 200),
           kind: isImport ? "dynamic-import" : "require",
-          dynamic: isImport || !literal,
+          dynamic: isImport || !syntaxLiteral,
           computed: !literal,
           ...(patterns ? { patterns } : {}),
         });
@@ -895,6 +977,22 @@ export async function buildDependencyGraph(
     addEdge(importerRel, assetRel, "asset");
   }
 
+  let fileSet: Set<string> | undefined;
+  /** Where Vite may resolve a root-absolute glob for this importer: each enclosing directory holding a
+   * Vite or Vitest configuration, and the repository root (Vite's default root when run from there).
+   * Matches in every candidate are unioned, which can only over-select (2026-11-06: LobeHub's
+   * `import.meta.glob('/locales/*\/ui.json')` kept two desktop tests selected on every commit). */
+  function viteRoots(importerAbs: string): string[] {
+    const roots = new Set<string>([repoPath]);
+    for (let directory = dirname(importerAbs); toRelativeInternal(repoPath, directory) !== undefined; directory = dirname(directory)) {
+      const rel = toRelativeInternal(repoPath, directory)!;
+      const prefix = rel === "." ? "" : `${rel}/`;
+      if (VITE_CONFIG_NAMES.some((name) => (fileSet ??= new Set(files)).has(prefix + name))) roots.add(directory);
+      if (rel === "." || dirname(directory) === directory) break;
+    }
+    return [...roots];
+  }
+
   /** Every repository file a bounded computed load can name, or undefined to keep it computed: the
    * base directory does not resolve, nothing matches, or a match is neither analyzed source nor an
    * asset. Alias directories resolve as in findAssetCandidate, and all candidates are unioned. */
@@ -905,8 +1003,9 @@ export async function buildDependencyGraph(
     const excluded = new Set<string>();
     for (const pattern of patterns) {
       const base = pattern.base.replace(/\/+$/, "") || ".";
-      if (base.startsWith("/")) return undefined;
-      const directories = base.startsWith(".") ? [resolve(dirname(importerAbs), base)]
+      if (base.startsWith("/") && !pattern.viteRoot) return undefined;
+      const directories = pattern.viteRoot ? viteRoots(importerAbs).map((root) => join(root, base))
+        : base.startsWith(".") ? [resolve(dirname(importerAbs), base)]
         : [...expandAliasCandidates(base, compilerAliases, aliasRoot), ...expandAliasCandidates(base, profile.pathAliases, repoPath)];
       const matcher = new RegExp(`^${pattern.regex}$`);
       for (const directory of directories) {
@@ -1578,6 +1677,26 @@ export function refineConfidenceForDelta(result: DependencyGraphResult, changedF
   // confidence would have been without the unresolved-import trigger (still respecting the
   // project-references cap, exactly as computeConfidence()'s own final two branches do).
   return result.resolvedViaProjectReferences ? "PARTIAL" : "COMPLETE";
+}
+
+/** Why the graph's own confidence is below COMPLETE, in counts only (no paths), so a report can say why a
+ * repository-wide UNSAFE did not decide this change's verdict. 2026-11-06: every LobeHub receipt read
+ * "UNSAFE" beside "safe to propose" with nothing connecting the two. Empty when the graph is COMPLETE. */
+export function explainGraphConfidence(result: DependencyGraphResult): string[] {
+  const reasons: string[] = [];
+  const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
+  if (result.graph.nodes.every((node) => !node.isSource)) reasons.push("no source files were analysed");
+  if (result.integrity.criticalCount > 0) reasons.push(`${plural(result.integrity.criticalCount, "graph integrity problem")}; every change falls back to full validation`);
+  if (result.adapterBlockers?.length) reasons.push(`${plural(result.adapterBlockers.length, "unsupported framework or language relationship")}; every change falls back to full validation`);
+  const computed = result.unresolved.filter((ref) => ref.computed);
+  const staticRefs = result.unresolved.filter((ref) => !ref.computed);
+  if (computed.length) {
+    const importers = new Set(computed.map((ref) => ref.importer)).size;
+    reasons.push(`${plural(computed.length, "computed module load")} in ${plural(importers, "file")}; the tests that run them are selected for every code change`);
+  }
+  if (staticRefs.length) reasons.push(`${plural(staticRefs.length, "unresolved import")}; a change that reaches one falls back to full validation`);
+  if (result.resolvedViaProjectReferences) reasons.push("compiler options are merged across TypeScript project references, which caps confidence at PARTIAL");
+  return reasons;
 }
 
 export function graphToJson(result: DependencyGraphResult): string {
