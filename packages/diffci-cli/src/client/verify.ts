@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-import { batchCommand, measureCommands } from "./command-batches.js";
+import { batchCommand, measureCommands, orderCommand, splitCommand } from "./command-batches.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
@@ -11,6 +11,7 @@ import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport, SelectionReason } from "./report.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
 import { outcomeLogPath, readOutcomes, reusablePass } from "./outcome-log.js";
+import { likelyFailures, rankTests, testHistory } from "./test-ranking.js";
 import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
 import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
@@ -100,6 +101,10 @@ interface VerifyOptions {
   skipChecks?: boolean;
   /** False runs everything even when an earlier pass of the same tree covers it (`--no-reuse`). */
   reuse?: boolean;
+  /** False keeps the selection's own order instead of likeliest failures first (`--no-rank`). */
+  rank?: boolean;
+  /** Run the likeliest failures first and stop there if one fails (`--fail-fast`). */
+  failFast?: boolean;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
@@ -241,7 +246,7 @@ async function executeWithPolicy(
 
   const { selection, command, commands, reason, outsideSuite } = enforcedFull || !result
     ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
-    : executableSelection(options.repoPath, result);
+    : executableSelection(options.repoPath, result, rankedOrdering(options, result));
 
   if (!command) {
     const inferred = inferFullCommand(options.repoPath);
@@ -289,7 +294,7 @@ async function executeWithPolicy(
   // Checks that also fail at the base: still a failed verdict (required CI fails either way), but they
   // no longer stop the run before the change's own failures.
   const preexistingChecks = checkRun?.preexisting ?? [];
-  const preexistingNote = preexistingChecks.length
+  const checksNote = preexistingChecks.length
     ? `; gate check(s) ${preexistingChecks.map((check) => check.id).join(", ")} also fail at the base commit (already broken before this change)`
     : "";
   // Every test run goes under a probe that records which `node --test` files started (selected ones must)
@@ -301,13 +306,17 @@ async function executeWithPolicy(
   try {
     execution = checkRun?.failure
       ? checkRun.failure.measurement
-      : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env });
+      : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast });
     startedNodeTests = trace?.read();
     const nodeResults = trace?.results() ?? [];
     if (nodeResults.length) execution = { ...execution, testResults: mergeTestFileResults(execution.testResults, nodeResults) };
   } finally {
     trace?.dispose();
   }
+  const failFastNote = execution.partsNotRun
+    ? `; --fail-fast stopped at the first failing part, so ${execution.partsNotRun} later part(s) of the selection did not run`
+    : "";
+  const preexistingNote = checksNote + failFastNote;
   let after: WorkingTreeSnapshot;
   try {
     after = captureWorkingTreeSnapshot(options.repoPath);
@@ -553,6 +562,25 @@ function fullSelection(repoPath: string, reason: string) {
   return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0 };
 }
 
+/** The order to run selected tests in, and under --fail-fast the ones to run first (test-ranking.ts). */
+export interface SelectedOrdering {
+  order: readonly string[];
+  first?: readonly string[];
+}
+
+/** Ranks the selected tests by the outcome log's history, or undefined when nothing in it says any is
+ * likelier to fail than another, so a repository without history runs its selection exactly as before. */
+function rankedOrdering(options: VerifyOptions, result: NonNullable<ObservationReport["result"]>): SelectedOrdering | undefined {
+  if (options.rank === false || result.mode !== "SELECTIVE") return undefined;
+  const path = outcomeLogPath(options.repoPath);
+  const history = testHistory(path ? readOutcomes(path) : []);
+  const reasons = result.selectionReasons ?? {};
+  const likely = likelyFailures(result.selectedTests, history, reasons);
+  if (likely.length === 0) return undefined;
+  const order = rankTests(result.selectedTests, history, reasons);
+  return { order, ...(options.failFast ? { first: order.filter((test) => likely.includes(test)) } : {}) };
+}
+
 /** The earlier pass in this repository's outcome log that covers this run, if any (reusablePass). */
 function findReusablePass(options: VerifyOptions, treeSha: string, selection: "selected" | "full", selectedTests: readonly string[], command: string, planned: readonly PlannedCheck[]) {
   const path = outcomeLogPath(options.repoPath);
@@ -570,7 +598,7 @@ function findReusablePass(options: VerifyOptions, treeSha: string, selection: "s
 }
 
 /** Shared executable plan for read-only agent selection and verification. */
-export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>) {
+export function executableSelection(repoPath: string, result: NonNullable<ObservationReport["result"]>, ordering?: SelectedOrdering) {
   let selection: "selected" | "full";
   let command: string | undefined;
   let reason: string;
@@ -640,9 +668,16 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
     }
   }
 
+  // A single selected command runs its files likeliest failures first, and under --fail-fast as two
+  // invocations, the likely ones and then the rest (test-ranking.ts, 2026-11-06).
+  const single = selection === "selected" && !selectedParts && ordering ? primary ?? command : undefined;
+  const ordered = single ? orderCommand(single, ordering!.order) : undefined;
+  const primaryParts = ordered
+    ? (ordering!.first?.length ? splitCommand(ordered, result.selectedTests, ordering!.first) : [ordered]).flatMap((part) => batchCommand(part, result.selectedTests))
+    : undefined;
   // Each part stays within the shell's command-line limit (cmd.exe stops at 8,191 characters).
   const commands = command ? [
-    ...(selectedParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
+    ...(selectedParts ?? primaryParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
     ...primaryPhases,
     ...(auxiliaryCommand ? batchCommand(auxiliaryCommand, outside) : []),
   ] : [];

@@ -56,6 +56,7 @@ import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
+import { confidenceCurve, formatConfidenceCurve } from "./test-ranking.js";
 import {
   findReceipt,
   findWindowStart,
@@ -371,6 +372,8 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     // Gate checks are for before push; in CI the repository's own check jobs already run them.
     skipChecks: flags["no-checks"] === true || env.DIFFCI_CHECKS === "0" || (Boolean(env.CI) && env.CI !== "false" && flags.checks !== true),
     reuse: flags["no-reuse"] !== true && env.DIFFCI_REUSE !== "0",
+    rank: flags["no-rank"] !== true && env.DIFFCI_RANK !== "0",
+    failFast: flags["fail-fast"] === true,
   };
   const report = changed
     ? await verifyChanged(common)
@@ -401,7 +404,13 @@ function runOutcomesCommand(flags: Record<string, string | boolean>, env: NodeJS
     console.error(`Not a Git repository: ${repoPath}`);
     return 2;
   }
-  const summary = summarizeOutcomes(readOutcomes(path));
+  const records = readOutcomes(path);
+  if (flags.curve === true) {
+    const curve = confidenceCurve(records);
+    console.log(flags.json === true ? JSON.stringify({ log: path, ...curve }, null, 2) : formatConfidenceCurve(curve));
+    return 0;
+  }
+  const summary = summarizeOutcomes(records);
   console.log(flags.json === true ? JSON.stringify({ log: path, ...summary }, null, 2) : formatOutcomeSummary(summary, path));
   return 0;
 }
@@ -1103,7 +1112,7 @@ Usage:
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
-                [--share-usage] [--no-send] [--no-log] [--no-reuse]
+                [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
@@ -1128,7 +1137,7 @@ Usage:
   diffci gate --plan-out <file> [--base <sha> --head <sha>] [--script <name,...>] [--repo <path>]
   diffci enforce-misses --junit <file> --out-dir <dir> [--repository <owner/name>] [--repo <path>]
                         [--head <sha>] [--rerun-junit <file>] [--open-issue]
-  diffci outcomes [--repo <path>] [--json]
+  diffci outcomes [--repo <path>] [--curve] [--json]
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
@@ -1171,9 +1180,12 @@ requests merged since the last recorded run, and exits 1 on a miss. It never edi
 verify appends each run (plan, selection reasons, checks, results, per-file durations, failing tests) to
 .git/diffci/outcomes.jsonl, which is never committed and never sent; --no-log or DIFFCI_OUTCOME_LOG=0 skips it.
 When an earlier run in that log passed on the exact same tree and covered the same tests and checks, verify
-reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again.
+reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again. Selected tests that have
+failed before in that log, or that the change edited, run first (--no-rank keeps the selection's order);
+--fail-fast runs them as a first batch and stops there if one fails.
 outcomes summarises that log: results, selected and full runs, top full-run reasons, agents, and possible
-misses (a selected run that passed and a later full run of the same tree that failed).
+misses (a selected run that passed and a later full run of the same tree that failed). --curve replays the
+failing runs to show how soon the first failure is seen, ranked by history against path order.
 Failures are re-run with the package.json tsx --test runner, or read from --rerun-junit for other runners.
 
 The report is sent only when both --api-url and --api-token are given (or DIFFCI_API_URL and

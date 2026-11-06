@@ -161,6 +161,32 @@ describe("verify --changed", () => {
     }
   });
 
+  it("runs a test that failed before first, and --fail-fast stops after it", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+      write(dir, "src/beta.js", "export const beta = () => 5;\n");
+      const first = JSON.parse(runVerify(dir).stdout);
+      assert.equal(first.verification, "failed");
+      assert.match(first.command, /alpha\.test\.js.*beta\.test\.js/, "no history yet: the selection's own order");
+
+      const fast = spawnSync(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", "--fail-fast"], { cwd: ROOT, encoding: "utf8", timeout: 600_000, env: localTestEnv() });
+      const stopped = JSON.parse(fast.stdout);
+      assert.equal(stopped.verification, "failed");
+      assert.equal(stopped.commands.length, 2);
+      assert.match(stopped.commands[0], /beta\.test\.js$/);
+      assert.equal(stopped.execution.partsNotRun, 1);
+      assert.match(stopped.reason, /--fail-fast stopped at the first failing part/);
+
+      write(dir, "src/beta.js", "export const beta = () => 2; // fixed\n");
+      const fixed = JSON.parse(runVerify(dir).stdout);
+      assert.equal(fixed.verification, "passed");
+      assert.match(fixed.command, /beta\.test\.js.*alpha\.test\.js/, "beta failed before, so it runs first");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails closed when selected verification fails", () => {
     const dir = fixture();
     try {

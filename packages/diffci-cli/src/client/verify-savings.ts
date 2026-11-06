@@ -31,6 +31,8 @@ export interface CommandMeasurement {
   /** Each test file's result and duration, where the runner's output or the node:test probe shows them
    * (test-results.ts). */
   testResults?: TestFileResult[];
+  /** Parts left unrun because an earlier one failed under `--fail-fast` (command-batches.ts). */
+  partsNotRun?: number;
 }
 
 export interface VerifySavingsReport {

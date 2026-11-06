@@ -24,11 +24,13 @@ npx @diffci.com/diffci@latest observe --no-send
 
 `observe --no-send` reports selected tests, fallback reasons, and command availability without executing the repository's tests or sending a report. It does not establish runtime savings.
 
-## The outcome log and result reuse
+## The outcome log, result reuse and test order
 
 Each `verify` run is appended to `.git/diffci/outcomes.jsonl`: the selection and why, the checks, the result, each test file's result and duration, and the failing tests. The file sits inside `.git`, so it is never committed and never sent. `diffci outcomes` summarises it. `--no-log` or `DIFFCI_OUTCOME_LOG=0` skips writing it.
 
 When the log already holds a pass of the exact same tree that covers the current run, `verify` reuses it and runs nothing. The receipt then carries `reused_from`. A pass covers the run when it was made with the same DiffCI and Node.js versions and either ran the full test command or selected every test selected now, and when every gate check the run would execute passed in it with the identical command. Failures are never reused. The tree includes the lockfile but not `node_modules`, so after reinstalling dependencies without changing the lockfile, pass `--no-reuse` (or set `DIFFCI_REUSE=0`) to run everything again. Reuse is off under `--policy enforce`.
+
+The log also orders the selection. Selected test files that failed in earlier runs (recent failures count more) and tests the change itself edited run first, so a failure shows up sooner. Ordering never drops a test, and it applies only when the selected command ends in the selected file paths; `--no-rank` keeps the selection's own order. `--fail-fast` runs those likely failures as a first batch and stops there if one fails, reporting how much of the selection did not run. `diffci outcomes --curve` replays the failing runs in the log, ranking each one only by the runs before it, and shows how much of the test time passes before the first failure, ranked against path order. With fewer than ten failing runs, read it as an early signal.
 
 ## Recover a missing base in a shallow checkout
 
