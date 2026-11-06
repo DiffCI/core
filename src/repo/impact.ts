@@ -259,6 +259,7 @@ export class ImpactAnalyzer {
   private dependencyLockfile: string | undefined;
   private packageJsonSpecifiersOnly = false;
   private specifiersOnlyManifests: ReadonlySet<string> = new Set();
+  private exportsRemaps: ReadonlyMap<string, { targets: readonly string[]; dataChanged: boolean }> = new Map();
   private readRepositoryFile: ((path: string) => string | undefined) | undefined;
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
@@ -348,6 +349,7 @@ export class ImpactAnalyzer {
     this.dependencyLockfile = delta.analysis.dependencyLockfile;
     this.packageJsonSpecifiersOnly = delta.analysis.packageJsonSpecifiersOnly === true;
     this.specifiersOnlyManifests = new Set(delta.analysis.specifiersOnlyManifests ?? []);
+    this.exportsRemaps = new Map(Object.entries(delta.analysis.exportsRemaps ?? {}));
     const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
@@ -744,6 +746,19 @@ export class ImpactAnalyzer {
       this.addAffectedTest(changedPath, test, graph, affectedTests, "DECLARED_INPUT", evidence);
     }
     const covered = this.declaredCovered.has(changedPath);
+    // An `exports` remap reaches the importers of each subpath it changed, which depend on the subpath's
+    // target at HEAD or at the base. A target gone at HEAD is a changed file of this delta or was never
+    // importable; one present but outside the graph has unknown importers.
+    for (const target of this.exportsRemaps.get(changedPath)?.targets ?? []) {
+      if (hasNode(graph, target)) {
+        evidence.push(makeEvidence("DEPENDENCY_MANIFEST", changedPath, `${changedPath} remaps an export to ${target}`, target));
+        this.processSourceChange(target, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+      } else if (this.repositoryFiles?.has(target) ?? true) {
+        const message = `${changedPath} remaps an export to ${target}, which is outside the dependency graph; full validation required`;
+        riskSignals.push({ level: "critical", reason: "DEPENDENCY_MANIFEST", message, paths: [changedPath] });
+        if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+      }
+    }
     // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
     // Traverse it before generic unknown/docs classification can discard the dependency.
     if (this.goEmbedPaths.has(changedPath)) {
@@ -790,7 +805,8 @@ export class ImpactAnalyzer {
       // A package.json edit limited to dependency requests is covered by dependency selection, like
       // the lockfile above, so finding no reader is not a gap. Tooling that loads a file naming it
       // still is (2026-11-02).
-      const specifiersOnly = (changedPath === "package.json" && this.packageJsonSpecifiersOnly) || this.specifiersOnlyManifests.has(changedPath);
+      const specifiersOnly = (changedPath === "package.json" && this.packageJsonSpecifiersOnly) || this.specifiersOnlyManifests.has(changedPath)
+        || this.exportsRemaps.get(changedPath)?.dataChanged === false;
       const options = specifiersOnly ? { allowNoReaders: true, implicitReadersUnresolvable: true } : {};
       if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)) return;
       if (covered) return;

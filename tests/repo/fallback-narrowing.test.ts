@@ -8,7 +8,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
-import { analyzeGitDelta, packageJsonChange, testListEdit } from "../../src/git/git-diff.js";
+import { analyzeGitDelta, exportsRemapTargets, packageJsonChange, testListEdit } from "../../src/git/git-diff.js";
 import { npmLockAffectedDependencies } from "../../src/repo/npm-lockfile.js";
 import { contentNamesPath, referencePattern, referenceTokens, repositoryFileReader, resolveFileReferences, scriptNamesPath, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests } from "../../src/repo/workflow-test-steps.js";
@@ -112,6 +112,17 @@ describe("word-level naming", () => {
     assert.equal(contentNamesPath(`join(root, "src", "index.js")`, "scripts/x.mjs", target, pattern(target), true), true);
     assert.equal(contentNamesPath("see ops/cloudflare/src/other.js", "scripts/x.mjs", target, pattern(target), true), false);
     assert.equal(contentNamesPath("`${root}/ops/cloudflare/src/index.js`", "scripts/x.mjs", target, pattern(target), true), true);
+  });
+  it("needs a directory name before code elsewhere names a reader's reader by its bare file name", () => {
+    // LobeHub (2026-11-06): root package.json -> scripts/hotfixWorkflow/index.ts -> every `'index.ts'`.
+    const target = "scripts/hotfixWorkflow/index.ts";
+    const bare = pattern(target, false);
+    assert.equal(contentNamesPath(`export const entry = 'index.ts';`, "packages/ui/src/build.ts", target, bare, false), false);
+    assert.equal(contentNamesPath(`spawn('tsx', ['index.ts'], { cwd: 'scripts/hotfixWorkflow' })`, "packages/ui/src/build.ts", target, bare, false), true);
+    assert.equal(contentNamesPath(`spawn('tsx', [join(dir, 'index.ts')]); readdirSync('scripts')`, "tools/run-all.ts", target, bare, false), true);
+    assert.equal(contentNamesPath(`import('./' + 'index.ts')`, "scripts/hotfixWorkflow/cli.ts", target, bare, false), true);
+    assert.equal(contentNamesPath(`cd somewhere && tsx index.ts`, "tools/run.sh", target, bare, false), true);
+    assert.equal(contentNamesPath(`export const entry = 'index.ts';`, "packages/ui/src/build.ts", target, pattern(target), true), true);
   });
   it("reads a glob as the paths it matches and a leading variable as an unknown directory", () => {
     const target = "packages/database/migrations/0199.sql";
@@ -296,6 +307,54 @@ describe("workspace package manifests (LobeHub, 2026-11-03)", () => {
       assert.deepEqual(dependency.fallbackReasons, ["Dependency left changed and no repository source imports it; full validation required"]);
       const script = await analyze(dir, { "packages/a/package.json": member({ version: "1.1.0", description: "released", dependencies: { left: "^2" }, scripts: { build: "tsc -b" } }) });
       assert.equal(script.fallbackReasons.length, 1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("exports remaps (LobeHub model-bank, 2026-11-06)", () => {
+  const pkg = (exports: unknown, fields: Record<string, unknown> = {}) => JSON.stringify({ name: "@fx/bank", version: "1.0.0", scripts: { build: "tsc" }, exports, ...fields });
+  it("returns the old and new targets of every changed subpath", () => {
+    const before = pkg({ ".": "./src/index.ts", "./qwen": "./src/qwen.ts", "./xai": "./src/xai.ts" });
+    const after = pkg({ ".": "./src/index.ts", "./qwen": { types: "./src/qwen/index.d.ts", default: "./src/qwen/index.ts" }, "./xai": "./src/xai.ts" });
+    assert.deepEqual(exportsRemapTargets(before, after), { targets: ["./src/qwen.ts", "./src/qwen/index.d.ts", "./src/qwen/index.ts"], dataChanged: false });
+    assert.deepEqual(exportsRemapTargets(pkg("./a.js"), pkg("./b.js", { version: "1.1.0" })), { targets: ["./a.js", "./b.js"], dataChanged: true });
+  });
+  it("declines patterns, non-relative targets and any other behavioral edit", () => {
+    assert.equal(exportsRemapTargets(pkg({ "./*": "./src/*.ts" }), pkg({ "./*": "./lib/*.ts" })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "pkg/a.js" })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "./b.js" }, { type: "module" })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "./b.js" }, { scripts: { build: "tsc -b" } })), undefined);
+    assert.equal(exportsRemapTargets(pkg({ ".": "./a.js" }), pkg({ ".": "./a.js" }, { version: "2.0.0" })), undefined);
+  });
+  it("selects the dependents of a remapped subpath instead of the full suite", async () => {
+    const dir = join(tmpdir(), `diffci-exports-remap-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const write = (files: Record<string, string>) => { for (const [path, content] of Object.entries(files)) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), content); } };
+    const bank = (qwen: string) => JSON.stringify({ name: "@fx/bank", version: "1.0.0", type: "module", exports: { "./qwen": qwen, "./xai": "./src/xai.js" } }, null, 2);
+    try {
+      execSync("git init --quiet && git config user.email t@diffci.local && git config user.name t && git config core.autocrlf false", { cwd: dir });
+      write({
+        "package.json": JSON.stringify({ name: "fixture", private: true, type: "module", workspaces: ["packages/*"], scripts: { test: "node --test" } }, null, 2),
+        "packages/bank/package.json": bank("./src/qwen.js"),
+        "packages/bank/src/qwen.js": "export const qwen = 1;\n",
+        "packages/bank/src/qwen/index.js": "export const qwen = 2;\n",
+        "packages/bank/src/xai.js": "export const xai = 1;\n",
+        "packages/bank/src/qwen/index.test.js": `import { qwen } from "./index.js";\nimport test from "node:test";\ntest("q", () => qwen);\n`,
+        "packages/bank/src/xai.test.js": `import { xai } from "./xai.js";\nimport test from "node:test";\ntest("x", () => xai);\n`,
+      });
+      execSync("git add -A && git commit --quiet -m base", { cwd: dir });
+      const baseSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+      write({ "packages/bank/package.json": bank("./src/qwen/index.js") });
+      rmSync(join(dir, "packages/bank/src/qwen.js"));
+      execSync("git add -A && git commit --quiet -m head", { cwd: dir });
+      const headSha = execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
+      const delta = await analyzeGitDelta({ repoPath: dir, baseSha, headSha });
+      assert.ok(delta.success);
+      assert.deepEqual(delta.delta.analysis.exportsRemaps, { "packages/bank/package.json": { targets: ["packages/bank/src/qwen.js", "packages/bank/src/qwen/index.js"], dataChanged: false } });
+      const graph = await buildDependencyGraph({ repoPath: dir, excludeDirs: ["node_modules", ".git"] });
+      const impact = new ImpactAnalyzer().analyze(delta.delta, graph, graph.profile, { repositoryFiles: delta.inventory?.files, readRepositoryFile: repositoryFileReader(dir) });
+      assert.deepEqual(impact.fallbackReasons, [], JSON.stringify(impact.evidence.filter((e) => e.reason === "UNKNOWN_FILE" || e.reason === "DEPENDENCY_MANIFEST")));
+      assert.deepEqual(impact.affectedTests.map((t) => t.path), ["packages/bank/src/qwen/index.test.js"]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

@@ -291,6 +291,24 @@ function inExclusionList(content: string, index: number): boolean {
 }
 
 /**
+ * Whether code in `readerPath` could be naming `target` by its bare file name: it sits in the target's
+ * directory, or its text names one of the target's directories as a word (`"hotfixWorkflow"`,
+ * `scripts/`), which is how code elsewhere would reach that directory to run or read a file there. Only
+ * applied to a reader of a reader (`ancestors` false): 2026-11-06, a LobeHub root package.json edit
+ * reached scripts/hotfixWorkflow/index.ts, and every code file in the repository containing the word
+ * `index.ts` became a further reader until the 50-reader limit forced the full suite. Non-code readers
+ * (shell scripts, workflow and tool configuration) set their working directory in ways not modelled
+ * here, so they still count on the bare name.
+ */
+function namesDirectoryOf(content: string, readerPath: string, target: string): boolean {
+  if (!/\.[cm]?[jt]sx?$/.test(readerPath)) return true;
+  const dir = posix.dirname(target);
+  if (dir === "." || posix.dirname(readerPath) === dir) return true;
+  const names = dir.split("/").filter(Boolean);
+  return names.some((name) => new RegExp(`(?:^|["'\`/\s(])${escape(name)}(?=$|["'\`/\s),])`, "m").test(content));
+}
+
+/**
  * Whether `content`, read from `readerPath`, names `target` (or, with `ancestors`, one of its
  * directories), once each matching word is read as a whole path (2026-10-28). The reference pattern
  * matches on the basename, so every `wrangler.jsonc` with `"main": "./src/index.js"` named every
@@ -320,6 +338,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
       if (names.some((name) => name === rest || name.endsWith(`/${rest}`) || rest.endsWith(`/${name}`))) return true;
       continue;
     }
+    if (!word.includes("/") && !/[!$]/.test(word) && !ancestors && !namesDirectoryOf(content, readerPath, target)) continue;
     if (!word.includes("/") || /[!$]/.test(word)) return true;
     if (/[*?{}[\]]/.test(word)) {
       if (!readGlobs) continue;

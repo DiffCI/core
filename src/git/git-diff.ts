@@ -427,6 +427,60 @@ export function packageJsonChange(oldContent: string | undefined, newContent: st
     : result("data", [...added].sort());
 }
 
+/**
+ * The files a package.json edit remaps through `exports`, when that is its only behavioral change
+ * (2026-11-06: LobeHub's model-bank moved `./qwen` from `./src/aiModels/qwen.ts` to
+ * `./src/aiModels/qwen/index.ts` and ran the full suite). An importer of a remapped subpath resolves to
+ * one of these targets at one side of the change, so the targets' dependents bound it. Returns the
+ * `./`-relative targets of every changed subpath on both sides, or undefined when anything else
+ * changed, a subpath or target is a pattern (`*`), or a target is not a `./` path.
+ */
+export function exportsRemapTargets(oldContent: string | undefined, newContent: string | undefined): { targets: string[]; dataChanged: boolean } | undefined {
+  let oldJson: Record<string, unknown>;
+  let newJson: Record<string, unknown>;
+  try {
+    oldJson = JSON.parse(oldContent ?? "");
+    newJson = JSON.parse(newContent ?? "");
+  } catch {
+    return undefined;
+  }
+  const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  if (!isRecord(oldJson) || !isRecord(newJson)) return undefined;
+  if (JSON.stringify(oldJson.exports) === JSON.stringify(newJson.exports)) return undefined;
+  const without = (json: Record<string, unknown>) => JSON.stringify({ ...json, exports: undefined });
+  const rest = packageJsonChange(without(oldJson), without(newJson));
+  if (rest.kind !== "metadata" && rest.kind !== "data") return undefined;
+  if (JSON.stringify(parsePackageScripts(oldContent)) !== JSON.stringify(parsePackageScripts(newContent))) return undefined;
+  // A string, an array or an object of conditions at the top level is the "." export.
+  const subpaths = (value: unknown): Record<string, unknown> | undefined => {
+    if (value === undefined) return {};
+    if (typeof value === "string" || Array.isArray(value)) return { ".": value };
+    if (!isRecord(value)) return undefined;
+    const keys = Object.keys(value);
+    if (keys.every((key) => key.startsWith("."))) return value;
+    return keys.some((key) => key.startsWith(".")) ? undefined : { ".": value };
+  };
+  const before = subpaths(oldJson.exports);
+  const after = subpaths(newJson.exports);
+  if (!before || !after) return undefined;
+  const targets = new Set<string>();
+  const collect = (value: unknown): boolean => {
+    if (value === null) return true;
+    if (typeof value === "string") {
+      if (!value.startsWith("./") || value.includes("*")) return false;
+      targets.add(value);
+      return true;
+    }
+    if (Array.isArray(value)) return value.every(collect);
+    return isRecord(value) && Object.values(value).every(collect);
+  };
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (JSON.stringify(before[key]) === JSON.stringify(after[key])) continue;
+    if (key.includes("*") || !collect(before[key]) || !collect(after[key])) return undefined;
+  }
+  return { targets: [...targets].sort(), dataChanged: rest.kind === "data" };
+}
+
 /** packageJsonChange's kind, with a dependency change reported as behavioral. */
 export function packageJsonChangeKind(oldContent: string | undefined, newContent: string | undefined): "metadata" | "data" | "behavioral" {
   const { kind } = packageJsonChange(oldContent, newContent);
@@ -820,6 +874,14 @@ export async function analyzeGitDelta(
       const before = readFileAtSha(baseSha, file.path, repoPath);
       const after = readFileAtSha(headSha, file.path, repoPath);
       const change = packageJsonChange(before, after);
+      const remap = change.kind === "behavioral" ? exportsRemapTargets(before, after) : undefined;
+      if (remap) {
+        // Readers of the file are resolved like a data edit, and ImpactAnalyzer treats each target as changed.
+        const dir = posix.dirname(file.path);
+        (analysis.exportsRemaps ??= {})[file.path] = { targets: remap.targets.map((target) => posix.normalize(posix.join(dir, target))), dataChanged: remap.dataChanged };
+        referenceResolvedPaths.push(file.path);
+        continue;
+      }
       if (change.kind !== "metadata" && change.kind !== "data") continue;
       if (JSON.stringify(parsePackageScripts(before)) !== JSON.stringify(parsePackageScripts(after))) continue;
       referenceResolvedPaths.push(file.path);
