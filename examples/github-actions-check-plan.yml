@@ -1,0 +1,106 @@
+# Copy into the evaluated repository after configuring its test:junit script.
+# Full-suite results remain authoritative; no tests are skipped by this workflow.
+name: Check DiffCI selection against the full suite
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the scheduled revision and history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          path: target
+
+      - name: Check out DiffCI Core
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiffCI/core
+          ref: main # Pin to a reviewed revision containing check-plan.
+          path: core
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install target dependencies
+        id: target-setup
+        working-directory: target
+        run: npm ci
+
+      - name: Build Core and the installed CLI entry point
+        working-directory: core
+        run: |
+          npm ci
+          npm run build
+          npm ci --prefix packages/diffci-cli
+          npm run build --prefix packages/diffci-cli
+
+      - name: Save the advisory plan for this revision
+        id: plan
+        working-directory: target
+        run: |
+          HEAD=$(git rev-parse HEAD)
+          BASE=$(git rev-parse HEAD^)
+          test "$HEAD" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          node ../core/dist/cli.js plan --repo "$PWD" --base "$BASE" --head "$HEAD" \
+            > "$RUNNER_TEMP/plan.json"
+
+      - name: Prepare the plan's base revision
+        id: base-setup
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
+        working-directory: target
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/base" "$(git rev-parse HEAD^)"
+          npm ci --prefix "$RUNNER_TEMP/base"
+
+      - name: Run the base full suite with the same reporter
+        id: base-full
+        if: ${{ !cancelled() && steps.base-setup.outcome == 'success' }}
+        continue-on-error: true # An old failing suite is valid comparison evidence.
+        env:
+          DIFFCI_JUNIT_FILE: ${{ runner.temp }}/base-junit.xml
+        run: |
+          cd "$RUNNER_TEMP/base"
+          npm run test:junit
+
+      - name: Run the complete suite with JUnit reporting
+        id: full
+        if: ${{ !cancelled() && steps.target-setup.outcome == 'success' }}
+        working-directory: target
+        env:
+          DIFFCI_JUNIT_FILE: ${{ runner.temp }}/junit.xml
+        run: npm run test:junit
+
+      # Set --root to the runner root relative to target if it is not the repository root.
+      - name: Compare failures even when the full suite failed
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' && steps.base-setup.outcome == 'success' && (steps.base-full.outcome == 'success' || steps.base-full.outcome == 'failure') && (steps.full.outcome == 'success' || steps.full.outcome == 'failure') }}
+        run: |
+          node core/packages/diffci-cli/dist-client/src/client/cli.js check-plan \
+            --repo "$GITHUB_WORKSPACE/target" --base-repo "$RUNNER_TEMP/base" --root . \
+            --plan "$RUNNER_TEMP/plan.json" --results "$RUNNER_TEMP/junit.xml" \
+            --base-results "$RUNNER_TEMP/base-junit.xml" \
+            > "$RUNNER_TEMP/comparison.json"
+
+      - name: Retain comparison evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diffci-plan-comparison
+          path: |
+            ${{ runner.temp }}/plan.json
+            ${{ runner.temp }}/junit.xml
+            ${{ runner.temp }}/base-junit.xml
+            ${{ runner.temp }}/comparison.json
+          if-no-files-found: warn
+          retention-days: 14

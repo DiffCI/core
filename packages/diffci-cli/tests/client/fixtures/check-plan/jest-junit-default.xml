@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="6" failures="3" errors="0" time="0">
+  <testsuite name="outer &amp; &lt;group&gt;" errors="0" failures="2" skipped="1" timestamp="2026-11-04T00:00:00.000Z" time="0" tests="3">
+    <testcase classname="outer &amp; &lt;group&gt; inner duplicate name" name="outer &amp; &lt;group&gt; inner duplicate name" time="0">
+      <failure>expect(received).toBe(expected) // Object.is equality
+
+Expected: &quot;expected&quot;
+Received: &quot;actual&quot;</failure>
+    </testcase>
+    <testcase classname="outer &amp; &lt;group&gt; inner duplicate name" name="outer &amp; &lt;group&gt; inner duplicate name" time="0">
+      <failure>expect(received).toBe(expected) // Object.is equality
+
+Expected: 2
+Received: 1</failure>
+    </testcase>
+    <testcase classname="outer &amp; &lt;group&gt; inner skipped failure" name="outer &amp; &lt;group&gt; inner skipped failure" time="0">
+      <skipped/>
+    </testcase>
+    <testcase classname="outer &amp; &lt;group&gt; inner not implemented" name="outer &amp; &lt;group&gt; inner not implemented" time="0">
+    </testcase>
+  </testsuite>
+  <testsuite name="undefined" errors="0" failures="1" skipped="0" timestamp="2026-11-04T00:00:00.000Z" time="0" tests="1">
+    <testcase classname=" two hook failures for one case" name=" two hook failures for one case" time="0">
+      <failure>synthetic beforeEach error</failure>
+      <failure>synthetic afterEach error</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="undefined" errors="0" failures="0" skipped="0" timestamp="2026-11-04T00:00:00.000Z" time="0" tests="1">
+    <testcase classname=" passes before the hook fails" name=" passes before the hook fails" time="0">
+    </testcase>
+    <testcase classname=" Test execution failure: could be caused by test hooks like &apos;afterAll&apos;." name=" Test execution failure: could be caused by test hooks like &apos;afterAll&apos;." time="0">
+      <failure>{&quot;message&quot;:&quot;&quot;,&quot;stack&quot;:&quot;Error: synthetic afterAll error\n    at Object.&lt;anonymous&gt; (/fixture/tests/hook-error.test.js:2:24)\n    at Promise.finally.completed (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:1834:28)\n    at new Promise (&lt;anonymous&gt;)\n    at callAsyncCircusFn (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:1774:10)\n    at _callCircusHook (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:1136:40)\n    at _runTestsForDescribeBlockOnce (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:1039:7)\n    at _runTestsForDescribeBlock (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:824:5)\n    at run (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:789:3)\n    at runAndTransformResultsToJestFormat (/fixture/node_modules/jest-circus/build/jestAdapterInit.js:2300:21)\n    at jestAdapter (/fixture/node_modules/jest-circus/build/runner.js:111:19)\n    at runTestInternal (/fixture/node_modules/jest-runner/build/index.js:247:16)\n    at runTest (/fixture/node_modules/jest-runner/build/index.js:315:7)&quot;}</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="undefined" errors="0" failures="0" skipped="0" timestamp="2026-11-04T00:00:00.000Z" time="0" tests="1">
+    <testcase classname=" passes" name=" passes" time="0">
+    </testcase>
+  </testsuite>
+</testsuites>

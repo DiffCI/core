@@ -1,0 +1,46 @@
+{
+  "node": "v24.11.1",
+  "versions": {
+    "vitest": "5.1.0",
+    "jest": "30.5.2",
+    "jest-junit": "17.0.0"
+  },
+  "packageLockSha256": "226f2f4fde47292a9bbe06842220e723074ade3e2ad9727694f14025fc03bd80",
+  "normalization": [
+    "Fixture project absolute path replaced with /fixture",
+    "hostname replaced with synthetic-host",
+    "timestamp values fixed",
+    "time values set to0",
+    "CRLF changed to LF if present"
+  ],
+  "reports": [
+    {
+      "file": "jest-junit-default.xml",
+      "rawSha256": "d6177d8ca1b3401df2d590facee6cc55d6894be953111d14c721621002d2fdf4",
+      "fixtureSha256": "5e0e86b0cd406b7ebe91e301366ecd9cddcb88c8254a83662a37e66fdf124807",
+      "testcases": 8,
+      "failedTestcases": 4
+    },
+    {
+      "file": "jest-junit-explicit.xml",
+      "rawSha256": "875adf865fbfb3def4ce1a851d26e0141fcb715e56cb12b6a792904da0edf53d",
+      "fixtureSha256": "585dfb542051892fbff63e80cc2e3b48e9adea88e3dc9a1fcb9dad35b01cd81d",
+      "testcases": 10,
+      "failedTestcases": 6
+    },
+    {
+      "file": "vitest-default.xml",
+      "rawSha256": "bb1b4e9133d0a26e89765bc56c0050f874396cf249acf013de62e40cc09383ca",
+      "fixtureSha256": "88dde63819a143a2694a0a41264760567a4ad95f75edaad8647594ab479547c2",
+      "testcases": 9,
+      "failedTestcases": 5
+    },
+    {
+      "file": "vitest-explicit.xml",
+      "rawSha256": "02adcdefb2fb7b532f735fa9e98159239fb33323ac9e77ed19445b09629ea081",
+      "fixtureSha256": "77c18781c3e60b204c46813414ae769d91b3e282d50345ef76d5c611f7c217f1",
+      "testcases": 9,
+      "failedTestcases": 5
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="9" failures="5" errors="0" time="0">
+    <testsuite name="custom suite label" timestamp="2026-11-04T00:00:00.000Z" hostname="synthetic-host" tests="2" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="custom class label" file="tests/hook-error.test.js" name="passes before the hook fails" time="0">
+        </testcase>
+        <testcase classname="custom class label" file="tests/hook-error.test.js" name="tests/hook-error.test.js" time="0">
+            <failure message="synthetic afterAll error" type="Error">
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="custom suite label" timestamp="2026-11-04T00:00:00.000Z" hostname="synthetic-host" tests="1" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="custom class label" file="tests/load-error.test.js" name="tests/load-error.test.js" time="0">
+            <failure message="synthetic collection error" type="Error">
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="custom suite label" timestamp="2026-11-04T00:00:00.000Z" hostname="synthetic-host" tests="1" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="custom class label" file="tests/multiple-errors.test.js" name="two hook failures for one case" time="0">
+            <failure message="synthetic beforeEach error" type="Error">
+            </failure>
+            <failure message="synthetic afterEach error" type="Error">
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="custom suite label" timestamp="2026-11-04T00:00:00.000Z" hostname="synthetic-host" tests="1" failures="0" errors="0" skipped="0" time="0">
+        <testcase classname="custom class label" file="tests/pass.test.js" name="passes" time="0">
+        </testcase>
+    </testsuite>
+    <testsuite name="custom suite label" timestamp="2026-11-04T00:00:00.000Z" hostname="synthetic-host" tests="4" failures="2" errors="0" skipped="2" time="0">
+        <testcase classname="custom class label" file="tests/space &amp; failure.test.js" name="outer &amp; &lt;group&gt; &gt; inner &gt; duplicate name" time="0">
+            <failure message="expected &apos;actual&apos; to be &apos;expected&apos; // Object.is equality" type="AssertionError">
+            </failure>
+        </testcase>
+        <testcase classname="custom class label" file="tests/space &amp; failure.test.js" name="outer &amp; &lt;group&gt; &gt; inner &gt; duplicate name" time="0">
+            <failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">
+            </failure>
+        </testcase>
+        <testcase classname="custom class label" file="tests/space &amp; failure.test.js" name="outer &amp; &lt;group&gt; &gt; inner &gt; skipped failure" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="custom class label" file="tests/space &amp; failure.test.js" name="outer &amp; &lt;group&gt; &gt; inner &gt; not implemented" time="0">
+            <skipped/>
+        </testcase>
+    </testsuite>
+</testsuites>

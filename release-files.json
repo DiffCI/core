@@ -312,6 +312,19 @@
     "packages/diffci-cli/tests/client/agent-stop.test.ts",
     "packages/diffci-cli/src/client/watch.ts",
     "packages/diffci-cli/tests/client/watch.test.ts",
-    ".github/FUNDING.yml"
+    ".github/FUNDING.yml",
+    "examples/github-actions-check-plan.yml",
+    "packages/diffci-cli/src/client/check-plan-junit.ts",
+    "packages/diffci-cli/src/client/check-plan.ts",
+    "packages/diffci-cli/tests/client/check-plan-cli.test.ts",
+    "packages/diffci-cli/tests/client/check-plan-review.test.ts",
+    "packages/diffci-cli/tests/client/check-plan.test.ts",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/README.md",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/jest-junit-default.xml",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/jest-junit-explicit.xml",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/provenance.json",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/source.json",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/vitest-default.xml",
+    "packages/diffci-cli/tests/client/fixtures/check-plan/vitest-explicit.xml"
   ]
 }

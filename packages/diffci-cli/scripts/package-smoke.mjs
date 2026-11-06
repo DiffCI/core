@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -145,7 +145,8 @@ try {
     join(consumer, "node_modules", "@diffci.com", "core", "dist", "index.js"),
     join(consumer, "node_modules", "@diffci.com", "diffci", "node_modules", "@diffci.com", "core", "dist", "index.js"),
   ];
-  assert(bundledCoreLocations.some(existsSync), "consumer did not receive bundled Core");
+  const bundledCoreIndex = bundledCoreLocations.find(existsSync);
+  assert(bundledCoreIndex, "consumer did not receive bundled Core");
   assert(existsSync(join(consumer, "node_modules", ".bin", process.platform === "win32" ? "diffci.cmd" : "diffci")), "consumer did not receive diffci binary");
   assert(existsSync(join(consumer, "node_modules", ".bin", process.platform === "win32" ? "diffci-mcp.cmd" : "diffci-mcp")), "consumer did not receive diffci-mcp binary");
   const version = runNpm(["exec", "--", "diffci", "version"], { cwd: consumer }).trim();
@@ -160,7 +161,48 @@ try {
   assert(report.result?.mode === "SELECTIVE", `expected a selective fixture result, got ${report.result?.mode}`);
   assert(report.result?.selectedTests?.includes("test/alpha.test.js"), `alpha test was not selected: ${JSON.stringify(report.result?.selectedTests)}`);
   assert(report.nonInterference?.worktreeUnchanged === true, "installed CLI changed the observed checkout");
-  console.log(`CLI package smoke passed: ${pack.filename} installed into a clean consumer and observed a fixture repository.`);
+
+  // Exercise the new parser dependency from the installed tarball, with a real Core plan for the
+  // same fixture. Keep inputs outside the checkout so plan creation still sees a clean repository.
+  const planPath = join(temp, "plan.json");
+  const planJson = run(process.execPath, [join(dirname(bundledCoreIndex), "cli.js"), "plan", "--repo", fixture.repo, "--base", fixture.base, "--head", fixture.head], { cwd: consumer });
+  const plan = JSON.parse(planJson).plan;
+  assert(plan?.selectedTests?.includes("test/alpha.test.js"), "installed Core plan did not select alpha");
+  assert(plan?.skippedTests?.includes("test/beta.test.js"), "installed Core plan did not skip beta");
+  write(planPath, planJson);
+  const resultsPath = join(temp, "junit.xml");
+  const installedCli = join(consumer, "node_modules", "@diffci.com", "diffci", "dist-client", "src", "client", "cli.js");
+  const selectedFailure = '<testcase name="selected" file="test/alpha.test.js"><failure/></testcase>';
+  const missedFailure = '<testcase name="missed" file="test/beta.test.js"><failure/></testcase>';
+  const unknownFailure = '<testcase name="unattributed"><error/></testcase>';
+  const commandEnv = { ...process.env };
+  delete commandEnv.NODE_TEST_CONTEXT;
+  for (const scenario of [
+    { name: "mixed", cases: selectedFailure + missedFailure + unknownFailure, exitCode: 1, summary: { failedTests: 3, missed: 0, possibleMisses: 1, preExisting: 0, selected: 1, unattributed: 1 } },
+    { name: "pre-existing", cases: missedFailure, base: missedFailure, exitCode: 0, summary: { failedTests: 1, missed: 0, possibleMisses: 0, preExisting: 1, selected: 0, unattributed: 0 } },
+    { name: "new-miss", cases: missedFailure, base: '<testcase name="missed" file="test/beta.test.js"/>', exitCode: 1, summary: { failedTests: 1, missed: 1, possibleMisses: 0, preExisting: 0, selected: 0, unattributed: 0 } },
+    { name: "selected-only", cases: selectedFailure, exitCode: 0, summary: { failedTests: 1, missed: 0, possibleMisses: 0, preExisting: 0, selected: 1, unattributed: 0 } },
+    { name: "unattributed-only", cases: unknownFailure, exitCode: 1, summary: { failedTests: 1, missed: 0, possibleMisses: 0, preExisting: 0, selected: 0, unattributed: 1 } },
+  ]) {
+    write(resultsPath, `<testsuites><testsuite name="package smoke">${scenario.cases}</testsuite></testsuites>`);
+    const basePath = join(temp, "base-junit.xml");
+    if (scenario.base) write(basePath, `<testsuites><testsuite name="package smoke">${scenario.base}</testsuite></testsuites>`);
+    const comparison = spawnSync(process.execPath, [installedCli, "check-plan", "--plan", planPath, "--results", resultsPath, ...(scenario.base ? ["--base-results", basePath] : [])], {
+      cwd: consumer, encoding: "utf8", env: commandEnv, timeout: 30_000,
+    });
+    assert(!comparison.error, `installed check-plan failed to run: ${comparison.error?.message}`);
+    assert(comparison.status === scenario.exitCode, `installed check-plan ${scenario.name} exited ${comparison.status}: ${comparison.stdout}${comparison.stderr}`);
+    assert(comparison.stderr === "", `installed check-plan ${scenario.name} wrote stderr: ${comparison.stderr}`);
+    const checked = JSON.parse(comparison.stdout);
+    assert(checked.schemaVersion === 1 && checked.mode === "SELECTIVE" && checked.fullFallback === false, "installed check-plan returned an unexpected report format");
+    for (const [field, expected] of Object.entries(scenario.summary)) {
+      assert(checked.summary?.[field] === expected, `installed check-plan ${scenario.name} ${field}: expected ${expected}, got ${checked.summary?.[field]}`);
+    }
+    for (const group of ["missed", "possibleMisses", "preExisting", "selected", "unattributed"]) assert(checked[group].length === scenario.summary[group], `installed check-plan ${group} disagrees with the summary`);
+    console.log(`Installed check-plan smoke: ${JSON.stringify({ scenario: scenario.name, exitCode: comparison.status, summary: checked.summary })}`);
+  }
+  assert(git(fixture.repo, ["status", "--porcelain"]).trim() === "", "installed check-plan changed the fixture checkout");
+  console.log(`CLI package smoke passed: ${pack.filename} installed into a clean consumer, observed a fixture repository and checked JUnit failures.`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }

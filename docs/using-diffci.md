@@ -118,6 +118,166 @@ npx --yes @diffci.com/diffci@latest check \
 
 `plan` is advisory; `check` may execute repository test commands. If either command refuses or errors, run the repository's normal full validation.
 
+## Compare a plan with a full-suite JUnit report
+
+`check-plan` checks whether a saved selection would have skipped failures in one
+supplied full-suite report. It does not run tests, read Git state, write files or
+send data. Use a CLI build containing this command; when working from source,
+build `packages/diffci-cli` and invoke its `dist-client/src/client/cli.js` with Node.
+
+Save the advisory Core plan before running the full suite, using the verified
+revisions described above:
+
+```sh
+RESULTS_DIR=$(mktemp -d)
+node /path/to/core/dist/cli.js plan --repo "$PWD" --base "$BASE" --head "$HEAD" > "$RESULTS_DIR/plan.json"
+# Configure test:junit to run the normal full suite with a reporter below.
+DIFFCI_JUNIT_FILE="$RESULTS_DIR/junit.xml" npm run test:junit
+diffci check-plan --plan "$RESULTS_DIR/plan.json" --results "$RESULTS_DIR/junit.xml"
+```
+
+The command accepts the Core `plan` command's JSON output or its nested
+`ExecutionPlan` (version `5.0.0`). It requires `mode`, `selectedTests`, `skippedTests`
+and `safety.fallbackRequired`; the mode and fallback flag must agree, paths must
+be canonical repository-relative paths, and the two lists must not overlap.
+Observation reports and verification receipts are different formats.
+
+The JSON result has `schemaVersion: 1`, `mode`, `fullFallback`, a `summary`, and
+five arrays of failures, plus `baselineProvided`:
+
+| Group | Meaning |
+| --- | --- |
+| `missed` | A skipped failure whose unique matching testcase passed in the supplied base report. |
+| `possibleMisses` | A skipped failure with no matching base pass, including absent, skipped or ambiguous base identities. |
+| `preExisting` | The same testcase failed in the supplied base report. |
+| `selected` | The failure maps to a file in `selectedTests`. |
+| `unattributed` | The file is missing, unknown or ambiguous; `reason` explains why. |
+
+Exit **1** means at least one missed, possible-miss or unattributed failure. Exit **2** means
+invalid arguments, unreadable inputs, an invalid plan or an invalid report; a JSON
+error goes to stderr and no comparison goes to stdout. Exit **0** means all three
+groups are empty. Selected tests may still have failed: retain the full
+test runner's exit status as the authority on suite success.
+
+A `FULL` plan must have no skipped tests. Its result explicitly sets
+`fullFallback: true` and has no missed failures. Known failures are selected or pre-existing;
+unattributed failures still exit 1, and invalid XML still exits 2.
+
+### Reporter configuration
+
+Run the command from the repository root, or supply `--repo /absolute/checkout`.
+Set `--root packages/web` when the reporter writes paths relative to that nested
+runner root. Leading `./`, trailing slashes and Windows separators are accepted.
+The default is `--root .`; neither root is guessed from report paths.
+For example:
+
+```sh
+diffci check-plan --plan plan.json --results junit.xml --repo /checkout --root packages/web
+```
+
+Testcase `file` takes precedence over inherited suite files. Without it, suite
+files are checked, then JS/TS paths in classname or suite names. Conflicting
+metadata stays unattributed. Windows separators and leading `./` are normalized;
+absolute paths inside the explicit checkout root map to repository-relative paths.
+Paths outside it, parent traversal, unknown files, test titles and stack traces
+are never matched by suffix. Reports from multiple runner roots must be compared
+separately with their corresponding roots.
+
+To distinguish old failures from new ones, pass `--base-results base-junit.xml`:
+
+```sh
+diffci check-plan --plan plan.json --results head-junit.xml --base-results base-junit.xml
+```
+
+Produce the base report from the plan's base revision using the same full-suite
+scope and reporter configuration. If it ran in a separate checkout, supply
+`--base-repo /base/checkout`; otherwise its absolute paths use `--repo` too.
+Relative file metadata uses the same `--root` for both reports. Base failures
+match by mapped file, enclosing suite names, classname and testcase name, only
+when that identity occurs once in each report. JS/TS path-valued suite names and
+classnames are normalized against their respective checkout roots.
+
+A skipped failure is `missed` only when its unique matching base testcase passed.
+Missing, skipped, duplicate or unnamed base identities stay `possibleMisses`.
+Unknown files and suite-level errors remain unattributed even if they appear at
+base. Renamed tests or changed reporter labels cannot establish a match. The
+command cannot verify report provenance, completeness or whether a failure is
+flaky; a base pass does not prove that the change caused the head failure.
+Without a base report, skipped failures are always `possibleMisses`.
+
+Both `--flag value` and `--flag=value` work. `check-plan --help` prints usage and
+exits 0 without reading inputs.
+
+Vitest's default JUnit classname and suite-name conventions normally identify the
+file. Explicit file attributes also work with custom labels. For example, merge
+this reporter into the project's Vitest configuration:
+
+```js
+test: {
+  reporters: ['default', ['junit', {
+    outputFile: process.env.DIFFCI_JUNIT_FILE ?? 'junit.xml',
+    addFileAttribute: true,
+  }]],
+}
+```
+
+For Jest, install and configure `jest-junit`. Its default description labels often
+do not identify a file, and its default report can omit test-suite load errors.
+Both options below are strings:
+
+```js
+reporters: ['default', ['jest-junit', {
+  outputFile: process.env.DIFFCI_JUNIT_FILE ?? 'junit.xml',
+  addFileAttribute: 'true',
+  reportTestSuiteErrors: 'true',
+}]],
+```
+
+Keep generated reports outside the checkout so they do not affect Core's
+clean-checkout check. These conventions are covered by reports generated with Vitest 5.1.0 and Jest
+30.5.2 plus jest-junit 17.0.0. Custom reporters may need different configuration.
+The [synthetic fixture notes](../packages/diffci-cli/tests/client/fixtures/check-plan/README.md)
+record their sources and reproduction steps. Go and Maven attribution are outside
+this first implementation.
+
+### Scheduled full-suite check
+
+The [scheduled-job example](../examples/github-actions-check-plan.yml) builds
+DiffCI from source, saves a plan for the scheduled checkout, and runs `npm run
+test:junit` in full at both the plan's base and head revisions. The base runs in
+a separate Git worktree with its own dependencies. Configure `test:junit` to run
+the project's normal complete suite with one of the reporters above. Pin the
+DiffCI checkout to a reviewed revision containing `check-plan`.
+
+The comparison receives both reports and their checkout roots, so matching old
+failures do not become possible-miss alarms. A failing base suite is valid
+comparison evidence. Head full-suite failures remain visible, and the head full
+suite also runs when plan creation fails. Missing or invalid reports fail the
+comparison; do not substitute an unrelated green run. Both reports, the plan and
+the comparison are retained as artifacts.
+
+The plan and head report must describe the same head revision and complete test
+scope; the optional base report must describe the plan's base revision. Standard
+JUnit does not prove either condition; a passing comparison cannot establish
+report completeness or the absence of missed failures beyond the supplied report.
+In particular, an error omitted by a reporter cannot be recovered. Each UTF-8 input
+is limited to 16 MiB. XML must contain a testcase or a suite-level failure. Suite-level failures/errors
+are retained as unattributed evidence alongside ordinary testcase failures. Both
+`check-plan` and `enforce-misses` use the same strict XML reader and file mapping.
+Enforcement keeps its existing v1 testcase IDs for stored baselines, separately
+from file attribution. A suite crash or missing file identity cannot create an
+unsafe-miss entry against a pull request. Invalid full-suite reports return exit
+2 without writing a miss report; invalid rerun reports leave the original
+failures in place and are treated as an unavailable rerun.
+Malformed XML, DOCTYPE declarations, namespaced elements, unsupported qualified
+metadata, excessive nesting/tags, more than 16 MiB of
+accumulated failure metadata and headers claiming
+more evidence than the report contains are rejected. Namespace declarations,
+`xml:` attributes and schema-location hints
+are ignored; they do not provide file identity. Duplicate failed testcases
+remain distinct, while multiple failure/error elements within one testcase count
+as one failed testcase.
+
 ## Reproduce a full fallback
 
 This synthetic project has one unsupported dependency shape: `loader.js` chooses an import at runtime, so static analysis cannot enumerate every module the changed loader may reach. The tree is:

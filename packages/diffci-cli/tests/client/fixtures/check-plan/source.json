@@ -1,0 +1,16 @@
+{
+  "packages": {
+    "vitest": "5.1.0",
+    "jest": "30.5.2",
+    "jest-junit": "17.0.0"
+  },
+  "files": {
+    "tests/hook-error.test.js": "test('passes before the hook fails', () => expect(true).toBe(true));\nafterAll(() => { throw new Error('synthetic afterAll error'); });\n",
+    "tests/load-error.test.js": "throw new Error('synthetic collection error');\n",
+    "tests/multiple-errors.test.js": "beforeEach(() => { throw new Error('synthetic beforeEach error'); });\nafterEach(() => { throw new Error('synthetic afterEach error'); });\ntest('two hook failures for one case', () => expect(true).toBe(true));\n",
+    "tests/pass.test.js": "test('passes', () => expect(2 + 2).toBe(4));\n",
+    "tests/space & failure.test.js": "describe('outer & <group>', () => {\n  describe('inner', () => {\n    test('duplicate name', () => expect('actual').toBe('expected'));\n    test('duplicate name', () => expect(1).toBe(2));\n    test.skip('skipped failure', () => expect(1).toBe(2));\n    test.todo('not implemented');\n  });\n});\n",
+    "vitest.config.mjs": "const explicit = process.env.REPORTER_VARIANT === 'explicit';\nexport default {\n  test: {\n    globals: true,\n    include: ['tests/**/*.test.js'],\n    reporters: [['junit', {\n      outputFile: `reports/vitest-${explicit ? 'explicit' : 'default'}.xml`,\n      includeConsoleOutput: false,\n      stackTrace: false,\n      ...(explicit ? {\n        addFileAttribute: true,\n        classnameTemplate: 'custom class label',\n        suiteNameTemplate: 'custom suite label',\n      } : {}),\n    }]],\n  },\n};\n",
+    "jest.config.cjs": "const explicit = process.env.REPORTER_VARIANT === 'explicit';\nmodule.exports = {\n  testMatch: ['<rootDir>/tests/**/*.test.js'],\n  reporters: [['jest-junit', {\n    outputDirectory: 'reports',\n    outputName: `jest-junit-${explicit ? 'explicit' : 'default'}.xml`,\n    noStackTrace: 'true',\n    ...(explicit ? {\n      addFileAttribute: 'true',\n      reportTestSuiteErrors: 'true',\n      classNameTemplate: 'custom class label',\n      suiteNameTemplate: 'custom suite label',\n    } : {}),\n  }]],\n};\n"
+  }
+}

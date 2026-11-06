@@ -13,6 +13,7 @@
  * Nothing here changes configuration. A miss produces the exact `enforce.openUnsafeMisses` entry for
  * a human to add; re-enabling enforcement is never automatic.
  */
+import { readJunit, junitFile } from "./check-plan-junit.js";
 import { isAbsolute, relative, resolve } from "node:path";
 
 import type { VerificationReport } from "./verify.js";
@@ -27,6 +28,7 @@ export interface TestOutcome {
   name: string;
   failed: boolean;
   skipped: boolean;
+  suiteLevel?: boolean;
 }
 
 /** The receipt fields the detector reads; older receipts may lack `selected_tests`. */
@@ -108,22 +110,7 @@ export interface MissReport {
 // ---------------------------------------------------------------------------------------------------
 // JUnit (node:test's `--test-reporter=junit`, which also matches the common Jest/Vitest shape)
 
-function decodeEntities(text: string): string {
-  return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, entity: string) => {
-    const lower = entity.toLowerCase();
-    if (lower.startsWith("#x")) return String.fromCodePoint(Number.parseInt(lower.slice(2), 16));
-    if (lower.startsWith("#")) return String.fromCodePoint(Number.parseInt(lower.slice(1), 10));
-    return ({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" } as Record<string, string>)[lower]!;
-  });
-}
-
-function attributes(source: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const match of source.matchAll(/([\w:.-]+)\s*=\s*"([^"]*)"/g)) result[match[1]!] = decodeEntities(match[2]!);
-  return result;
-}
-
-/** Repository-relative with forward slashes; paths outside the repository stay absolute. */
+/** Legacy identity normalization: stored v1 detector baselines depend on these exact rules. */
 export function normalizeTestPath(path: string, repoRoot: string): string {
   const slashed = path.replace(/\\/g, "/").replace(/^\.\//, "");
   if (!slashed) return "";
@@ -132,43 +119,21 @@ export function normalizeTestPath(path: string, repoRoot: string): string {
   return inside && !inside.startsWith("..") && !isAbsolute(inside) ? inside.replace(/\\/g, "/") : slashed;
 }
 
-/** Testcases in document order, named by their enclosing suites. Repeated ids are merged: any failure wins. */
+/** Testcases in document order. Repeated ids are merged: any failure wins. */
 export function parseJunit(xml: string, repoRoot: string): TestOutcome[] {
   const byId = new Map<string, TestOutcome>();
-  const suites: string[] = [];
-  let current: TestOutcome | undefined;
-  const finish = () => {
-    if (!current) return;
-    const seen = byId.get(current.id);
+  readJunit(xml, (test, failed, skipped) => {
+    const file = junitFile(test, repoRoot);
+    const name = [...test.suiteNames, test.name].filter(Boolean).join(" > ");
+    const id = `${normalizeTestPath(test.file ?? "", repoRoot)} > ${name}`;
+    const seen = byId.get(id);
     if (seen) {
-      seen.failed ||= current.failed;
-      seen.skipped &&= current.skipped;
-    } else byId.set(current.id, current);
-    current = undefined;
-  };
-  // Attribute values may hold a raw `>` (failure messages), so the tag body skips over quoted strings.
-  const tags = /<(\/?)(testsuite|testcase|failure|error|skipped)\b((?:[^>"]|"[^"]*")*?)(\/?)>/g;
-  for (const [, closing, tag, body, selfClosing] of xml.matchAll(tags)) {
-    if (tag === "testsuite") {
-      if (closing) suites.pop();
-      else if (!selfClosing) suites.push(attributes(body!).name ?? "");
-    } else if (tag === "testcase") {
-      if (closing) {
-        finish();
-        continue;
-      }
-      finish();
-      const attrs = attributes(body!);
-      const file = normalizeTestPath(attrs.file ?? "", repoRoot);
-      const name = [...suites, attrs.name ?? ""].filter(Boolean).join(" > ");
-      current = { id: `${file} > ${name}`, file, name, failed: attrs.failure !== undefined, skipped: false };
-      if (selfClosing) finish();
-    } else if (current && !closing) {
-      if (tag === "skipped") current.skipped = true;
-      else current.failed = true;
-    }
-  }
-  finish();
+      seen.failed ||= failed;
+      seen.skipped &&= skipped;
+      if (test.suiteLevel) seen.suiteLevel = true;
+      if (seen.file !== file) seen.file = "";
+    } else byId.set(id, { id, file, name, failed, skipped, ...(test.suiteLevel ? { suiteLevel: true } : {}) });
+  });
   return [...byId.values()];
 }
 
@@ -233,6 +198,9 @@ export function classifyFailures(input: ClassifyInput): ClassifiedFailure[] {
       const rerunNote = !input.rerun ? "not re-run" : again ? "failed again when re-run" : "absent from the re-run";
       if (baseline.has(outcome.id)) {
         return { ...base, classification: "pre-existing", pull_requests: [], detail: `already failing at the start of the window; ${rerunNote}` };
+      }
+      if (outcome.suiteLevel || !outcome.file) {
+        return { ...base, classification: "unattributed", pull_requests: [], detail: `no testcase file identity; cannot attribute this failure to a pull request; ${rerunNote}` };
       }
       const pullRequests = input.pullRequests.map((pr) => ({
         number: pr.number,
