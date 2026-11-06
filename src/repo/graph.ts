@@ -1033,6 +1033,12 @@ export async function buildDependencyGraph(
 
   let filesParsed = sourceFiles.length;
   let followedImplementationFiles = 0;
+  // Implementation files outside the tsconfig inventory that an import may still pull in before the graph
+  // fails closed. A fixed 500 was too small for monorepos whose tests and their helpers sit outside every
+  // tsconfig: 2026-11-06, payloadcms/payload's solution tsconfig covers packages/*/src only, while test/,
+  // templates/ and tools/ hold about 2,700 imported source files, so every commit was UNSAFE with about
+  // 220 blockers. Scale with the repository instead, keeping a floor for small inventories.
+  const followBudget = Math.max(5000, sourceFiles.length);
 
   // Resolve each importer with its own nearest project, never another package's
   // aliases. Invalid project configuration remains a hard safety blocker.
@@ -1211,7 +1217,7 @@ export async function buildDependencyGraph(
           // initial walk. Parse it (and its imports) rather than silently dropping
           // the edge or loading every TypeScript declaration library again.
           try {
-            if (isExcludedPath(targetRel, options.excludeDirs ?? []) || followedImplementationFiles >= 500 || statSync(resolved).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
+            if (isExcludedPath(targetRel, options.excludeDirs ?? []) || followedImplementationFiles >= followBudget || statSync(resolved).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
             const followed = ts.createSourceFile(resolved, readFileSync(resolved, "utf8"), ts.ScriptTarget.Latest, true);
             if ((followed as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length) throw new Error("invalid implementation syntax");
             sourceFiles.push(followed);

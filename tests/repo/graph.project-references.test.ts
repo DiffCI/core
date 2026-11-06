@@ -314,3 +314,44 @@ describe("project references expand regardless of the root's own file count", ()
     }
   });
 });
+
+/**
+ * payloadcms/payload (2026-11-06): the solution tsconfig covers packages/*\/src only, and the suites under
+ * test/ import about 2,700 helper and config files that no tsconfig lists. They are parsed as imports reach
+ * them, and a fixed budget of 500 made every commit UNSAFE with "Resolved implementation cannot be included
+ * in the scoped source inventory".
+ */
+describe("implementation files outside every tsconfig", () => {
+  it("follows more than 500 imported files without blocking the graph", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-follow-budget-"));
+    try {
+      writeJson(join(dir, "package.json"), { name: "follow-budget", version: "1.0.0", devDependencies: { vitest: "^3.0.0" } });
+      writeJson(join(dir, "tsconfig.json"), { files: [], references: [{ path: "./packages/core" }] });
+      writeJson(join(dir, "packages/core/tsconfig.json"), {
+        compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", noEmit: true },
+        include: ["src"],
+      });
+      mkdirSync(join(dir, "packages/core/src"), { recursive: true });
+      writeFileSync(join(dir, "packages/core/src/index.ts"), "export const core = 1;\n");
+      mkdirSync(join(dir, "test/helpers"), { recursive: true });
+      const count = 600;
+      for (let i = 0; i < count; i++) {
+        writeFileSync(join(dir, `test/helpers/h${i}.ts`), `import { core } from '../../packages/core/src/index';\nexport const h${i} = core + ${i};\n`);
+      }
+      mkdirSync(join(dir, "test/suite"), { recursive: true });
+      writeFileSync(
+        join(dir, "test/suite/int.spec.ts"),
+        Array.from({ length: count }, (_, i) => `import { h${i} } from '../helpers/h${i}';`).join("\n") + "\nexport const all = [" + Array.from({ length: count }, (_, i) => `h${i}`).join(", ") + "];\n",
+      );
+
+      const result = await buildDependencyGraph({ repoPath: dir, excludeDirs: ["node_modules"] });
+
+      assert.deepStrictEqual(result.adapterBlockers?.filter((b) => b.includes("scoped source inventory")) ?? [], []);
+      assert.notStrictEqual(result.confidence, "UNSAFE");
+      assert.ok(result.graph.dependenciesOf("test/suite/int.spec.ts").includes("test/helpers/h599.ts"));
+      assert.ok(result.graph.dependenciesOf("test/helpers/h599.ts").includes("packages/core/src/index.ts"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
