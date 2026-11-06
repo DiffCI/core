@@ -292,6 +292,12 @@
     "tests/repo/directory-walkers.test.ts",
     "packages/diffci-cli/src/client/outcome-log.ts",
     "packages/diffci-cli/tests/client/outcome-log.test.ts",
+    "packages/diffci-cli/src/client/test-results.ts",
+    "packages/diffci-cli/tests/client/test-results.test.ts",
+    "packages/diffci-cli/src/client/test-ranking.ts",
+    "packages/diffci-cli/tests/client/test-ranking.test.ts",
+    "packages/diffci-cli/src/client/test-shards.ts",
+    "packages/diffci-cli/tests/client/test-shards.test.ts",
     ".github/FUNDING.yml"
   ]
 }
