@@ -514,7 +514,9 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
   const tests = new Set<string>();
   const code = new Set<string>();
   const visited = new Set<string>([filePath]);
-  // `lint`: the file configures a linter, so what runs it runs the linter, not tests (isLintConfig).
+  // `lint`: the file configures a linter, so only a test or graph code naming it is followed; anything else
+  // that reads it is lint tooling and runs no test (isLintConfig; 2026-11-05: LobeHub's oxlint.config.mts
+  // chain under scripts/stylexMigration/legacyFiles.json went past the depth limit).
   let frontier: Array<{ path: string; via: string; lint?: boolean }> = [{ path: filePath, via: filePath }];
   let transitiveCount = 0;
   const contents = new Map<string, string | undefined>();
@@ -592,12 +594,11 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
         } else if (input.isCodeFile(candidate) && input.inGraph(candidate)) {
           resolution.readers.push({ path: candidate, kind: "graph-code", via: target.path });
           code.add(candidate);
-        } else if (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate)) {
+        } else if (!target.lint && (input.isCodeFile(candidate) || DIRECTING_EXTENSIONS.test(candidate))) {
           resolution.readers.push({ path: candidate, kind: "transitive", via: target.path });
           if (++transitiveCount > MAX_TRANSITIVE_READERS) { block(`more than ${MAX_TRANSITIVE_READERS} non-code files name ${filePath}`, target.path); break; }
           parent.set(candidate, target.path);
-          // What reads a lint config is still lint tooling, so the marking carries down the chain.
-          next.push({ path: candidate, via: target.path, lint: target.lint || isLintConfig(candidate) });
+          next.push({ path: candidate, via: target.path, lint: isLintConfig(candidate) });
         } else {
           // Markup, prose, images and licences name paths in links and URLs but execute nothing and
           // direct no reads, so nothing reaches the suite through them.

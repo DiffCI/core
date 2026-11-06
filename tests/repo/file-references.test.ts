@@ -208,6 +208,19 @@ describe("configuration readers (2026-11-05)", () => {
     assert.equal(isLintConfig("packages/eslint/src/rules.ts"), false);
     assert.equal(isLintConfig("vitest.config.ts"), false);
   });
+  it("follows nothing past a lint config but tests and graph code", () => {
+    const resolution = resolveFileReferences("data/legacy.json", input({
+      "data/legacy.json": "[]",
+      "lint/plugin.mjs": `readFileSync("data/legacy.json")`,
+      "oxlint.config.mts": `import plugin from "./lint/plugin.mjs";`,
+      "tools/a.json": `{ "config": "oxlint.config.mts" }`,
+      "tools/b.json": `{ "next": "tools/a.json" }`,
+      "tools/c.json": `{ "next": "tools/b.json" }`,
+      "tools/d.json": `{ "next": "tools/c.json" }`,
+      "tools/e.json": `{ "next": "tools/d.json" }`,
+    }, []));
+    assert.deepEqual(resolution.unresolvable, []);
+  });
   it("carries the lint marking down a chain and never follows a tsconfig, at any depth", () => {
     const action = "runs:\n  using: composite\n  steps:\n    - run: node apps/share/should-build.mjs\n      shell: bash\n";
     const resolution = resolveFileReferences("data/seed.json", input({
