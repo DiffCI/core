@@ -152,6 +152,8 @@ export interface ObservationGraph {
   confidence: string;
   /** Confidence after reachability narrowing for this delta - the value that drove the verdict. */
   effectiveConfidence?: string;
+  /** Why `confidence` is below COMPLETE, in counts only; absent when it is COMPLETE. */
+  confidenceReasons?: string[];
   durationMs: number;
   phasesMs?: Record<string, number>;
   typescriptProgram?: TypeScriptProgramMetrics;
@@ -216,6 +218,8 @@ export interface ObservationResult {
    * subset of the full suite; verification runs them with `outsideSuiteCommands`. */
   testsOutsideFullSuite?: string[];
   outsideSuiteCommands?: string[];
+  /** Why `outsideSuiteCommands` is empty when the plan for those tests was refused. */
+  outsideSuiteRefusalReason?: string;
   /** Phases of the test script, verbatim (`node scripts/test-security.js`), that a selective run must
    * also execute: the selection covers some changed files only through them. Present only when the
    * observation was asked for them (ObserveOptions.selectTestPhases). Like `proposedCommands`, these

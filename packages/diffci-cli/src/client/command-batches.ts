@@ -113,7 +113,7 @@ export function batchCommand(command: string, paths: readonly string[], limit = 
  * test; the first non-zero exit is the result, and the remaining time budget is shared between parts.
  * With `stopOnFailure` (`--fail-fast`, 2026-11-06) the parts after the first failing one do not run.
  */
-export function measureCommands(commands: readonly string[], options: { cwd: string; timeoutMs: number; tailBytes: number; env?: Record<string, string>; stopOnFailure?: boolean }): CommandMeasurement {
+export function measureCommands(commands: readonly string[], options: { cwd: string; timeoutMs: number; tailBytes: number; env?: Record<string, string>; stopOnFailure?: boolean; stopOnFailureWithin?: number }): CommandMeasurement {
   if (commands.length === 1) return measureCommand(commands[0]!, options);
   const started = Date.now();
   const parts: CommandMeasurement[] = [];
@@ -124,7 +124,9 @@ export function measureCommands(commands: readonly string[], options: { cwd: str
     const part = measureCommand(command, { ...options, timeoutMs: remaining });
     parts.push(part);
     if (part.timedOut) break;
-    if (options.stopOnFailure && (part.exitCode !== 0 || part.signal !== null) && parts.length < commands.length) { stopped = true; break; }
+    // `stopOnFailureWithin`: only a failure among the first n parts stops the run (verify's first pass).
+    const stops = options.stopOnFailure || parts.length <= (options.stopOnFailureWithin ?? 0);
+    if (stops && (part.exitCode !== 0 || part.signal !== null) && parts.length < commands.length) { stopped = true; break; }
   }
   const failed = parts.find((part) => part.exitCode !== 0 || part.signal !== null || part.timedOut);
   const ranAll = parts.length === commands.length;

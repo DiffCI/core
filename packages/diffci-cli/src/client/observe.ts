@@ -21,7 +21,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { relative, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 
 import type { ObservationAgent } from "./agent-identity.js";
 import { economicsContext, evaluateEconomics, type EconomicsDecision } from "./economics.js";
@@ -253,9 +254,12 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
       if (economics.decision === "BYPASS_FULL") return finish("REFUSED", "eligibility", { reason: `ECONOMICS_FULL_BYPASS: ${economics.reason}. No selective command is authorized.` });
     }
 
-    const [{ analyzeGitDelta }, { classifyRepositoryProject, buildDependencyGraph, hydrateDependencyGraph }, { ImpactAnalyzer }, { runPathBaseline }, { commandSpecToString, planSelectiveTestCommands }, { repositoryFileReader }] = await Promise.all([
+    const [{ analyzeGitDelta }, graphEngine, { ImpactAnalyzer }, { runPathBaseline }, { commandSpecToString, planSelectiveTestCommands }, { repositoryFileReader }] = await Promise.all([
       import("@diffci.com/core/git/git-diff"), import("@diffci.com/core/repo/graph"), import("@diffci.com/core/repo/impact"), import("@diffci.com/core/planner/path-baseline"), import("@diffci.com/core/planner/test-command"), import("@diffci.com/core/repo/file-references"),
     ]);
+    const { classifyRepositoryProject, buildDependencyGraph, hydrateDependencyGraph } = graphEngine;
+    // Engines before 2026-11-06 do not explain their confidence; the report then omits the reasons.
+    const explainGraphConfidence = (graphEngine as unknown as { explainGraphConfidence?: (result: DependencyGraphResult) => string[] }).explainGraphConfidence;
     markPhase("engineLoad");
 
     // The eligibility gate is asked of the graph builder itself (classifyRepositoryProject), not of a
@@ -343,6 +347,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
         ...(outsideSuite.length ? {
           testsOutsideFullSuite: outsideSuite.map(hashPath),
           outsideSuiteCommands: outsidePlan?.refusalReason ? [] : (outsidePlan?.commands ?? []).map(commandSpecToString),
+          ...(outsidePlan?.refusalReason ? { outsideSuiteRefusalReason: separateProjectReason(repoPath, outsideSuite, hashPath) ?? outsidePlan.refusalReason } : {}),
         } : {}),
         fallbackReasons: impact.fallbackReasons,
         ...(fallbackDetails ? { fallbackDetails } : {}),
@@ -361,6 +366,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
           edges: graphResult.graph.edges.length,
           confidence: graphResult.confidence,
           effectiveConfidence: impact.effectiveGraphConfidence,
+          ...(graphResult.confidence !== "COMPLETE" && explainGraphConfidence ? { confidenceReasons: explainGraphConfidence(graphResult) } : {}),
           durationMs: Math.round(graphResult.performance.durationMs),
           phasesMs: graphResult.performance.phasesMs,
           typescriptProgram: readTypeScriptProgramMetrics((graphResult.performance as unknown as Record<string, unknown>).typescriptProgram),
@@ -395,4 +401,24 @@ function safeAuditWorkflows(repoPath: string): NonInterferenceEvidence["workflow
   } catch {
     return [];
   }
+}
+
+const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb"];
+
+/** Why tests outside the full suite cannot run from the root, when they sit in a project with its own
+ * lockfile: the root install does not install it (2026-11-06: LobeHub's apps/desktop, a separate pnpm
+ * project, left 8 affected tests unrun with only "outside the default runner configuration" to say why). */
+export function separateProjectReason(repoPath: string, tests: readonly string[], hashPath: (path: string) => string = (path) => path): string | undefined {
+  const roots = new Set<string>();
+  for (const test of tests) {
+    let root: string | undefined;
+    for (let dir = dirname(test); dir !== "." && dir !== "/" && dir !== ""; dir = dirname(dir)) {
+      if (LOCKFILES.some((name) => existsSync(join(repoPath, dir, name)))) { root = dir; break; }
+    }
+    if (!root) return undefined;
+    roots.add(root);
+  }
+  if (roots.size === 0) return undefined;
+  const names = [...roots].sort().map(hashPath);
+  return `${names.join(", ")} ${names.length === 1 ? "is a separate project with its own lockfile" : "are separate projects with their own lockfiles"}, which the root install does not install; run ${tests.length === 1 ? "that test" : `those ${tests.length} tests`} from there after installing it`;
 }

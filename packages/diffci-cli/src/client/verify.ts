@@ -6,7 +6,7 @@ import { appendToCommand, batchCommand, measureCommands, orderCommand, splitComm
 import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
 import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
-import { inferFullCommand, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
+import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
 import type { ObservationCommitRange, ObservationReport, SelectionReason } from "./report.js";
@@ -81,6 +81,8 @@ export interface VerificationReport {
     /** The graph's own confidence and the confidence after narrowing to this change. */
     graph_confidence?: string;
     effective_graph_confidence?: string;
+    /** Why graph_confidence is below COMPLETE, in counts only. */
+    graph_confidence_reasons?: string[];
   };
   required_actions: string[];
   /** Present when a failed verification was rerun at the base commit (`--baseline-on-failure`). */
@@ -91,6 +93,8 @@ export interface VerificationReport {
   reused_from?: { produced_at: string; selection: "selected" | "full"; command?: string };
   /** Present under `--shard i/N`: this job's share of the selection (test-shards.ts). */
   shard?: { index: number; total: number; timings: "file" | "equal" };
+  /** A full run that first ran the tests the dependency graph found affected (firstPassParts). */
+  first_pass?: { tests: number; commands: string[]; stopped_full_suite: boolean };
   /** Tests the coverage map added to the selection (coverage-map.ts), when it added any. */
   coverage_added?: string[];
 }
@@ -225,7 +229,7 @@ async function executeWithPolicy(
     fallback_reasons: result?.fallbackReasons ?? [],
     error: observation.reason,
     ...(observation.timings?.totalMs !== undefined ? { duration_ms: observation.timings.totalMs } : {}),
-    ...(result?.graph ? { graph_confidence: result.graph.confidence, effective_graph_confidence: result.graph.effectiveConfidence } : {}),
+    ...(result?.graph ? { graph_confidence: result.graph.confidence, effective_graph_confidence: result.graph.effectiveConfidence, ...(result.graph.confidenceReasons?.length ? { graph_confidence_reasons: result.graph.confidenceReasons } : {}) } : {}),
   };
 
   if ((observation.status !== "OBSERVED" || !result) && !enforcedFull) {
@@ -292,6 +296,10 @@ async function executeWithPolicy(
     ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
     : executableSelection(options.repoPath, result, rankedOrdering(options, result), shard && shardTests ? { tests: new Set(shardTests), first: shard.index === 1 } : undefined);
   const { selection, command, commands, outsideSuite } = executable;
+  // A full run first runs the tests the graph did find, and stops if one fails (2026-11-06 LobeHub catch
+  // study: both test-only failures were lost when the full suite reached the time limit first).
+  const firstPass = selection === "full" && !enforcedFull && !shard && !options.redactPaths && result ? firstPassParts(options.repoPath, result) : undefined;
+  const runCommands = firstPass ? [...firstPass.parts, ...commands] : commands;
   const reason = coverageAdded.length && selection === "selected"
     ? `${executable.reason}; the coverage map added ${coverageAdded.length} test file(s) the dependency graph did not select (${coverageAdded.slice(0, 3).join(", ")})`
     : executable.reason;
@@ -387,14 +395,17 @@ async function executeWithPolicy(
   try {
     execution = checkRun?.failure
       ? checkRun.failure.measurement
-      : measureCommands(commands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast });
+      : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
     startedNodeTests = trace?.read();
     const nodeResults = trace?.results() ?? [];
     if (nodeResults.length) execution = { ...execution, testResults: mergeTestFileResults(execution.testResults, nodeResults) };
   } finally {
     trace?.dispose();
   }
-  const failFastNote = execution.partsNotRun
+  const stoppedInFirstPass = firstPass && execution.partsNotRun !== undefined && runCommands.length - execution.partsNotRun <= firstPass.parts.length;
+  const failFastNote = stoppedInFirstPass
+    ? `; ${firstPass.tests} test file(s) the dependency graph found affected ran before the full suite and failed, so the full suite was not run`
+    : execution.partsNotRun
     ? `; --fail-fast stopped at the first failing part, so ${execution.partsNotRun} later part(s) of the selection did not run`
     : "";
   const preexistingNote = checksNote + failFastNote;
@@ -453,7 +464,8 @@ async function executeWithPolicy(
           : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
   const failureBaseline = verification === "failed" && !failedCheck && !execution.timedOut && options.baselineOnFailure && baselineSha
-    ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
+    // The base reruns only the parts that ran here: a first-pass failure is compared without the full suite.
+    ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands: stoppedInFirstPass ? firstPass.parts : commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
     : undefined;
   const baselineNote = failureBaseline && failureBaseline.status !== "unknown"
     ? `; ${failureBaseline.reason} (${failureBaseline.base_sha.slice(0, 12)})`
@@ -471,8 +483,9 @@ async function executeWithPolicy(
     selection,
     ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
     ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
-    command,
-    ...(commands.length > 1 ? { commands } : {}),
+    command: firstPass ? runCommands.join(" && ") : command,
+    ...(runCommands.length > 1 ? { commands: runCommands } : {}),
+    ...(firstPass ? { first_pass: { tests: firstPass.tests, commands: firstPass.parts, stopped_full_suite: Boolean(stoppedInFirstPass) } } : {}),
     execution,
     ...(checks ? { checks } : {}),
     snapshot: {
@@ -653,6 +666,23 @@ function fullSelection(repoPath: string, reason: string) {
   return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0 };
 }
 
+/**
+ * The commands that run a FULL observation's affected tests on their own, before the full suite: the
+ * tests the dependency graph did find, which a fallback elsewhere in the change does not make less
+ * likely to fail. Only when they are under half the suite, so the extra pass stays small, and only when
+ * the planner can run every one of them (paths are not redacted).
+ */
+export function firstPassParts(repoPath: string, result: NonNullable<ObservationReport["result"]>): { parts: string[]; tests: number } | undefined {
+  const tests = result.selectedTests;
+  if (result.mode !== "FULL" || tests.length === 0 || !(tests.length * 2 < result.totalTestCount)) return undefined;
+  const planned = inferPlannedCommands(repoPath, tests);
+  if (!planned) return undefined;
+  if ("commands" in planned) return { parts: planned.commands, tests: tests.length };
+  // A selected file the runner's glob would not match never runs (as executableSelection checks).
+  if (unmatchedNodeTests(planned.single, tests).length) return undefined;
+  return { parts: batchCommand(planned.single, tests), tests: tests.length };
+}
+
 /** The order to run selected tests in, and under --fail-fast the ones to run first (test-ranking.ts). */
 export interface SelectedOrdering {
   order: readonly string[];
@@ -755,7 +785,7 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
       outsideSuite = outside.length;
       reason = `${reason}; also ran ${outside.length} affected test file(s) the full test command does not run`;
     } else {
-      reason = `${reason}; ${outside.length} affected test file(s) outside the full test command were not run (${auxiliary?.reason ?? "no single command covers them"})`;
+      reason = `${reason}; ${outside.length} affected test file(s) outside the full test command were not run (${auxiliary?.reason ?? result.outsideSuiteRefusalReason ?? "no single command covers them"})`;
     }
   }
 

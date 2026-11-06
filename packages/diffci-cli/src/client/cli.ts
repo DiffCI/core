@@ -625,7 +625,11 @@ function summarise(report: ObservationReport, executionFollows = false): string 
     } else {
       lines.push("  planned reduction: unavailable (no discovered tests); runtime savings unmeasured");
     }
-    lines.push(`  graph: ${result.graph.nodes} nodes, confidence ${result.graph.effectiveConfidence ?? result.graph.confidence}`);
+    const changeConfidence = result.graph.effectiveConfidence ?? result.graph.confidence;
+    lines.push(`  graph: ${result.graph.nodes} nodes, confidence ${changeConfidence} for this change`);
+    if (result.graph.confidence !== changeConfidence || (result.graph.confidenceReasons?.length && changeConfidence !== "COMPLETE")) {
+      lines.push(`  repository graph: ${result.graph.confidence}${result.graph.confidenceReasons?.length ? ` (${result.graph.confidenceReasons.join("; ")})` : ""}`);
+    }
     if (result.fallbackReasons.length > 0) {
       lines.push(`  fallback: ${result.fallbackReasons.join("; ")}`);
       for (const [path, blockers] of Object.entries(result.fallbackDetails ?? {})) {

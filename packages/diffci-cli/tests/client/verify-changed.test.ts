@@ -187,6 +187,35 @@ describe("verify --changed", () => {
     }
   });
 
+  it("runs the affected tests before a full fallback and stops there when one fails", () => {
+    // LobeHub catch study (2026-11-06): a fallback's full suite reached the time limit before the failing test.
+    const dir = fixture();
+    try {
+      write(dir, "src/gamma.js", "export const gamma = () => 3;\n");
+      write(dir, "test/gamma.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {gamma} from '../src/gamma.js'; test('gamma', () => assert.equal(gamma(), 3));\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "--quiet", "-m", "gamma");
+      write(dir, "src/beta.js", "export const beta = () => 5;\n");
+      write(dir, "settings.custom", "unknown to DiffCI\n");
+      const report = JSON.parse(runVerify(dir).stdout);
+      assert.equal(report.selection, "full", report.reason);
+      assert.equal(report.verification, "failed");
+      assert.equal(report.first_pass?.tests, 1);
+      assert.equal(report.first_pass?.stopped_full_suite, true);
+      assert.match(report.commands[0], /beta\.test\.js$/);
+      assert.equal(report.execution.partsNotRun, 1);
+      assert.match(report.reason, /ran before the full suite and failed, so the full suite was not run/);
+
+      write(dir, "src/beta.js", "export const beta = () => 2; // fixed\n");
+      const fixed = JSON.parse(runVerify(dir).stdout);
+      assert.equal(fixed.verification, "passed", fixed.reason);
+      assert.equal(fixed.first_pass?.stopped_full_suite, false);
+      assert.equal(fixed.commands.length, 2, "the first pass, then the full suite");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("splits a selection across shards, each test in exactly one, and runs the full suite in shard 1 only", () => {
     const dir = fixture();
     try {
