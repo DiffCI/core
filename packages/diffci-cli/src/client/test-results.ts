@@ -48,6 +48,13 @@ export function parseTestFileResults(output: string): TestFileResult[] {
     if (jest) {
       const ms = duration(jest[3], "s");
       results.set(jest[2]!, { file: jest[2]!, status: jest[1] === "FAIL" ? "failed" : "passed", ...(ms !== undefined ? { ms } : {}) });
+      continue;
+    }
+    // pytest progress: `tests/test_a.py ..F.  [ 50%]`; F or E marks a failure (2026-11-06).
+    const pytest = /^(\S+\.py) ([.FEsxXp]+)\s*(?:\[\s*\d+%\])?\s*$/.exec(line);
+    if (pytest) {
+      const failed = /[FE]/.test(pytest[2]!) || results.get(pytest[1]!)?.status === "failed";
+      results.set(pytest[1]!, { file: pytest[1]!, status: failed ? "failed" : "passed" });
     }
   }
   return [...results.values()].sort((a, b) => a.file.localeCompare(b.file));

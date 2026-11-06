@@ -21,6 +21,8 @@ export interface AdapterContribution {
   testFiles: string[];
   testPackages: Record<string, string>;
   executionEnv?: Record<string, string>;
+  /** The interpreter the adapter analysed with and its runner should use, such as ["python3"]. */
+  interpreter?: string[];
   /** Global blockers: missing edges cannot be dismissed using graph reachability. */
   blockers: string[];
   fileBlockers?: Array<{ path: string; reason: string }>;

@@ -2,10 +2,11 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { goAdapter } from "./go.js";
 import { mavenAdapter } from "./maven.js";
+import { pythonAdapter } from "./python.js";
 import { vueAdapter } from "./vue.js";
 import type { RepositoryAdapter } from "./types.js";
 
-export const REPOSITORY_ADAPTERS: readonly RepositoryAdapter[] = [vueAdapter, goAdapter, mavenAdapter];
+export const REPOSITORY_ADAPTERS: readonly RepositoryAdapter[] = [vueAdapter, goAdapter, mavenAdapter, pythonAdapter];
 
 /** Never follows symlinks or scans dependency/build output directories. */
 export function adapterFiles(root: string, exclusions: readonly string[] = []): string[] {

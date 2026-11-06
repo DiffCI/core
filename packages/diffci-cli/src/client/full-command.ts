@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readRepositoryConfig } from "@diffci.com/core/repo/repo-config";
@@ -147,5 +148,20 @@ export function inferFullCommand(repoPath: string): FullCommandDecision {
   }
 
   if (existsSync(join(repoPath, "go.mod"))) return { command: "go test ./...", reason: "root Go module" };
+  // Python projects run pytest with the interpreter Core's Python adapter would find (2026-11-06).
+  if (["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", "tox.ini", "conftest.py"].some((file) => existsSync(join(repoPath, file)))) {
+    const interpreter = pythonInterpreter(repoPath);
+    return interpreter
+      ? { command: `${interpreter} -m pytest`, reason: "Python project tested with pytest" }
+      : { reason: "Python project, but no Python 3 interpreter (python3, python or py -3) is on PATH" };
+  }
   return { reason: "no supported full test command could be inferred" };
+}
+
+function pythonInterpreter(cwd: string): string | undefined {
+  for (const candidate of [["python3"], ["python"], ["py", "-3"]]) {
+    const result = spawnSync(candidate[0]!, [...candidate.slice(1), "-c", "import sys; print(sys.version_info[0])"], { cwd, encoding: "utf8", timeout: 10_000, windowsHide: true });
+    if (result.status === 0 && result.stdout.trim() === "3") return candidate.join(" ");
+  }
+  return undefined;
 }

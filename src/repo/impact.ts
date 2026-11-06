@@ -114,7 +114,7 @@ function shortestDependentPathToTest(graph: DependencyGraph, changedFilePath: st
 function collectScriptsAmong(candidates: Iterable<string>, isTestFile: IsTestFile, layout: RepositoryLayout): string[] { const result: string[] = []; for (const path of candidates) { if (isScriptFile(path, layout) && !isTestFile(path)) result.push(path); } return result.sort(); }
 function makeEvidence(reason: ImpactReason, changedFile: string, message: string, affectedFile?: string, path?: ImpactEvidencePath): ImpactEvidence { return { reason, changedFile, affectedFile, message, path }; }
 
-function classifyChangedFile(file: ChangedFile, isTestFile: IsTestFile, layout: RepositoryLayout, repositoryFiles?: ReadonlySet<string>, referenceResolved: ReadonlySet<string> = new Set()): ChangedImpact["category"] {
+function classifyChangedFile(file: ChangedFile, isTestFile: IsTestFile, layout: RepositoryLayout, repositoryFiles?: ReadonlySet<string>, referenceResolved: ReadonlySet<string> = new Set(), pythonSources: ReadonlySet<string> = new Set()): ChangedImpact["category"] {
   const path = file.path;
   const oldPath = file.oldPath;
   // Content inspection in analyzeGitDelta showed these cannot change how tests run; who reads them is
@@ -124,7 +124,9 @@ function classifyChangedFile(file: ChangedFile, isTestFile: IsTestFile, layout: 
   if (isInfrastructureFile(path) || (oldPath && isInfrastructureFile(oldPath))) return "infrastructure";
   if (infrastructureRole(path) === "data") return "unknown";
   if (isDatabaseFile(path) || (oldPath && isDatabaseFile(oldPath))) return "database";
-  if (isSourceFilePath(path)) {
+  // A .py file is code only where the Python adapter modelled it (2026-11-06); elsewhere, such as a
+  // script in a JavaScript repository, it stays an unknown file whose readers are resolved by reference.
+  if (isSourceFilePath(path) || pythonSources.has(path)) {
     if (isTestFile(path)) return "test";
     if (isScriptFile(path, layout)) return "script";
     if (classifyNextEntryPoint(path, layout)) return "entry-point";
@@ -350,7 +352,7 @@ export class ImpactAnalyzer {
     this.packageJsonSpecifiersOnly = delta.analysis.packageJsonSpecifiersOnly === true;
     this.specifiersOnlyManifests = new Set(delta.analysis.specifiersOnlyManifests ?? []);
     this.exportsRemaps = new Map(Object.entries(delta.analysis.exportsRemaps ?? {}));
-    const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved), reasons: changedFileReasons(file) }));
+    const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved, new Set(profile.pythonSources ?? [])), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
     const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? []), ...testDiscoveryErrors(profile)];
@@ -886,6 +888,11 @@ export class ImpactAnalyzer {
       riskSignals.push({ level: "critical", reason: "DELETED_FILE_UNKNOWABLE_GRAPH", message, paths: [changedPath] });
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       return;
+    }
+    // A Python file is also run by name: a JavaScript test or script that calls `python scripts/x.py`
+    // names it without importing it. Those readers are added to what the Python graph selects (2026-11-06).
+    if (changedPath.endsWith(".py") && profile.pythonSources?.includes(changedPath)) {
+      this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true });
     }
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
   }

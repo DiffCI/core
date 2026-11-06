@@ -51,6 +51,11 @@ export interface RepositoryProfile {
   goDependencyPaths?: { sources: string[]; embeds: string[] };
   /** Maven/JUnit test file to owning reactor module (repo-relative, "." for root). */
   mavenTestModules?: Record<string, string>;
+  /** Python files and pytest test files the Python adapter modelled (adapters/python.ts), and the
+   * interpreter it found. Only these `.py` files are code; other `.py` files stay unknown files. */
+  pythonSources?: string[];
+  pythonTests?: string[];
+  pythonInterpreter?: string[];
   /** Nested modules excluded by an explicit root-module execution scope. Changes here force full CI. */
   goExcludedModuleRoots?: string[];
   vueScope?: { packageRoot: string; testConfig: string };

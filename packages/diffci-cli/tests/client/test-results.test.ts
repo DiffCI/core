@@ -46,3 +46,18 @@ test("merges results so a later run of a file replaces an earlier one", () => {
     [{ file: "a", status: "passed" }, { file: "b", status: "passed", ms: 3 }],
   );
 });
+
+test("reads pytest progress lines and failure summaries (2026-11-06)", async () => {
+  const { failingTestNames } = await import("../../src/client/failure-baseline.js");
+  const output = [
+    "tests/test_cart.py ..F.                                                  [ 50%]",
+    "tests/test_pricing.py ....                                               [100%]",
+    "=========================== short test summary info ============================",
+    "FAILED tests/test_cart.py::test_total - AssertionError: assert 3 == 4",
+  ].join("\n");
+  assert.deepEqual(parseTestFileResults(output), [
+    { file: "tests/test_cart.py", status: "failed" },
+    { file: "tests/test_pricing.py", status: "passed" },
+  ]);
+  assert.deepEqual(failingTestNames(output), ["tests/test_cart.py::test_total"]);
+});

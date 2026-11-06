@@ -4,6 +4,7 @@ import { isBuiltin } from "node:module";
 import { dirname, extname, join, normalize, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
+import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
 import { applyVueScope, inVuePackage } from "./vue-scope.js";
 import type {
@@ -875,7 +876,8 @@ export async function buildDependencyGraph(
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
-  if (contributions.length && files.some((file) => /\.(?:py|rs|cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file))) {
+  const pythonModeled = contributions.some((item) => item.id === "python");
+  if (contributions.length && files.some((file) => (!pythonModeled && /\.py$/.test(file)) || /\.(?:rs|cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file))) {
     adapterBlockers.push("Unmodeled languages alongside an adapter require full validation");
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
@@ -887,11 +889,17 @@ export async function buildDependencyGraph(
     embeds: [...new Set(goContribution.assetPaths)].sort(),
   } : undefined;
   profile.mavenTestModules = Object.assign({}, ...contributions.filter((item) => item.id === "maven").map((item) => item.testPackages));
+  const pythonContribution = contributions.find((item) => item.id === "python");
+  if (pythonContribution) {
+    profile.pythonSources = [...new Set(pythonContribution.sourcePaths)].sort();
+    profile.pythonTests = [...new Set(pythonContribution.testFiles)].sort();
+    if (pythonContribution.interpreter) profile.pythonInterpreter = pythonContribution.interpreter;
+  }
   const adapterTests = contributions.flatMap((item) => item.testFiles);
   profile.testFilePaths = [...new Set([...profile.testFilePaths, ...adapterTests])].sort();
   if (profile.testUniverse) {
     profile.testUniverse.discoveredTestFiles = profile.testFilePaths.length;
-    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || contributions.some((item) => item.id === "go" || item.id === "maven")) && profile.testFilePaths.length === 0;
+    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || contributions.some((item) => item.id === "go" || item.id === "maven" || item.id === "python")) && profile.testFilePaths.length === 0;
   }
   const entryPointPaths = new Set(profile.entryPoints.map((e) => e.path));
 
@@ -1389,7 +1397,8 @@ export function classifyRepositoryProject(repoPath: string): { capable: boolean;
   if (files.includes("go.mod")) return { capable: true, reason: "Go module (package-level analysis)" };
   if (files.some((file) => file.endsWith(".vue"))) return { capable: true, reason: "Vue single-file components" };
   if (files.includes("pom.xml") && files.some((file) => file.endsWith(".java") || file.endsWith(".kt"))) return { capable: true, reason: "Maven reactor (module-level Java analysis)" };
-  return { capable: false, reason: "No TypeScript project, Vue components, root Go module, or Maven reactor found" };
+  if (pythonAdapter.detect({ repoPath, files, profile: {} as RepositoryProfile })) return { capable: true, reason: "Python project tested with pytest (file-level import analysis)" };
+  return { capable: false, reason: "No TypeScript project, Vue components, root Go module, Maven reactor, or Python project found" };
 }
 
 export interface TypeScriptProjectCapability {

@@ -226,6 +226,16 @@ const CONFIG_PATTERNS = [
   /^pnpm-lock\.yaml$/,
   /^bun\.lockb$/,
   /^(npm|pnpm|yarn)-lock\./,
+  // Python projects (2026-11-06): what pytest, the interpreter and the installed packages are.
+  /^pyproject\.toml$/,
+  /^setup\.(?:py|cfg)$/,
+  /^pytest\.ini$/,
+  /^tox\.ini$/,
+  /^noxfile\.py$/,
+  /^requirements[^/]*\.(?:txt|in)$/,
+  /^Pipfile(?:\.lock)?$/,
+  /^(?:poetry|uv|pdm)\.lock$/,
+  /^\.python-version$/,
 ];
 
 // Stage 1B fix (2026-08-21, docs/research/2026-08-21-stage1b-*.md): root-caused in Stage 1A's fallback-

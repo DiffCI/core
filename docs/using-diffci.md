@@ -313,6 +313,19 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Maven …: parent dependency inheritance requires full validation` | Inherit dependencies from an external parent POM | No |
 | `Maven …: unresolved dependency coordinates require full validation` | Use a `${property}` version DiffCI cannot resolve | No |
 
+### Python
+
+These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
+
+| Reason | Example change | Narrow |
+| --- | --- | --- |
+| `Python file could not be parsed (…): …` | A `.py` file with a syntax error | Fix: make the file parse |
+| `Python computed import in …; full validation required` | `importlib.import_module(name)` with a name built at run time | No |
+| `Unresolved relative import in …: ……` | `from .gone import x` after deleting `gone.py` | No |
+| `Unresolved first-party Python import in …: …` | `import shop.generated` where `shop/generated.py` is created by a build step | No |
+| `pytest configuration DiffCI cannot read: …` | `python_files` set to something other than a string or list in `pyproject.toml` | Fix: use a literal string or list |
+| `Python analysis found no Python files` | Project files with every `.py` file inside a virtual environment | No |
+
 ### Vue
 
 These appear only for Vue and Nuxt repositories, most of them only after `vue` is set in `diffci.json`.

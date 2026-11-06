@@ -381,6 +381,20 @@ export function planSelectiveTestCommands(
     const commandSpec: CommandSpec = { executable: "pnpm", args: ["--dir", scope.packageRoot, "exec", "vitest", "run", "--config", scope.testConfig, ...local] };
     return { commands: [commandSpec], groups: [{ runnerId: `vitest:${scope.packageRoot}/${scope.testConfig}`, label: "Declared Vue package suite", paths, commandSpec }], unroutedPaths: [] };
   }
+  // pytest takes test files as arguments; conftest.py and rootdir configuration still apply (2026-11-06).
+  const pythonPaths = selectedPaths.filter((path) => path.endsWith(".py"));
+  if (pythonPaths.length) {
+    const known = new Set(profile.pythonTests ?? []);
+    const unclaimed = pythonPaths.filter((path) => !known.has(path));
+    if (unclaimed.length) return { commands: [], groups: [], unroutedPaths: unclaimed, refusalReason: "Python test files require pytest discovery by the Python adapter" };
+    const otherPlan = planSelectiveTestCommands(profile, selectedPaths.filter((path) => !path.endsWith(".py")));
+    if (otherPlan.refusalReason) return otherPlan;
+    const interpreter = profile.pythonInterpreter ?? ["python"];
+    const paths = [...pythonPaths].sort();
+    const commandSpec: CommandSpec = { executable: interpreter[0]!, args: [...interpreter.slice(1), "-m", "pytest", ...paths] };
+    const group: SelectiveTestCommandGroup = { runnerId: "pytest", label: "pytest", paths, commandSpec };
+    return { commands: [...otherPlan.commands, commandSpec], groups: [...otherPlan.groups, group], unroutedPaths: [] };
+  }
   const goPaths = selectedPaths.filter((path) => path.endsWith(".go"));
   if (goPaths.length) {
     const packages = profile.goTestPackages ?? {};

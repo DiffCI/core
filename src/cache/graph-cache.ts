@@ -8,7 +8,8 @@ import type { DependencyGraphResult } from "../repo/types.js";
 // 5: inline type-only imports are type edges and vi.mock/jest.mock targets are edges (2026-11-04).
 // 6: the profile's diffciConfig carries declared `inputs` (2026-11-05).
 // 7: folded computed specifiers and root-absolute Vite globs have edges (2026-11-06).
-export const GRAPH_CACHE_SCHEMA_VERSION = "7";
+// 8: Python projects have a graph, and the profile carries pythonSources/pythonTests (2026-11-06).
+export const GRAPH_CACHE_SCHEMA_VERSION = "8";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

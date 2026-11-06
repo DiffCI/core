@@ -46,7 +46,9 @@ export function failingTestNames(output: string): string[] {
     const tap = /^\s*not ok \d+ - (.+?)\s*(?:#.*)?$/.exec(line);
     const vitest = /^\s*(?:FAIL|×)\s+(.+?)(?:\s+\d+(?:\.\d+)?m?s)?\s*$/.exec(line);
     const jest = /^\s*●\s+(.+›.+?)\s*$/.exec(line);
-    const name = (spec ?? tap ?? vitest ?? jest)?.[1]?.trim();
+    // pytest's short summary: `FAILED tests/test_a.py::test_x - AssertionError` (2026-11-06).
+    const pytest = /^(?:FAILED|ERROR)\s+(\S+\.py::\S+)/.exec(line);
+    const name = (spec ?? tap ?? vitest ?? jest ?? pytest)?.[1]?.trim();
     if (name && !/^failing tests:?$/i.test(name)) names.add(name);
   }
   return [...names].sort();
