@@ -63,6 +63,17 @@ inputs:
       the workflow conclusion. Turn it on only while debugging an installation.
     required: false
     default: "false"
+  comment:
+    description: >-
+      Also keep one comment on the pull request up to date with what the change affects. Off by default.
+      Needs "permissions: pull-requests: write" on the job; pull requests from forks get a read-only token,
+      so they get a warning instead of a comment. Never fails the step.
+    required: false
+    default: "false"
+  github-token:
+    description: Token used only to post the pull request comment when comment is true.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   report-path:
@@ -71,6 +82,25 @@ outputs:
   status:
     description: OBSERVED, REFUSED, or ERROR.
     value: ${{ steps.observe.outputs.status }}
+  full-suite-required:
+    description: >-
+      "false" only when DiffCI narrowed this change cleanly. "true" on any fallback, refusal, error or missing
+      report, so a workflow that narrows on it falls back to the full suite whenever DiffCI is unsure.
+    value: ${{ steps.impact.outputs.full-suite-required }}
+  affected-tests:
+    description: >-
+      JSON array of the affected test files (repository-relative) when full-suite-required is "false".
+      Empty when the full suite is required or redact-paths is on, so fromJSON fails rather than running nothing.
+    value: ${{ steps.impact.outputs.affected-tests }}
+  affected-test-count:
+    description: Number of affected test files. Empty without an observation.
+    value: ${{ steps.impact.outputs.affected-test-count }}
+  total-test-count:
+    description: Number of test files the full suite runs. Empty without an observation.
+    value: ${{ steps.impact.outputs.total-test-count }}
+  reason:
+    description: One line on why the full suite is required. Empty when it is not.
+    value: ${{ steps.impact.outputs.reason }}
 
 runs:
   using: composite
@@ -112,6 +142,18 @@ runs:
           cd "$RUNNER_TEMP"
           npx --yes --ignore-scripts --no-audit --fund=false --package "@diffci.com/diffci@$DIFFCI_CLI_VERSION" diffci "${args[@]}"
         )
+
+    # Reads the written report only. The token reaches the script through the environment, and the
+    # script never fails the step: outputs and the comment are conveniences, the artifact is the record.
+    - name: Summarize change impact
+      id: impact
+      if: ${{ always() }}
+      shell: bash
+      env:
+        DIFFCI_REPORT: ${{ steps.observe.outputs.report-path }}
+        DIFFCI_COMMENT: ${{ inputs.comment }}
+        DIFFCI_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/action/impact.mjs"
 
     - name: Upload observation report
       if: ${{ inputs.upload-artifact == 'true' && steps.observe.outputs.report-path != '' }}

@@ -5,6 +5,8 @@ on:
 
 permissions:
   contents: read
+  # Only for comment: "true" below. Fork pull requests get a read-only token and a warning instead.
+  pull-requests: write
 
 jobs:
   diffci-observer:
@@ -20,3 +22,4 @@ jobs:
         with:
           redact-paths: "true"
           artifact-retention-days: "7"
+          comment: "true"

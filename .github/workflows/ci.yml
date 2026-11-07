@@ -52,9 +52,16 @@ jobs:
         env:
           DIFFCI_STATUS: ${{ steps.observe.outputs.status }}
           DIFFCI_REPORT_PATH: ${{ steps.observe.outputs.report-path }}
+          DIFFCI_FULL: ${{ steps.observe.outputs.full-suite-required }}
+          DIFFCI_TESTS: ${{ steps.observe.outputs.affected-tests }}
+          DIFFCI_TOTAL: ${{ steps.observe.outputs.total-test-count }}
         run: |
           set -euo pipefail
           test "$DIFFCI_STATUS" = "OBSERVED"
+          case "$DIFFCI_FULL" in true|false) ;; *) echo "full-suite-required must be true or false" >&2; exit 1 ;; esac
+          # redact-paths is on, so the test list must stay empty rather than become a list of digests.
+          test -z "$DIFFCI_TESTS"
+          test -n "$DIFFCI_TOTAL"
           test -n "$DIFFCI_REPORT_PATH"
           test -f "$DIFFCI_REPORT_PATH"
           case "$DIFFCI_REPORT_PATH" in

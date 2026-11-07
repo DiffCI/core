@@ -60,9 +60,20 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "artifact-retention-days",
     "api-url",
     "api-token",
-    "fail-on-error"
+    "fail-on-error",
+    "comment",
+    "github-token"
   ]);
-  assert.deepEqual(Object.keys(action.outputs), ["report-path", "status"]);
+  assert.equal(action.inputs.comment?.default, "false", "commenting is opt-in");
+  assert.deepEqual(Object.keys(action.outputs), [
+    "report-path",
+    "status",
+    "full-suite-required",
+    "affected-tests",
+    "affected-test-count",
+    "total-test-count",
+    "reason"
+  ]);
   assert.match(raw, /cd "\$RUNNER_TEMP"/);
   assert.match(raw, /uses: actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1/);
   assert.equal(action.inputs["cli-version"]?.default, await cliVersion());
@@ -89,4 +100,12 @@ test("public observer Action passes its token only through the environment", asy
   assert.ok(observe, "observe step is present");
   assert.equal(observe.env?.DIFFCI_TOKEN, "${{ inputs.api-token }}");
   assert.doesNotMatch(observe.run ?? "", /api-token|DIFFCI_TOKEN/, "the token is never placed on a command line");
+});
+
+test("public observer Action passes the comment token only through the environment", async () => {
+  const { action } = await readAction();
+  const impact = action.runs.steps.find((step) => step.id === "impact");
+  assert.ok(impact, "impact step is present");
+  assert.equal(impact.env?.DIFFCI_GITHUB_TOKEN, "${{ inputs.github-token }}");
+  assert.equal(impact.run, 'node "$GITHUB_ACTION_PATH/action/impact.mjs"');
 });
