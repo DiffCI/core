@@ -1,6 +1,8 @@
 # DiffCI Core
 
-[![DiffCI MCP server](https://mcprush.com/badge/diffci-mcp/card.svg)](https://mcprush.com/to/diffci-mcp?ref=badge)
+[![npm](https://img.shields.io/npm/v/@diffci.com/diffci)](https://www.npmjs.com/package/@diffci.com/diffci)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-DiffCI%20change%20impact-blue?logo=github)](https://github.com/marketplace/actions/diffci-change-impact)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/DiffCI/core/badge)](https://scorecard.dev/viewer/?uri=github.com/DiffCI/core)
 
 **Affected checks before push, for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, so they run before the push instead of failing at the full CI gate afterwards. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
@@ -10,6 +12,17 @@ npx "@diffci.com/diffci@latest" check
 ```
 
 Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/using-diffci.md).
+
+**On every pull request**, add one job beside your existing CI. Its job summary shows which tests the change affects and why, or that the full suite is needed and why. It runs no tests and skips or changes nothing:
+
+```yaml
+- uses: actions/checkout@v7
+  with:
+    fetch-depth: 0 # DiffCI needs the base commit
+- uses: DiffCI/core@v0.3.32
+```
+
+[Full workflow](examples/github-actions-observer.yml) · [GitLab CI/CD component](integrations/gitlab/README.md)
 
 [![DiffCI demo video](docs/demo-video.jpg)](https://www.youtube.com/watch?v=ychCnVVRQq0)
 

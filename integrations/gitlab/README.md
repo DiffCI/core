@@ -1,8 +1,8 @@
-# DiffCI Core observer for GitLab CI/CD
+# DiffCI change impact for GitLab CI/CD
 
-The GitLab CI/CD component version of the [DiffCI Core observer Action](https://github.com/DiffCI/core/blob/main/docs/github-action-observer.md).
-It analyses each merge request and default-branch push and writes a JSON report saying which tests
-the change affects and why. It is observation only: it runs no tests, skips or cancels no jobs,
+The GitLab CI/CD component version of the [DiffCI change impact Action](https://github.com/DiffCI/core/blob/main/docs/github-action-observer.md).
+It analyses each merge request and default-branch push and writes a summary saying which tests the
+change affects and why (or that the full suite is needed and why), plus the full JSON report. It is observation only: it runs no tests, skips or cancels no jobs,
 does not comment on merge requests, does not change the checkout, and sends nothing anywhere.
 
 ```yaml
@@ -22,8 +22,9 @@ them.
   base commit.
 - Installs the pinned CLI outside the checkout with `--ignore-scripts`, and writes the report outside
   the checkout while observing.
-- Uploads `.diffci/diffci-observation.json` as an artifact, linked from the merge request as
-  "DiffCI observation", and exposes `DIFFCI_STATUS` (`OBSERVED`, `REFUSED` or `ERROR`) to jobs that
+- Uploads `.diffci/diffci-summary.md` (what the change affects, and why) and
+  `.diffci/diffci-observation.json` as artifacts, linked from the merge request as
+  "DiffCI change impact", and exposes `DIFFCI_STATUS` (`OBSERVED`, `REFUSED` or `ERROR`) to jobs that
   `needs` it.
 
 In a merged-results pipeline the observer diffs the source branch head, not the merge commit GitLab

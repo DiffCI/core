@@ -1,4 +1,4 @@
-# DiffCI Core observer: the GitLab CI/CD component version of action.yml.
+# DiffCI change impact: the GitLab CI/CD component version of action.yml.
 # Observation only. Runs nothing, skips nothing, changes nothing, sends nothing.
 spec:
   inputs:
@@ -50,7 +50,8 @@ spec:
       # and the CLI is installed outside it, so the project's lockfile and node_modules are untouched.
       work="$(mktemp -d)"
       report="$work/diffci-observation.json"
-      args=(observe --no-send --repo "$CI_PROJECT_DIR" --out "$report")
+      summary="$work/diffci-summary.md"
+      args=(observe --no-send --repo "$CI_PROJECT_DIR" --out "$report" --summary-out "$summary")
       if [ "$DIFFCI_REDACT" = "true" ]; then args+=(--redact-paths); fi
       (
         cd "$work"
@@ -61,6 +62,7 @@ spec:
       mkdir -p "$CI_PROJECT_DIR/.diffci"
       if [ -f "$report" ]; then
         cp "$report" "$CI_PROJECT_DIR/.diffci/"
+        if [ -f "$summary" ]; then cp "$summary" "$CI_PROJECT_DIR/.diffci/"; fi
         status="$(node -p 'require(process.argv[1]).status' "$report")"
       else
         status="ERROR"
@@ -69,8 +71,10 @@ spec:
       echo "DiffCI observation: $status"
   artifacts:
     when: always
-    expose_as: DiffCI observation
+    # Linked from the merge request: the summary says what the change affects and why.
+    expose_as: DiffCI change impact
     paths:
+      - .diffci/diffci-summary.md
       - .diffci/diffci-observation.json
     reports:
       # Later jobs that `needs` this one can read $DIFFCI_STATUS (OBSERVED, REFUSED or ERROR).

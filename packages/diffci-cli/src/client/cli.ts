@@ -963,6 +963,16 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
       // Losing the summary is cosmetic; the report on disk is the record.
     }
   }
+  // The same Markdown for CI systems without a step summary (the GitLab component exposes it as an artifact).
+  const summaryOut = stringFlag(flags, "summary-out");
+  if (summaryOut) {
+    try {
+      mkdirSync(dirname(resolve(summaryOut)), { recursive: true });
+      writeFileSync(resolve(summaryOut), formatJobSummary(report, summary, delivery), "utf8");
+    } catch {
+      // Cosmetic, as above.
+    }
+  }
 
   if (env.GITHUB_OUTPUT) {
     try {
@@ -1342,7 +1352,7 @@ Usage:
   diffci pilot-packet [--repo <path>] [--out-dir <dir>] [--base <sha> --head <sha>]
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
   diffci observe [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
-                 [--redact-paths] [--json] [--quiet] [--fail-on-error]
+                 [--redact-paths] [--json] [--quiet] [--fail-on-error] [--summary-out <file.md>]
                  [--api-url <url> --api-token <token>] [--no-send] [--share-usage] [--agent <name|auto>]
                  [--graph-cache-dir <dir>] [--shared-graph-cache [--graph-cache-url <url>]]
   diffci verify-savings --repo <path> --full <command>

@@ -19,7 +19,7 @@ test("a selective plan leads with what the change affects and why", () => {
   assert.match(text, /\| `test\/alpha\.test\.ts` \| direct import from `src\/alpha\.ts` \|/);
   assert.match(text, /npx --no-install vitest run test\/alpha\.test\.ts/);
   assert.match(text, /<summary>Full report<\/summary>\n\n```\nraw summary\n```/);
-  assert.match(text, /Observation only: DiffCI ran, skipped and changed nothing/);
+  assert.match(text, /Observation only: DiffCI ran, skipped and changed nothing in this job/);
 });
 
 test("a full-suite fallback says so and gives its reasons", () => {

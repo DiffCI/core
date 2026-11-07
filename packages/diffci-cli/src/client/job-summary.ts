@@ -88,7 +88,7 @@ export function formatJobSummary(report: ObservationReport, textSummary: string,
     "",
     "</details>",
     "",
-    "<sub>Observation only: DiffCI ran, skipped and changed nothing in this workflow. [DiffCI](https://github.com/DiffCI/core) is open source (MIT) and tells AI coding agents what their change breaks.</sub>",
+    "<sub>Observation only: DiffCI ran, skipped and changed nothing in this job. [DiffCI](https://github.com/DiffCI/core) is open source (MIT) and tells AI coding agents what their change breaks.</sub>",
     "",
   );
   return lines.join("\n");
