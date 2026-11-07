@@ -12,7 +12,10 @@ permissions:
 
 jobs:
   check-plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
+    env:
+      # Pinned like the DiffCI GitHub Action. Bump it after reviewing a new CLI release.
+      DIFFCI_CLI_VERSION: "0.3.32"
     steps:
       - name: Check out the scheduled revision and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -20,13 +23,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           path: target
-
-      - name: Check out DiffCI Core
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: DiffCI/core
-          ref: main # Pin to a reviewed revision containing check-plan.
-          path: core
+          persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -37,13 +34,12 @@ jobs:
         working-directory: target
         run: npm ci
 
-      - name: Build Core and the installed CLI entry point
-        working-directory: core
+      # Installed outside the checkout so npm never touches the repository being planned.
+      - name: Install the published DiffCI CLI
         run: |
-          npm ci
-          npm run build
-          npm ci --prefix packages/diffci-cli
-          npm run build --prefix packages/diffci-cli
+          npm install --prefix "$RUNNER_TEMP/diffci" --ignore-scripts --no-audit --fund=false \
+            "@diffci.com/diffci@$DIFFCI_CLI_VERSION"
+          echo "$RUNNER_TEMP/diffci/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Save the advisory plan for this revision
         id: plan
@@ -53,8 +49,7 @@ jobs:
           BASE=$(git rev-parse HEAD^)
           test "$HEAD" = "$GITHUB_SHA"
           test -z "$(git status --porcelain)"
-          node ../core/dist/cli.js plan --repo "$PWD" --base "$BASE" --head "$HEAD" \
-            > "$RUNNER_TEMP/plan.json"
+          diffci plan --repo "$PWD" --base "$BASE" --head "$HEAD" > "$RUNNER_TEMP/plan.json"
 
       - name: Prepare the plan's base revision
         id: base-setup
@@ -86,7 +81,7 @@ jobs:
       - name: Compare failures even when the full suite failed
         if: ${{ !cancelled() && steps.plan.outcome == 'success' && steps.base-setup.outcome == 'success' && (steps.base-full.outcome == 'success' || steps.base-full.outcome == 'failure') && (steps.full.outcome == 'success' || steps.full.outcome == 'failure') }}
         run: |
-          node core/packages/diffci-cli/dist-client/src/client/cli.js check-plan \
+          diffci check-plan \
             --repo "$GITHUB_WORKSPACE/target" --base-repo "$RUNNER_TEMP/base" --root . \
             --plan "$RUNNER_TEMP/plan.json" --results "$RUNNER_TEMP/junit.xml" \
             --base-results "$RUNNER_TEMP/base-junit.xml" \

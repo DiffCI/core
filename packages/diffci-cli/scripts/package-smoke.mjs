@@ -162,16 +162,22 @@ try {
   assert(report.result?.selectedTests?.includes("test/alpha.test.js"), `alpha test was not selected: ${JSON.stringify(report.result?.selectedTests)}`);
   assert(report.nonInterference?.worktreeUnchanged === true, "installed CLI changed the observed checkout");
 
-  // Exercise the new parser dependency from the installed tarball, with a real Core plan for the
-  // same fixture. Keep inputs outside the checkout so plan creation still sees a clean repository.
+  // Exercise the new parser dependency from the installed tarball, with a plan from the installed
+  // `diffci plan` for the same fixture. Keep inputs outside the checkout so plan creation still sees a
+  // clean repository.
   const planPath = join(temp, "plan.json");
-  const planJson = run(process.execPath, [join(dirname(bundledCoreIndex), "cli.js"), "plan", "--repo", fixture.repo, "--base", fixture.base, "--head", fixture.head], { cwd: consumer });
+  const installedCli = join(consumer, "node_modules", "@diffci.com", "diffci", "dist-client", "src", "client", "cli.js");
+  const planArgs = ["plan", "--repo", fixture.repo, "--base", fixture.base, "--head", fixture.head];
+  const planJson = run(process.execPath, [installedCli, ...planArgs], { cwd: consumer });
   const plan = JSON.parse(planJson).plan;
-  assert(plan?.selectedTests?.includes("test/alpha.test.js"), "installed Core plan did not select alpha");
-  assert(plan?.skippedTests?.includes("test/beta.test.js"), "installed Core plan did not skip beta");
+  assert(plan?.selectedTests?.includes("test/alpha.test.js"), "installed diffci plan did not select alpha");
+  assert(plan?.skippedTests?.includes("test/beta.test.js"), "installed diffci plan did not skip beta");
+  const corePlanJson = run(process.execPath, [join(dirname(bundledCoreIndex), "cli.js"), ...planArgs], { cwd: consumer });
+  // Analysis timing is the only field allowed to differ between two runs.
+  const withoutTiming = (text) => { const value = JSON.parse(text); delete value.impact?.performance; return JSON.stringify(value); };
+  assert(withoutTiming(planJson) === withoutTiming(corePlanJson), "installed diffci plan differs from the bundled Core plan");
   write(planPath, planJson);
   const resultsPath = join(temp, "junit.xml");
-  const installedCli = join(consumer, "node_modules", "@diffci.com", "diffci", "dist-client", "src", "client", "cli.js");
   const selectedFailure = '<testcase name="selected" file="test/alpha.test.js"><failure/></testcase>';
   const missedFailure = '<testcase name="missed" file="test/beta.test.js"><failure/></testcase>';
   const unknownFailure = '<testcase name="unattributed"><error/></testcase>';

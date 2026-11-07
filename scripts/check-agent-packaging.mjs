@@ -53,6 +53,9 @@ assert(action.includes('"@diffci.com/diffci@$DIFFCI_CLI_VERSION"'), "GitHub Acti
 const gitlabComponent = readText("integrations/gitlab/templates/observe/template.yml");
 assert(gitlabComponent.includes(`default: "${version}"`), "GitLab component must default to the CLI package version.");
 assert(gitlabComponent.includes('"@diffci.com/diffci@$DIFFCI_CLI_VERSION"'), "GitLab component must use the validated CLI version.");
+const checkPlanExample = readText("examples/github-actions-check-plan.yml");
+assert(checkPlanExample.includes(`DIFFCI_CLI_VERSION: "${version}"`), "check-plan example must pin the CLI package version.");
+assert(checkPlanExample.includes('"@diffci.com/diffci@$DIFFCI_CLI_VERSION"'), "check-plan example must install the pinned CLI version.");
 assert(gitlabComponent.includes("--no-send"), "GitLab component must not send reports while Cloud is GitHub-only.");
 assert(readText("integrations/gitlab/README.md").includes(`observe@${version}`), "GitLab component README must show the CLI package version.");
 

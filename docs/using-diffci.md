@@ -108,7 +108,16 @@ node /path/to/core/dist/cli.js plan \
   --head "$HEAD"
 ```
 
-For the published CLI, pass the same revisions to `check`:
+The published CLI prints the same plan with `diffci plan`:
+
+```sh
+npx --yes @diffci.com/diffci@latest plan \
+  --repo "$PWD" \
+  --base "$BASE" \
+  --head "$HEAD"
+```
+
+To also measure the selection, pass the same revisions to `check`:
 
 ```sh
 npx --yes @diffci.com/diffci@latest check \
@@ -126,19 +135,20 @@ _Contributed by [Emmanuel Mawulolo Tagbor (@KingEmma7)](https://github.com/KingE
 supplied full-suite report. It does not run tests, read Git state, write files or
 send data. Use a CLI build containing this command; when working from source,
 build `packages/diffci-cli` and invoke its `dist-client/src/client/cli.js` with Node.
+`diffci plan` and `check-plan` ship in the same package.
 
 Save the advisory Core plan before running the full suite, using the verified
 revisions described above:
 
 ```sh
 RESULTS_DIR=$(mktemp -d)
-node /path/to/core/dist/cli.js plan --repo "$PWD" --base "$BASE" --head "$HEAD" > "$RESULTS_DIR/plan.json"
+diffci plan --repo "$PWD" --base "$BASE" --head "$HEAD" > "$RESULTS_DIR/plan.json"
 # Configure test:junit to run the normal full suite with a reporter below.
 DIFFCI_JUNIT_FILE="$RESULTS_DIR/junit.xml" npm run test:junit
 diffci check-plan --plan "$RESULTS_DIR/plan.json" --results "$RESULTS_DIR/junit.xml"
 ```
 
-The command accepts the Core `plan` command's JSON output or its nested
+The command accepts the JSON output of `diffci plan` or Core's own `plan` command or its nested
 `ExecutionPlan` (version `5.0.0`). It requires `mode`, `selectedTests`, `skippedTests`
 and `safety.fallbackRequired`; the mode and fallback flag must agree, paths must
 be canonical repository-relative paths, and the two lists must not overlap.
@@ -244,12 +254,12 @@ this first implementation.
 
 ### Scheduled full-suite check
 
-The [scheduled-job example](../examples/github-actions-check-plan.yml) builds
-DiffCI from source, saves a plan for the scheduled checkout, and runs `npm run
+The [scheduled-job example](../examples/github-actions-check-plan.yml) installs
+the pinned published CLI outside the checkout, saves a plan for the scheduled checkout, and runs `npm run
 test:junit` in full at both the plan's base and head revisions. The base runs in
 a separate Git worktree with its own dependencies. Configure `test:junit` to run
-the project's normal complete suite with one of the reporters above. Pin the
-DiffCI checkout to a reviewed revision containing `check-plan`.
+the project's normal complete suite with one of the reporters above. Bump
+`DIFFCI_CLI_VERSION` only after reviewing a new CLI release.
 
 The comparison receives both reports and their checkout roots, so matching old
 failures do not become possible-miss alarms. A failing base suite is valid

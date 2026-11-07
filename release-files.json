@@ -320,6 +320,7 @@
     "packages/diffci-cli/src/client/check-plan-junit.ts",
     "packages/diffci-cli/src/client/check-plan.ts",
     "packages/diffci-cli/tests/client/check-plan-cli.test.ts",
+    "packages/diffci-cli/tests/client/plan-cli.test.ts",
     "packages/diffci-cli/tests/client/check-plan-review.test.ts",
     "packages/diffci-cli/tests/client/check-plan.test.ts",
     "packages/diffci-cli/tests/client/fixtures/check-plan/README.md",

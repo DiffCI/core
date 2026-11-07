@@ -20,10 +20,13 @@ the [cross-agent installation guide](https://github.com/DiffCI/core/blob/main/do
 ## Compare a selection with full-suite results
 
 ```sh
+diffci plan --base "$BASE" --head "$HEAD" > plan.json
+# run the full suite with a JUnit reporter
 diffci check-plan --plan plan.json --results junit.xml
 ```
 
-This local command compares a saved Core execution plan with a full-suite JUnit
+`diffci plan` saves Core's advisory plan for a clean checkout at `--head`.
+`check-plan` compares a saved Core execution plan with a full-suite JUnit
 report from the same revision. Without `--base-results base.xml`, skipped failures
 are `possibleMisses`. With a base report, unique matching failures are
 `preExisting`; a skipped failure is `missed` only if its matching base testcase

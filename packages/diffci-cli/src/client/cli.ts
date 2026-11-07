@@ -14,6 +14,7 @@
  *   verify             fail-closed verification of a working-tree snapshot or commit range
  *   gate               run a build's whole gate and record what DiffCI would have skipped (observe)
  *   check              analysis plus automatic paired runtime measurement
+ *   plan               print Core's advisory JSON plan for a commit range (the input check-plan reads)
  *   check-plan         compare a saved test selection with one full-suite JUnit result
  *   observe            analyse the checkout and write an observation report
  *   verify-savings     run a paired full-versus-selected timing check
@@ -125,6 +126,38 @@ function readCheckPlanInput(path: string): string {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
   } finally {
     closeSync(descriptor);
+  }
+}
+
+const PLAN_USAGE = "Usage: diffci plan --base <commit> [--head HEAD] [--repo <clean-checkout>]\nPrints Core's advisory JSON plan, the input check-plan reads. Accepts --flag=value. Does not run, skip or cancel tests.";
+
+/** Same output and exit codes as Core's own `plan` command, so saved plans stay interchangeable. */
+async function runPlanCommand(args: readonly string[]): Promise<number> {
+  try {
+    if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+      console.log(PLAN_USAGE);
+      return 0;
+    }
+    const values = new Map<string, string>();
+    for (let index = 0; index < args.length; index += 1) {
+      const token = args[index]!;
+      const equals = token.indexOf("=");
+      const flag = equals < 0 ? token : token.slice(0, equals);
+      if (!["--repo", "--base", "--head"].includes(flag)) throw new Error(`Unsupported plan argument: ${flag}`);
+      if (values.has(flag)) throw new Error(`Repeated plan argument: ${flag}`);
+      const value = equals < 0 ? args[++index] : token.slice(equals + 1);
+      if (!value || value.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+      values.set(flag, value);
+    }
+    const base = values.get("--base");
+    if (!base) throw new Error("Expected: diffci plan --base <commit> [--head HEAD] [--repo <path>]");
+    const { analyzeCheckout } = await import("@diffci.com/core/analyze");
+    const plan = await analyzeCheckout({ repoPath: values.get("--repo") ?? process.cwd(), base, head: values.get("--head") ?? "HEAD" });
+    console.log(JSON.stringify(plan, null, 2));
+    return 0;
+  } catch (error: unknown) {
+    console.error(JSON.stringify({ error: error instanceof Error ? error.message : String(error), recommendation: "RUN_FULL_CI" }));
+    return 1;
   }
 }
 
@@ -1347,6 +1380,7 @@ Usage:
   diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
+  diffci plan --base <sha> [--head <sha>] [--repo <path>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
   diffci pilot-packet [--repo <path>] [--out-dir <dir>] [--base <sha> --head <sha>]
@@ -1393,6 +1427,8 @@ leaves) and stops at the first failure; --no-checks skips them, and they are ski
 verify without --changed resolves the CI event range (or HEAD^..HEAD locally), requires a clean checkout,
 and exits zero only when the analyzed head is the commit that actually passed verification.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
+plan prints Core's advisory JSON plan for a clean checkout at --head; save it before the full suite runs.
+It exits 1 with a RUN_FULL_CI error when it cannot plan. It runs no tests and sends nothing.
 check-plan reads one saved plan and one full-suite JUnit result, and prints a JSON failure comparison.
 It exits 1 for missed, possible-miss or unattributed failures, 2 for invalid inputs, and 0 otherwise. It runs no tests,
 reads no Git state, writes no reports, and sends nothing. Each UTF-8 input must be at most 16 MiB.
@@ -1462,6 +1498,10 @@ async function main(): Promise<void> {
   // This stateless command deliberately bypasses shared flag handling, telemetry and feedback.
   if (process.argv[2] === "check-plan") {
     process.exitCode = runCheckPlanCommand(process.argv.slice(3));
+    return;
+  }
+  if (process.argv[2] === "plan") {
+    process.exitCode = await runPlanCommand(process.argv.slice(3));
     return;
   }
   const { command, flags } = parseArgs(process.argv);
