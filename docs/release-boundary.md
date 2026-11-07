@@ -4,7 +4,7 @@ The initial extraction includes these engine directories:
 
 - `src/git`: change analysis and repository inventory.
 - `src/repo`: discovery, dependency graph and impact/safety analysis.
-- `src/repo/adapters`: supported Vue component and root Go module analysis. Incomplete adapter evidence forces conservative fallback.
+- `src/repo/adapters`: supported Vue component, root Go module, Maven module and Python (pytest) analysis. Incomplete adapter evidence forces conservative fallback.
 - `src/planner`: task registry, test command synthesis and advisory planning.
 - `src/ci-inference`: local evidence and GitHub Actions graph inference.
 - `src/cache`: local graph cache.
@@ -16,7 +16,7 @@ The following are outside this release: authentication, billing, organizations, 
 
 ## Limitations
 
-The engine is oriented toward JavaScript/TypeScript, supported Vue components, root Go modules, and static GitHub Actions analysis. Dynamic imports/configuration, external actions, conditional behavior and other languages can exceed its coverage. Full-run fallback is conservative but is not a correctness guarantee. Selection and command availability are distinct; a selective plan with `commandSynthesis.status = UNAVAILABLE` cannot be executed as a subset. A task's command text may be a descriptive workflow label rather than a shell command.
+The engine is oriented toward JavaScript/TypeScript, supported Vue components, root Go modules, Maven modules, Python projects tested with pytest, and static GitHub Actions analysis. Dynamic imports/configuration, external actions, conditional behavior and other languages can exceed its coverage. Full-run fallback is conservative but is not a correctness guarantee. Selection and command availability are distinct; a selective plan with `commandSynthesis.status = UNAVAILABLE` cannot be executed as a subset. A task's command text may be a descriptive workflow label rather than a shell command.
 
 Root Yarn Classic v1 lockfile edits can be narrowed for the supported registry format. Classic omits peer relationships and the installed hoisting layout, so a meaningful edit treats every old/new root dependency as potentially affected. This is broader than npm's installed-tree attribution. Exact manifest requests and dependency edges must resolve; undeclared external imports and untraceable tooling retain full validation. Tests that read the lockfile itself are also considered, including for comment-only edits. _Yarn Classic support was contributed by [Emmanuel Mawulolo Tagbor (@KingEmma7)](https://github.com/KingEmma7) in [#63](https://github.com/DiffCI/core/pull/63), [#67](https://github.com/DiffCI/core/pull/67) and [#70](https://github.com/DiffCI/core/pull/70)._
 
@@ -27,6 +27,8 @@ When a modeled lockfile change accounts for a root `package.json` edit that only
 Berry, pnpm lockfile formats before 9.0, workspaces, alternate install layouts, mixed package managers, unsupported requests or fields, malformed lockfiles and incomplete attribution retain full fallback. The engine does not install packages or fetch registry metadata to fill gaps. Existing static import and file-reference limits still apply; required CI remains authoritative.
 
 Go selection models package sources and `go:embed` inputs reported by `go list`. Every changed path outside that metadata requires full validation, regardless of extension or directory, including deleted paths and rename origins. Older cached profiles without this ownership evidence also require full validation. Modeled embeds retain dependency-based selection; discovery-excluded paths such as `testdata` retain full validation. Arbitrary runtime reads are not inferred from source text. Additional runtime reads of already modeled files by unrelated packages, and external or dynamically supplied inputs, remain outside this model.
+
+Python selection reads file-level imports with Python's own `ast` module, resolved against flat and `src/` layouts, pytest's `pythonpath` and `pyproject` packages, and discovers tests with pytest's `python_files` setting. A changed `conftest.py` selects every test under its directory. Computed imports, unresolved first-party or relative imports, unparseable files, pytest configuration DiffCI cannot read, and changed project files such as `pyproject.toml` or `requirements.txt` retain full validation. Coverage-based and plugin-defined test relationships are not modeled.
 
 The high-level API requires a clean checkout at the requested head. Lower-level APIs expose analysis primitives and leave checkout validation to the caller. Ignored build artifacts and installed dependencies may affect resolution. Analyze only repositories you are authorized to read, preferably in a disposable workspace. Output can contain target file paths and command text; review it before sharing.
 
