@@ -365,10 +365,10 @@ describe("dependencies nothing imports (2026-11-04)", () => {
   function write(dir: string, files: Record<string, string>) {
     for (const [path, content] of Object.entries(files)) { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), content); }
   }
-  const manifest = (cli: string, test = "node --test") => JSON.stringify({ name: "fixture", type: "module",
-    scripts: { test, "acme:check": "acme check" }, devDependencies: { "@acme/cli": cli } }, null, 2);
-  const lock = (version: string, bin: unknown = { acme: "bin/acme.js" }) => JSON.stringify({ name: "fixture", lockfileVersion: 3,
-    packages: { "": { devDependencies: { "@acme/cli": "^1" } }, "node_modules/@acme/cli": { version, ...(bin ? { bin } : {}) } } }, null, 2);
+  const manifest = (cli: string, test = "node --test", pkg = "@acme/cli") => JSON.stringify({ name: "fixture", type: "module",
+    scripts: { test, "acme:check": "acme check" }, devDependencies: { [pkg]: cli } }, null, 2);
+  const lock = (version: string, bin: unknown = { acme: "bin/acme.js" }, pkg = "@acme/cli") => JSON.stringify({ name: "fixture", lockfileVersion: 3,
+    packages: { "": { devDependencies: { [pkg]: "^1" } }, [`node_modules/${pkg}`]: { version, ...(bin ? { bin } : {}) } } }, null, 2);
   const files = {
     "package.json": manifest("^1"),
     "package-lock.json": lock("1.0.0"),
@@ -428,6 +428,19 @@ describe("dependencies nothing imports (2026-11-04)", () => {
     });
     assert.deepEqual(impact.fallbackReasons, []);
     assert.deepEqual(impact.affectedTests.map((t) => t.path), ["tests/acme.test.js"]);
+  });
+
+  it("narrows a DiffCI bump that its own verify workflow runs, but not another CLI's", async () => {
+    const workflow = "on: push\njobs:\n  v:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm ci\n      - run: npx --no-install diffci verify --base a --head b\n";
+    const diffci = (version: string) => ({
+      "package.json": manifest(`^${version}`, "node --test", "@diffci.com/diffci"),
+      "package-lock.json": lock(`${version}`, { diffci: "cli.js" }, "@diffci.com/diffci"),
+    });
+    const config = JSON.stringify({ agentDefaultCommand: "npm run diffci:verify", mode: "verify-changed" });
+    const impact = await bump({ ...diffci("1.0.0"), ".github/workflows/diffci-verify.yml": workflow, "diffci.config.json": config }, diffci("1.1.0"));
+    assert.deepEqual(impact.fallbackReasons, []);
+    const other = await bump({ ".github/workflows/ci.yml": workflow.replace("npx --no-install diffci verify --base a --head b", "npx acme prepare\n      - run: npm test") });
+    assert.match(other.fallbackReasons.join("\n"), /@acme\/cli changed and no repository source imports it/);
   });
 
   it("still falls back when a tsconfig loads it outside include and exclude", async () => {

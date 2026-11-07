@@ -710,6 +710,12 @@ export class ImpactAnalyzer {
       if (path === "package.json" || isLockfile(path) || this.layout.isDocumentationPath(path) || isAgentConfigurationPath(path)) continue;
       const content = this.readRepositoryFile!(path);
       if (content === undefined || !compilerConfigNames(path, content, named)) continue;
+      // DiffCI's own config and workflows, for the package providing the `diffci` executable. DiffCI
+      // either only observes there or runs the repository's own test command, so its version changes
+      // which tests are selected, never their results (2026-11-07: DentalPresence's diffci.config.json
+      // and diffci-verify.yml kept the 0.3.34 bump at all 624 tests). A local action may do anything, so
+      // it is still checked below.
+      if (bins.includes("diffci") && (path === "diffci.config.json" || path.startsWith(".github/workflows/"))) continue;
       if (isImplicitlyLoadedFile(path) || loadsWithoutNaming(path) || posix.basename(path) === "package.json") return `${path} names it and tooling loads that file`;
       if (path.startsWith(".github/")) {
         if (path.startsWith(".github/actions/") || (/^\.github\/workflows\//.test(path) && workflowFeedsTests(content, named, scripts))) return `${path} runs it before tests`;
