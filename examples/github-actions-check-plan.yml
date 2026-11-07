@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-26.04
     env:
       # Pinned like the DiffCI GitHub Action. Bump it after reviewing a new CLI release.
-      DIFFCI_CLI_VERSION: "0.3.33"
+      DIFFCI_CLI_VERSION: "0.3.34"
     steps:
       - name: Check out the scheduled revision and history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
