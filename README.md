@@ -37,12 +37,46 @@ Coding agents pass the narrow check they picked and miss wider breakage, then re
 - **When DiffCI could narrow the run, it selected 2.2% of test files**, cutting test time by 93%. None of those commits had a failing test, so this shows speed, not regression catching.
 - **DiffCI still fell back to the full suite on 58% of commits**, mostly because a config file or `package.json` changed. Narrowing those safely is the main open problem, and [a good place to contribute](#contributing).
 
+## MCP server
+
+This repository contains DiffCI's MCP server. It is implemented in
+[`packages/diffci-cli/src/client/mcp.ts`](packages/diffci-cli/src/client/mcp.ts)
+and published as the `diffci-mcp` binary of `@diffci.com/diffci`: a local
+stdio server speaking JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`)
+that runs against the checkout it is pointed at. It needs no account and sends
+nothing by default.
+
+```sh
+npx -y -p @diffci.com/diffci@latest diffci-mcp
+```
+
+```json
+{
+  "mcpServers": {
+    "diffci": { "command": "npx", "args": ["-y", "-p", "@diffci.com/diffci@latest", "diffci-mcp"] }
+  }
+}
+```
+
+| Tool | What it does |
+| --- | --- |
+| `diffci_changed_files` | Lists staged, unstaged and untracked changes; runs no tests |
+| `diffci_select_tests` | Returns the affected-test plan for the current changes, with fallback reasons; runs no tests |
+| `diffci_explain_selection` | The same plan, for explaining why each test is in it |
+| `diffci_run_affected_tests` | Verifies the current snapshot with the affected tests, or the full suite as a fallback |
+| `diffci_verify_changed` | Verifies the exact working-tree snapshot; fails closed |
+| `diffci_verify` | Verifies a clean commit range and returns a receipt bound to HEAD |
+| `diffci_check` | Compares full and selected test runs and reports paired runtime |
+| `diffci_init` | Seeds agent instructions, MCP configs, the verify skill and a pre-push hook |
+| `diffci_verify_workflow` | Checks that a DiffCI GitHub Actions job cannot affect the rest of CI |
+
 ## Use it from your coding agent
 
 The public [`integrations/agent-plugin`](integrations/agent-plugin) package
-makes the published DiffCI CLI available as a checkout-aware local MCP plugin.
-It contains only public marketplace metadata, skills, and a pinned npm
-launcher; it does not include product services or private source. The
+packages the MCP server above as a checkout-aware local plugin for agent
+marketplaces: marketplace metadata, skills, and a launcher pinned to the
+published `diffci-mcp` binary. It does not include product services or private
+source. The
 [cross-agent installation guide](docs/agent-installation.md) covers Codex,
 Claude Code, Cursor, Grok, Meta Muse Code, and generic MCP hosts.
 
