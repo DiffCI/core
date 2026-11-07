@@ -66,6 +66,30 @@ const IMPLICIT_BASENAMES = new Set([
 const IMPLICIT_PREFIXES = ["tsconfig", "jsconfig", "wrangler.", "dockerfile", "docker-compose", ".dockerignore", ".mocharc.", ".c8rc.", ".nycrc.", "babel.config", ".babelrc."];
 const ENV_TEMPLATE_SUFFIX = /\.(?:example|sample|template|dist)$/;
 
+/**
+ * Coding-agent configuration (2026-11-07): MCP server lists, agent hooks, rules and skills. Only coding
+ * agents read these; no build, test runner or CI job does, so a change to one, or a package it names,
+ * cannot change a test result. `diffci init` writes several of them, and on DentalPresence the first
+ * commit carrying them ran all 624 tests ("Unknown changed file: .mcp.json") and kept a DiffCI bump
+ * from narrowing.
+ */
+export function isAgentConfigurationPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (normalized === ".mcp.json") return true;
+  return /^\.(?:claude|codex)\//.test(normalized) || /^\.cursor\/(?:mcp\.json$|hooks\.json$|rules\/)/.test(normalized);
+}
+
+/**
+ * Whether `content` of a tsconfig/jsconfig names something outside `include`, `exclude` and `files`
+ * (2026-11-07). Those list paths, not packages: DentalPresence's `"exclude": ["diffci"]`, a directory,
+ * read as tsconfig loading the `diffci` CLI and blocked every bump of it. `extends`, `types`, `plugins`
+ * and `paths` still count.
+ */
+export function compilerConfigNames(filePath: string, content: string, named: RegExp): boolean {
+  if (!/^[jt]sconfig[^/]*\.json$/i.test(posix.basename(filePath))) return named.test(content);
+  return named.test(content.replace(/"(?:include|exclude|files)"\s*:\s*\[[^\]]*\]/g, ""));
+}
+
 /** True when tooling may load `filePath` implicitly, so no reference to it would ever be written. */
 export function isImplicitlyLoadedFile(filePath: string): boolean {
   const base = posix.basename(filePath).toLowerCase();

@@ -419,6 +419,29 @@ describe("dependencies nothing imports (2026-11-04)", () => {
     assert.ok(impact.fallbackReasons.includes("Unknown changed file: package.json"));
   });
 
+  it("narrows when only agent configs and a tsconfig exclude name it (2026-11-07, DentalPresence)", async () => {
+    const impact = await bump({
+      "tsconfig.json": JSON.stringify({ compilerOptions: {}, exclude: ["node_modules", "acme"] }),
+      ".mcp.json": JSON.stringify({ mcpServers: { acme: { command: "npx", args: ["--yes", "--package", "@acme/cli@1.0.0", "acme-mcp"] } } }),
+      ".cursor/mcp.json": JSON.stringify({ mcpServers: { acme: { command: "npx", args: ["@acme/cli@1.0.0"] } } }),
+      ".claude/settings.json": JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "npx --no-install acme agent-stop" }] }] } }),
+    });
+    assert.deepEqual(impact.fallbackReasons, []);
+    assert.deepEqual(impact.affectedTests.map((t) => t.path), ["tests/acme.test.js"]);
+  });
+
+  it("still falls back when a tsconfig loads it outside include and exclude", async () => {
+    const impact = await bump({ "tsconfig.json": JSON.stringify({ compilerOptions: { types: ["@acme/cli"] }, exclude: ["acme"] }) });
+    assert.match(impact.fallbackReasons.join("\n"), /@acme\/cli changed and no repository source imports it/);
+  });
+
+  it("runs no tests for a change to agent configuration alone", async () => {
+    const mcp = (version: string) => JSON.stringify({ mcpServers: { acme: { command: "npx", args: [`@acme/cli@${version}`] } } });
+    const impact = await bump({ ".mcp.json": mcp("1.0.0") }, { "package.json": manifest("^1"), "package-lock.json": lock("1.0.0"), ".mcp.json": mcp("1.1.0"), ".cursor/rules/acme.mdc": "---\nalwaysApply: true\n---\nRun acme.\n" });
+    assert.deepEqual(impact.fallbackReasons, []);
+    assert.deepEqual(impact.affectedTests, []);
+  });
+
   it("ignores a Dockerfile that names package.json only in comments", async () => {
     const impact = await bump({ "ops/runner/Dockerfile": "FROM ubuntu:24.04\n# Node 22, matching this repo's package.json engines requirement\nRUN apt-get update\n" });
     assert.deepEqual(impact.fallbackReasons, []);

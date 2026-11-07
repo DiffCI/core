@@ -8,7 +8,7 @@ import { refineConfidenceForDelta } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
+import { compilerConfigNames, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -117,6 +117,8 @@ function makeEvidence(reason: ImpactReason, changedFile: string, message: string
 function classifyChangedFile(file: ChangedFile, isTestFile: IsTestFile, layout: RepositoryLayout, repositoryFiles?: ReadonlySet<string>, referenceResolved: ReadonlySet<string> = new Set(), pythonSources: ReadonlySet<string> = new Set()): ChangedImpact["category"] {
   const path = file.path;
   const oldPath = file.oldPath;
+  // Only coding agents read these (file-references.ts, isAgentConfigurationPath).
+  if (isAgentConfigurationPath(path) && (!oldPath || isAgentConfigurationPath(oldPath))) return "docs";
   // Content inspection in analyzeGitDelta showed these cannot change how tests run; who reads them is
   // resolved by reference (2026-10-21).
   if (referenceResolved.has(path)) return "unknown";
@@ -646,7 +648,7 @@ export class ImpactAnalyzer {
         fail(`${dependencyChange(name)} and the test script runs it; full validation required`);
         continue;
       }
-      const toolingReader = this.sortedRepositoryFiles.find((path) => isImplicitlyLoadedFile(path) && !isLockfile(path) && quoted.test(this.readRepositoryFile!(path) ?? ""));
+      const toolingReader = this.sortedRepositoryFiles.find((path) => isImplicitlyLoadedFile(path) && !isLockfile(path) && compilerConfigNames(path, this.readRepositoryFile!(path) ?? "", quoted));
       if (toolingReader) {
         fail(`${dependencyChange(name)} and ${toolingReader} loads it; full validation required`);
         continue;
@@ -705,9 +707,9 @@ export class ImpactAnalyzer {
     if (closureBodies.some((body) => named.test(body))) return "the test script runs it";
     const scripts = profile.packageJson.scripts;
     for (const path of this.sortedRepositoryFiles) {
-      if (path === "package.json" || isLockfile(path) || this.layout.isDocumentationPath(path)) continue;
+      if (path === "package.json" || isLockfile(path) || this.layout.isDocumentationPath(path) || isAgentConfigurationPath(path)) continue;
       const content = this.readRepositoryFile!(path);
-      if (content === undefined || !named.test(content)) continue;
+      if (content === undefined || !compilerConfigNames(path, content, named)) continue;
       if (isImplicitlyLoadedFile(path) || loadsWithoutNaming(path) || posix.basename(path) === "package.json") return `${path} names it and tooling loads that file`;
       if (path.startsWith(".github/")) {
         if (path.startsWith(".github/actions/") || (/^\.github\/workflows\//.test(path) && workflowFeedsTests(content, named, scripts))) return `${path} runs it before tests`;
@@ -1003,7 +1005,7 @@ export class ImpactAnalyzer {
       files: this.sortedRepositoryFiles,
       read: this.readRepositoryFile,
       isTestFile: this.isTestFile,
-      isDocumentation: (path) => layout.isDocumentationPath(path),
+      isDocumentation: (path) => layout.isDocumentationPath(path) || isAgentConfigurationPath(path),
       inGraph: (path) => hasNode(graph, path),
       isCodeFile: isSourceFilePath,
       workflowFeedsTests: (content, names) => workflowFeedsTests(content, names, scripts),
