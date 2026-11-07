@@ -7,7 +7,7 @@ does not comment on merge requests, does not change the checkout, and sends noth
 
 ```yaml
 include:
-  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.34
+  - component: $CI_SERVER_FQDN/diffci/diffci/observe@0.3.35
 ```
 
 Keep every existing test, build, lint and security job unchanged. The observer adds one job beside
@@ -37,7 +37,7 @@ creates.
 | `stage` | `test` | Stage of the observer job |
 | `job-name` | `diffci-observe` | Job name; redefine the job to override `rules` or `allow_failure` |
 | `image` | `node:22` | Needs Node 22+, git and bash. Alpine images lack bash. Pin by digest in production |
-| `cli-version` | `0.3.34` | Exact published `@diffci.com/diffci` version |
+| `cli-version` | `0.3.35` | Exact published `@diffci.com/diffci` version |
 | `redact-paths` | `false` | Replace every path in the report with a stable 12-character digest |
 | `artifact-expire-in` | `7 days` | How long the report artifact is kept |
 
