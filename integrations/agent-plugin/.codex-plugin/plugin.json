@@ -1,6 +1,6 @@
 {
   "name": "diffci",
-  "version": "0.3.32",
+  "version": "0.3.33",
   "description": "Verify coding changes with affected tests and conservative full fallback.",
   "author": {
     "name": "DiffCI",

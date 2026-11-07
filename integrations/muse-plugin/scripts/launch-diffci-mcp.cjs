@@ -5,7 +5,7 @@ const { spawn } = require("node:child_process");
 const npxArgs = [
   "--yes",
   "--package",
-  "@diffci.com/diffci@0.3.32",
+  "@diffci.com/diffci@0.3.33",
   "diffci-mcp",
 ];
 

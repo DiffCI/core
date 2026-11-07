@@ -19,7 +19,7 @@ Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/usin
 - uses: actions/checkout@v7
   with:
     fetch-depth: 0 # DiffCI needs the base commit
-- uses: DiffCI/core@v0.3.32
+- uses: DiffCI/core@v0.3.33
 ```
 
 [Full workflow](examples/github-actions-observer.yml) · [GitLab CI/CD component](integrations/gitlab/README.md)
