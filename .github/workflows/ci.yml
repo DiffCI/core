@@ -71,6 +71,36 @@ jobs:
               ;;
           esac
 
+  observer-action-shallow:
+    name: Observer Action smoke (shallow checkout)
+    runs-on: ubuntu-26.04
+    steps:
+      # The default one-commit clone: the Action must fetch the base commit itself.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the published CLI release
+        id: published_cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(npm view @diffci.com/diffci@latest version)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: observe
+        uses: ./
+        with:
+          cli-version: ${{ steps.published_cli.outputs.version }}
+          upload-artifact: "false"
+          fail-on-error: "true"
+      - name: Assert the shallow checkout was observed
+        shell: bash
+        env:
+          DIFFCI_STATUS: ${{ steps.observe.outputs.status }}
+        run: |
+          set -euo pipefail
+          test "$DIFFCI_STATUS" = "OBSERVED"
+          test "$(git rev-parse --is-shallow-repository)" = "false"
+          test -z "$(git status --porcelain)"
+
   cli-package:
     name: CLI package (${{ matrix.os }})
     strategy:

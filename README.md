@@ -22,6 +22,10 @@ Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/usin
 - uses: DiffCI/core@v0.3.35
 ```
 
+Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same answer appears on the pull request itself, updated in place on each push:
+
+<img src="docs/pr-comment.png" alt="DiffCI pull request comment: 18 of 624 test files are affected by 1 changed file, with a table of each test and why it was selected" width="640">
+
 [Full workflow](examples/github-actions-observer.yml) · [GitLab CI/CD component](integrations/gitlab/README.md)
 
 [![DiffCI demo video](docs/demo-video.jpg)](https://www.youtube.com/watch?v=ychCnVVRQq0)

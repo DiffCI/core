@@ -113,6 +113,24 @@ runs:
     # The published CLI is installed outside the observed checkout. That prevents npm from touching the
     # checkout's lockfile or node_modules, and --ignore-scripts prevents package lifecycle scripts from
     # running. This Action never runs repository scripts or changes jobs.
+    # actions/checkout clones one commit by default, which leaves out the base commit DiffCI compares
+    # against. Fetch the missing history instead of making every installation add fetch-depth: 0. This
+    # adds git objects only: the working tree, HEAD and branches are unchanged. If the fetch fails (for
+    # example persist-credentials: false on a private repository), observe refuses and says what to add.
+    - name: Fetch the history DiffCI compares
+      id: history
+      shell: bash
+      env:
+        DIFFCI_REPO: ${{ inputs.repository-path }}
+      run: |
+        set -uo pipefail
+        if [ "$(git -C "$DIFFCI_REPO" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+          echo "The checkout is shallow; fetching its history so DiffCI can compare against the base commit."
+          if ! git -C "$DIFFCI_REPO" fetch --quiet --no-tags --unshallow origin; then
+            echo "::warning title=DiffCI::Could not fetch the base commit into the shallow checkout. Add fetch-depth: 0 to the actions/checkout step of this job."
+          fi
+        fi
+
     - name: Observe
       id: observe
       shell: bash

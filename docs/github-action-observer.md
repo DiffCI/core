@@ -28,8 +28,13 @@ jobs:
       - uses: DiffCI/core@<reviewed-core-release-or-commit>
 ```
 
-Full history is required because the base commit must be available in the
-checkout. By default, the report remains as a seven-day workflow artifact and
+DiffCI compares the change against its base commit. A default
+`actions/checkout` clones only one commit, so from v0.3.36 the Action fetches
+the missing history itself when the checkout is shallow: it adds git objects
+only and leaves the working tree, HEAD and branches unchanged. `fetch-depth: 0`
+still works and skips that fetch, and versions before v0.3.36 need it. If the
+fetch fails, for example with `persist-credentials: false` on a private
+repository, the step warns and the observation refuses with what to add. By default, the report remains as a seven-day workflow artifact and
 nothing is sent to a DiffCI endpoint. Set both `api-url` and `api-token` only
 when the repository has deliberately configured ingest; pass the token through
 a repository secret, never as a literal.

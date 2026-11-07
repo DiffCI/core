@@ -109,3 +109,13 @@ test("public observer Action passes the comment token only through the environme
   assert.equal(impact.env?.DIFFCI_GITHUB_TOKEN, "${{ inputs.github-token }}");
   assert.equal(impact.run, 'node "$GITHUB_ACTION_PATH/action/impact.mjs"');
 });
+
+test("public observer Action fetches missing history only into a shallow checkout", async () => {
+  const { action } = await readAction();
+  const ids = action.runs.steps.map((step) => step.id);
+  assert.ok(ids.indexOf("history") >= 0 && ids.indexOf("history") < ids.indexOf("observe"), "history is fetched before observing");
+  const history = action.runs.steps.find((step) => step.id === "history");
+  assert.match(history?.run ?? "", /rev-parse --is-shallow-repository/);
+  assert.match(history?.run ?? "", /fetch --quiet --no-tags --unshallow origin/);
+  assert.doesNotMatch(history?.run ?? "", /git -C "\$DIFFCI_REPO" (checkout|reset|clean|switch|pull|merge)/, "only git objects are added");
+});
