@@ -9,7 +9,7 @@ import type { DependencyGraphResult } from "../repo/types.js";
 // 6: the profile's diffciConfig carries declared `inputs` (2026-11-05).
 // 7: folded computed specifiers and root-absolute Vite globs have edges (2026-11-06).
 // 8: Python projects have a graph, and the profile carries pythonSources/pythonTests (2026-11-06).
-export const GRAPH_CACHE_SCHEMA_VERSION = "8";
+export const GRAPH_CACHE_SCHEMA_VERSION = "9";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

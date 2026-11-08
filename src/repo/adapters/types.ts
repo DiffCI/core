@@ -26,6 +26,8 @@ export interface AdapterContribution {
   /** Global blockers: missing edges cannot be dismissed using graph reachability. */
   blockers: string[];
   fileBlockers?: Array<{ path: string; reason: string }>;
+  /** Blockers (also listed in `blockers`) whose missing edges start at `path`, for package-directory scoping. */
+  subjectBlockers?: Array<{ path: string; reason: string }>;
   performance?: { phasesMs: Record<string, number>; counts: Record<string, number> };
 }
 

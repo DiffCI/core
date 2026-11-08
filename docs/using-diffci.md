@@ -446,10 +446,11 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.css` while an unchanged `src/app.tsx` still imports it, or while a workflow step names it (renamed or deleted files whose importers all changed are narrowed) | Yes: declare it in `inputs` |
 | `Declared input … selects no tests; full validation required` | `inputs` names the changed file, but its `tests` globs match no test file | Fix: point `tests` at existing tests |
 | `Invalid inputs: each entry needs non-empty files and tests glob lists` | `"inputs": [{ "files": ["fixtures/**"] }]` | Fix: give every entry `files` and `tests` |
-| `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json` | No |
+| `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json`. A `tsconfig.json` in a nested package that is not a workspace member, and whose stated paths stay inside it, decides only changes that reach that package, such as an E2E app whose config extends a generated `.nuxt/tsconfig.json` | No |
 | `Unsupported … …; root-relative test discovery requires full validation` | Set `root: "./src"` in `vitest.config.ts` or `rootDir` in `jest.config.js` | No |
 | `Multiple runner configurations require completely understood explicit test includes; full validation required` | Keep both `vitest.config.ts` and `jest.config.js` without explicit `include`/`testMatch` | No |
-| `Unmodeled languages alongside an adapter require full validation` | Add Python files to a Go repository | No |
+| `Unmodeled languages alongside an adapter require full validation` | Add Python files to a Go repository. When every such file sits inside nested package directories or a top-level dot-directory such as `.agents/`, only changes that reach those directories fall back | No |
+| `Workspace package … is imported by … file(s) but does not resolve to its repository sources; install and link dependencies before analysis` | Analyse a pnpm workspace without running `pnpm install`, then change a package that other packages import by name | Fix: install dependencies first |
 | `Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required` | A repository with both `go.mod` and `package.json` tests | No |
 
 ### Go
@@ -509,13 +510,14 @@ These appear only for Vue and Nuxt repositories, most of them only after `vue` i
 | Reason | Example change | Narrow |
 | --- | --- | --- |
 | `Invalid Vue package/suite scope` | `"vue": { "packageRoot": "../web" }` | Fix: a package-relative path and `vitest.config.*` |
-| `Nuxt implicit routes and auto-imports require a dedicated framework adapter` | Any change in a Nuxt app | No |
+| `Nuxt implicit routes and auto-imports require a dedicated framework adapter` | Any change in a repository whose root depends on `nuxt`, or whose nested Nuxt config uses layers, a parent path or a computed path | No |
+| `Nuxt implicit routes and auto-imports require a dedicated framework adapter: …` | A change that reaches a nested Nuxt app, such as an E2E test application | No |
 | `Changes outside the declared Vue package require full validation` | Edit `server/` when `vue.packageRoot` is `web` | No |
 | `Vue suite configuration or shared setup dependency changed; full validation required` | Edit `web/vitest.setup.ts` | No |
 | `Vue dependency crosses the declared package boundary: … -> …` | `web/` imports `../shared/x.ts` | No |
 | `Vue asset or macro dependency crosses the declared package boundary` | A component loads an asset from outside `web/` | No |
 | `Resolved implementation cannot be included in the scoped source inventory: …` | An alias resolves to a file DiffCI cannot read | No |
-| `Unresolved Vue dependencies require full validation` | `import X from "@/missing.vue"` | No |
+| `Unresolved Vue dependencies require full validation` | `import X from "@/missing.vue"`. When every importer sits inside nested package directories, only changes that reach those packages fall back | No |
 | `Unresolved dependencies in the declared Vue suite require full validation` | The same, with `vue` set | No |
 | `Triple-slash file references in the scoped suite require full validation: …` | `/// <reference path="./globals.d.ts" />` in the suite | No |
 | `Vue …: component parse failed` | A `.vue` file with invalid markup | No |

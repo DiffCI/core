@@ -237,9 +237,22 @@ export interface GraphPerformanceMetrics {
   filesParsed: number;
 }
 
+/** A framework/language blocker whose missing relationships belong to files inside known package
+ * directories (an E2E test application with a generated tsconfig, a Nuxt app). It decides a delta only
+ * when a changed file, or a file reachable from one, lies inside one of those directories. */
+export interface ScopedAdapterBlocker {
+  reason: string;
+  /** Repository-relative package directories, never the repository root. */
+  directories: string[];
+}
+
 export interface DependencyGraphResult {
   /** Missing framework/language relationships are global, not reachability-narrowable. */
   adapterBlockers?: string[];
+  /** Blockers confined to package directories; see ScopedAdapterBlocker. `confidence` still counts them. */
+  scopedAdapterBlockers?: ScopedAdapterBlocker[];
+  /** What `confidence` would be if no scoped blocker applied. Absent means none was recorded. */
+  confidenceWithoutScopedBlockers?: GraphConfidence;
   graph: DependencyGraph;
   profile: RepositoryProfile;
   unresolved: UnresolvedDependency[];

@@ -72,6 +72,7 @@ export function analyzeVueCached(context: AdapterContext, directory: string, ver
     for (const field of ["sourcePaths", "assetPaths", "edges", "virtualSources", "testFiles"] as const) (result[field] as unknown[]).push(...item[field]);
     result.blockers.push(...item.blockers.filter(blocker => !result.blockers.includes(blocker)));
     (result.fileBlockers ??= []).push(...(item.fileBlockers ?? []));
+    if (item.subjectBlockers?.length) (result.subjectBlockers ??= []).push(...item.subjectBlockers);
     Object.assign(result.testPackages, item.testPackages);
     for (const [name, value] of Object.entries(item.performance?.phasesMs ?? {})) phasesMs[name] = (phasesMs[name] ?? 0) + value;
     for (const [name, value] of Object.entries(item.performance?.counts ?? {})) counts[name] = (counts[name] ?? 0) + value;

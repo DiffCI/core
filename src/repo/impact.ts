@@ -4,7 +4,7 @@ import { inVuePackage } from "./vue-scope.js";
 import type { ChangedFile, GitDelta } from "../git/types.js";
 import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, EntryPoint, RepositoryProfile, UnresolvedDependency } from "./types.js";
 import type { ChangedImpact, EntryPointImpact, ImpactEvidence, ImpactEvidencePath, ImpactReason, ImpactResult, ImpactRiskSignal, TestImpact } from "./impact-types.js";
-import { refineConfidenceForDelta } from "./graph.js";
+import { refineConfidenceForDelta, relevantScopedAdapterBlockers } from "./graph.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
@@ -406,6 +406,10 @@ export class ImpactAnalyzer {
     // delta-independent confidence to THIS delta's changed files - see refineConfidenceForDelta()'s doc
     // comment in graph.ts for the full reasoning and what is (and is deliberately NOT) narrowed.
     const changedPaths = delta.files.flatMap((f) => allChangePaths(f));
+    // A blocker confined to package directories names itself only when this delta reaches one of them.
+    for (const blocker of relevantScopedAdapterBlockers(graphResult, changedPaths)) {
+      if (!fallbackReasons.includes(blocker.reason)) fallbackReasons.push(blocker.reason);
+    }
     const effectiveGraphConfidence = refineConfidenceForDelta(graphResult, changedPaths);
 
     if (effectiveGraphConfidence === "UNSAFE") {

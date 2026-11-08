@@ -42,7 +42,7 @@ import { contribution, type RepositoryAdapter } from "./types.js";
 
 /** Explicit Vue SFC imports. Runtime component registries and preprocessors require full CI. */
 export const vueAdapter: RepositoryAdapter = {
-  id: "vue", version: "7", kind: "framework",
+  id: "vue", version: "8", kind: "framework",
   detect: ({ files }) => files.some((file) => file.endsWith(".vue")),
   analyze(context) {
     const phasesMs: Record<string, number> = {};
@@ -68,8 +68,20 @@ export const vueAdapter: RepositoryAdapter = {
     const result = contribution(this);
     result.performance = { phasesMs, counts };
     const dependencies = [...context.profile.packageJson.dependencies, ...context.profile.packageJson.devDependencies];
-    if (dependencies.includes("nuxt") || context.files.some((file) => /(?:^|\/)nuxt\.config\./.test(file))) {
-      result.blockers.push("Nuxt implicit routes and auto-imports require a dedicated framework adapter");
+    const nuxtGlobal = "Nuxt implicit routes and auto-imports require a dedicated framework adapter";
+    const nuxtConfigs = context.files.filter((file) => /(?:^|\/)nuxt\.config\.[^/]+$/.test(file));
+    if (dependencies.includes("nuxt")) result.blockers.push(nuxtGlobal);
+    for (const config of nuxtConfigs) {
+      // A nested Nuxt app resolves its implicit routes and auto-imports inside its own directory unless its
+      // configuration reaches other directories: layers, a moved root, a parent-relative path, or a path
+      // computed at load time. Those stay global. An alias or srcDir inside the app needs none of these.
+      let text = "";
+      try { text = readFileSync(join(context.repoPath, config), "utf8"); } catch { text = "extends"; }
+      const confined = config.includes("/") && !/\b(?:extends|layers|rootDir|workspaceDir)\b|\.\.[\\/]|__dirname|__filename|import\.meta|process\.cwd|\bresolve\s*\(|\bjoin\s*\(/.test(text);
+      if (!confined) { if (!result.blockers.includes(nuxtGlobal)) result.blockers.push(nuxtGlobal); continue; }
+      const reason = `${nuxtGlobal}: ${config}`;
+      result.blockers.push(reason);
+      (result.subjectBlockers ??= []).push({ path: config, reason });
     }
     for (const path of context.vueComponentPaths ?? context.files.filter((file) => file.endsWith(".vue"))) {
       counts.components++;

@@ -7,6 +7,7 @@ import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
 import { applyVueScope, inVuePackage } from "./vue-scope.js";
+import { declaredWorkspaceRoots } from "./workspaces.js";
 import type {
   DependencyEdge,
   DependencyEdgeKind,
@@ -19,6 +20,7 @@ import type {
   GraphPerformanceMetrics,
   RepositoryProfile,
   ResolutionReference,
+  ScopedAdapterBlocker,
   SourceRoot,
   UnresolvedDependency,
 } from "./types.js";
@@ -872,13 +874,31 @@ export async function buildDependencyGraph(
     ? cachedVue(context, options.vueAnalysisCache.directory, options.vueAnalysisCache.version) : adapter.analyze(context));
   markPhase("adapters");
   const adapterBlockers = [...scopeBlockers, ...contributions.flatMap((item) => item.blockers)];
+  // The directories each narrowable blocker is confined to ("" when one of its files is not confined).
+  // Outside a declared Vue suite, a blocker confined to directories only is scoped to them below.
+  const blockerScopes = new Map<string, Set<string>>();
+  const addScope = (reason: string, directory: string) => {
+    if (scope) return;
+    let scopes = blockerScopes.get(reason);
+    if (!scopes) blockerScopes.set(reason, scopes = new Set());
+    scopes.add(directory);
+  };
+  const packageDirectories = new Map<string, string>();
+  const packageScope = (path: string) => nearestPackageDirectory(repoPath, path, packageDirectories);
+  const workspaceRoots = new Set(declaredWorkspaceRoots(repoPath));
+  for (const item of contributions) for (const { path, reason } of [...(item.fileBlockers ?? []), ...(item.subjectBlockers ?? [])]) addScope(reason, packageScope(path));
   if (profile.diffciConfig?.configurationError && !adapterBlockers.includes(profile.diffciConfig.configurationError)) adapterBlockers.push(profile.diffciConfig.configurationError);
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
   const pythonModeled = contributions.some((item) => item.id === "python");
-  if (contributions.length && files.some((file) => (!pythonModeled && /\.py$/.test(file)) || /\.(?:rs|cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file))) {
-    adapterBlockers.push("Unmodeled languages alongside an adapter require full validation");
+  const unmodeledLanguageFiles = contributions.length ? files.filter((file) => (!pythonModeled && /\.py$/.test(file)) || /\.(?:rs|cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file)) : [];
+  if (unmodeledLanguageFiles.length) {
+    const reason = "Unmodeled languages alongside an adapter require full validation";
+    adapterBlockers.push(reason);
+    // Files in a top-level dot-directory outside every package (agent skills, editor tooling) are confined
+    // to that directory: no package's sources or tests can load them.
+    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : ""));
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
   profile.goTestPackages = Object.assign({}, ...contributions.map((item) => item.testPackages));
@@ -1092,7 +1112,13 @@ export async function buildDependencyGraph(
           const invalid = !parsed || errors.some(error => error.code !== 18003)
             && !hasUnavailableExternalBase(read.config, errors);
           if (invalid) {
-            adapterBlockers.push(`Invalid importer TypeScript configuration: ${toRelativeInternal(repoPath, config)}`);
+            const configRel = toRelativeInternal(repoPath, config);
+            const reason = `Invalid importer TypeScript configuration: ${configRel}`;
+            adapterBlockers.push(reason);
+            // Only the files this configuration governs resolve with the wrong options. That is confined
+            // to a nested package only when no workspace package links to it by name and nothing the
+            // configuration states points outside the package (an alias there would hide its edges).
+            if (configRel) addScope(reason, read.error ? "" : confinedConfigScope(repoPath, configRel, read.config, packageScope(configRel), workspaceRoots));
             projectOptions.set(config, compilerOptions);
           } else {
             // A target newer than the bundled compiler knows is at least its newest one.
@@ -1287,12 +1313,17 @@ export async function buildDependencyGraph(
       if (vue?.performance) Object.assign(vue.performance.counts, { verifiedSuiteRoots: roots.length, reachablePaths: reachable.size, outOfSuiteBlockers, runtimeAlwaysRunTests: profile.vueRuntimeAlwaysRunPaths?.length ?? 0 });
     }
   }
-  if (unresolved.some((ref) => ref.importer.endsWith(".vue") || stripImportQuery(ref.specifier).endsWith(".vue"))) {
-    adapterBlockers.push("Unresolved Vue dependencies require full validation");
+  const unresolvedVue = unresolved.filter((ref) => ref.importer.endsWith(".vue") || stripImportQuery(ref.specifier).endsWith(".vue"));
+  if (unresolvedVue.length) {
+    const reason = "Unresolved Vue dependencies require full validation";
+    adapterBlockers.push(reason);
+    for (const ref of unresolvedVue) addScope(reason, packageScope(ref.importer));
   }
   filesParsed = sourceFiles.length;
   if (scope && unresolved.length) adapterBlockers.push("Unresolved dependencies in the declared Vue suite require full validation");
   if (scope && edges.some(edge => outsideScope(edge.from) || outsideScope(edge.to))) adapterBlockers.push("Vue asset or macro dependency crosses the declared package boundary");
+  const scopedAdapterBlockers = scopeAdapterBlockers(adapterBlockers, blockerScopes);
+  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references, workspaceRoots));
   profile.adapterBlockers = [...adapterBlockers];
   markPhase("importExtractionAndResolution");
 
@@ -1341,13 +1372,15 @@ export async function buildDependencyGraph(
 
   const integrity = validateDependencyGraph(graph);
   const dynamicUnresolvedCount = unresolved.filter((u) => u.dynamic).length;
-  const confidence = adapterBlockers.length ? "UNSAFE" : computeConfidence(
+  const confidenceWithoutScopedBlockers = adapterBlockers.length ? "UNSAFE" : computeConfidence(
     unresolved.length,
     dynamicUnresolvedCount,
     integrity.criticalCount,
     profile.stats.sourceFiles,
     resolvedViaProjectReferences,
   );
+  // The graph's own confidence still counts scoped blockers; only a delta can rule them out.
+  const confidence = scopedAdapterBlockers.length ? "UNSAFE" : confidenceWithoutScopedBlockers;
 
   const internalAssetEdges = edges.filter((e) => e.kind === "asset").length;
   const externalReferences = references.filter((r) => r.resolution === "external-package").length;
@@ -1378,6 +1411,7 @@ export async function buildDependencyGraph(
   return {
     graph,
     adapterBlockers,
+    ...(scopedAdapterBlockers.length ? { scopedAdapterBlockers, confidenceWithoutScopedBlockers } : {}),
     profile,
     unresolved,
     references,
@@ -1642,6 +1676,34 @@ function computeConfidence(
  * sourceFileCount or integrity triggered it. */
 export function refineConfidenceForDelta(result: DependencyGraphResult, changedFiles: string[]): GraphConfidence {
   if (result.adapterBlockers?.length) return "UNSAFE";
+  if (result.scopedAdapterBlockers?.length) {
+    if (relevantScopedAdapterBlockers(result, changedFiles).length) return "UNSAFE";
+    // An older result without the unscoped confidence fails closed.
+    return refineUnscopedConfidence({ ...result, confidence: result.confidenceWithoutScopedBlockers ?? "UNSAFE" }, changedFiles);
+  }
+  return refineUnscopedConfidence(result, changedFiles);
+}
+
+/** The scoped blockers a delta reaches: a changed file, or a file the changed files depend on or that
+ * depends on them, lies inside one of the blocker's package directories. A missing edge starts at a file
+ * inside that directory, so this is stricter than the per-importer narrowing of unresolved imports. */
+export function relevantScopedAdapterBlockers(result: DependencyGraphResult, changedFiles: string[]): ScopedAdapterBlocker[] {
+  const blockers = result.scopedAdapterBlockers ?? [];
+  if (!blockers.length) return [];
+  const touched = new Set<string>(changedFiles);
+  for (const file of changedFiles) {
+    for (const dep of result.graph.transitiveDependenciesOf(file)) touched.add(dep);
+    for (const dep of result.graph.transitiveDependentsOf(file)) touched.add(dep);
+  }
+  const directories = new Set<string>();
+  for (const path of touched) {
+    let index = path.lastIndexOf("/");
+    while (index > 0) { directories.add(path.slice(0, index)); index = path.lastIndexOf("/", index - 1); }
+  }
+  return blockers.filter((blocker) => blocker.directories.some((directory) => directories.has(directory)));
+}
+
+function refineUnscopedConfidence(result: DependencyGraphResult, changedFiles: string[]): GraphConfidence {
   // A computed runtime target can be any file, so its missing edge proves nothing about which changed
   // file it loads. It cannot, however, change the behaviour of a test that never runs the importer:
   // ImpactAnalyzer selects every test that does (COMPUTED_IMPORT) and falls back when the importer is
@@ -1694,6 +1756,89 @@ export function refineConfidenceForDelta(result: DependencyGraphResult, changedF
   return result.resolvedViaProjectReferences ? "PARTIAL" : "COMPLETE";
 }
 
+/** Nearest directory holding a package.json, relative to the repository; "" is the repository root. */
+function nearestPackageDirectory(repoPath: string, path: string, cache: Map<string, string>): string {
+  const visited: string[] = [];
+  let directory = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+  let found = "";
+  while (directory) {
+    const cached = cache.get(directory);
+    if (cached !== undefined) { found = cached; break; }
+    visited.push(directory);
+    if (existsSync(join(repoPath, directory, "package.json"))) { found = directory; break; }
+    directory = directory.includes("/") ? directory.slice(0, directory.lastIndexOf("/")) : "";
+  }
+  for (const item of visited) cache.set(item, found);
+  return found;
+}
+
+/** The package directory an invalid importer tsconfig is confined to, or "" when it is not: the package
+ * is the repository root or a declared workspace member, or a path the configuration states leaves it. */
+function confinedConfigScope(repoPath: string, configRel: string, config: unknown, directory: string, workspaceRoots: ReadonlySet<string>): string {
+  if (!directory || workspaceRoots.has(directory) || [...workspaceRoots].some((root) => root.startsWith(`${directory}/`))) return "";
+  const configDirectory = resolve(repoPath, dirname(configRel));
+  const packageRoot = resolve(repoPath, directory);
+  const strings: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === "string") strings.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) { strings.push(key); collect(item); }
+  };
+  collect(config);
+  for (const value of strings) {
+    if (!value.includes("..") && !value.startsWith("/") && !/^[A-Za-z]:/.test(value)) continue;
+    const target = relative(packageRoot, resolve(configDirectory, value.replace(/\*.*$/, "")));
+    if (target === ".." || target.startsWith(`..${sep}`) || target.startsWith("../") || /^[A-Za-z]:|^[\\/]/.test(target)) return "";
+  }
+  return directory;
+}
+
+/** Moves blockers confined to directories out of `adapterBlockers` and returns them scoped to those
+ * directories (2026-11-08: Sentry's JavaScript SDK keeps 19 Nuxt, SvelteKit and Vue E2E applications whose
+ * tsconfig extends generated `.nuxt/`/`.svelte-kit/` files; they made every change in its SDK packages fall
+ * back to full validation, although no package imports them). A blocker with any unconfined file, or with
+ * no recorded files, stays global. */
+function scopeAdapterBlockers(adapterBlockers: string[], scopes: Map<string, Set<string>>): ScopedAdapterBlocker[] {
+  const scoped = new Map<string, Set<string>>();
+  for (const reason of new Set(adapterBlockers)) {
+    const directories = scopes.get(reason);
+    if (!directories?.size || directories.has("")) continue;
+    scoped.set(reason, directories);
+  }
+  for (let i = adapterBlockers.length - 1; i >= 0; i--) if (scoped.has(adapterBlockers[i]!)) adapterBlockers.splice(i, 1);
+  return [...scoped].map(([reason, directories]) => ({ reason, directories: [...directories].sort() }));
+}
+
+/** A declared workspace package imported by name that resolves to no repository file, typically because
+ * dependencies are not installed, hides every edge into that package (2026-11-08: in an uninstalled
+ * Sentry checkout, 18 packages import `@sentry/server-utils`, and none of those edges existed). A change
+ * reaching the package then falls back instead of skipping its dependents. */
+function uninstalledWorkspaceBlockers(repoPath: string, references: ResolutionReference[], workspaceRoots: ReadonlySet<string>): ScopedAdapterBlocker[] {
+  const external = references.filter((ref) => ref.resolution === "external-package");
+  if (!external.length) return [];
+  const packages = new Map<string, string>();
+  for (const root of workspaceRoots) {
+    try {
+      const name = JSON.parse(readFileSync(join(repoPath, root, "package.json"), "utf8"))?.name;
+      if (typeof name === "string" && name) packages.set(name, root);
+    } catch { /* an unreadable manifest names no package */ }
+  }
+  if (!packages.size) return [];
+  const importers = new Map<string, Set<string>>();
+  for (const ref of external) {
+    const parts = ref.specifier.split("/");
+    const name = ref.specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
+    if (!packages.has(name)) continue;
+    let set = importers.get(name);
+    if (!set) importers.set(name, set = new Set());
+    set.add(ref.importer);
+  }
+  return [...importers].sort(([a], [b]) => a.localeCompare(b)).map(([name, files]) => ({
+    reason: `Workspace package ${name} is imported by ${files.size} file${files.size === 1 ? "" : "s"} but does not resolve to its repository sources; install and link dependencies before analysis`,
+    directories: [packages.get(name)!],
+  }));
+}
+
 /** Why the graph's own confidence is below COMPLETE, in counts only (no paths), so a report can say why a
  * repository-wide UNSAFE did not decide this change's verdict. 2026-11-06: every LobeHub receipt read
  * "UNSAFE" beside "safe to propose" with nothing connecting the two. Empty when the graph is COMPLETE. */
@@ -1703,6 +1848,7 @@ export function explainGraphConfidence(result: DependencyGraphResult): string[] 
   if (result.graph.nodes.every((node) => !node.isSource)) reasons.push("no source files were analysed");
   if (result.integrity.criticalCount > 0) reasons.push(`${plural(result.integrity.criticalCount, "graph integrity problem")}; every change falls back to full validation`);
   if (result.adapterBlockers?.length) reasons.push(`${plural(result.adapterBlockers.length, "unsupported framework or language relationship")}; every change falls back to full validation`);
+  if (result.scopedAdapterBlockers?.length) reasons.push(`${plural(result.scopedAdapterBlockers.length, "unsupported relationship")} confined to package directories; a change that reaches one falls back to full validation`);
   const computed = result.unresolved.filter((ref) => ref.computed);
   const staticRefs = result.unresolved.filter((ref) => !ref.computed);
   if (computed.length) {
