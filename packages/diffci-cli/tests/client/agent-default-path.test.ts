@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { HOOK_MARKER, hookCommand, installPrePushHook, prePushHook } from "../../src/client/hook.js";
+import { HOOK_MARKER, hookCommand, installHint, installPrePushHook, prePushHook } from "../../src/client/hook.js";
 import { selectionInstruction, type AgentSelectionPlan } from "../../src/client/agent-selection.js";
 
 function repo(): string {
@@ -18,6 +18,15 @@ function repo(): string {
 test("the hook command is pinned or uses the installed binary", () => {
   assert.equal(hookCommand(undefined, "1.2.3"), 'npx --yes "@diffci.com/diffci@1.2.3"');
   assert.equal(hookCommand("pnpm", "1.2.3"), "pnpm exec diffci");
+});
+
+test("the hook names the install step for the command it runs", () => {
+  assert.match(installHint(hookCommand("npm", "1.2.3")), /\(npm ci\)$/);
+  assert.match(installHint(hookCommand("pnpm", "1.2.3")), /\(pnpm install\)$/);
+  assert.match(installHint(hookCommand("yarn", "1.2.3")), /\(yarn install\)$/);
+  assert.match(installHint(hookCommand("bun", "1.2.3")), /\(bun install\)$/);
+  assert.match(installHint(hookCommand(undefined, "1.2.3")), /registry/);
+  assert.match(prePushHook("npx --no-install diffci"), /npx --no-install diffci version >\/dev\/null/);
 });
 
 test("installs into the hooks directory and keeps a hook it did not write", () => {
@@ -41,7 +50,8 @@ test("blocks a push when verification fails, and lets it through when DiffCI can
   try {
     const log = join(dir, "calls.log");
     const fake = join(dir, "fake-diffci.mjs");
-    writeFileSync(fake, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");\nprocess.exit(Number(process.env.FAKE_CODE));\n`);
+    // `version` is the hook's "does DiffCI start" check; it always succeeds here and is not logged.
+    writeFileSync(fake, `import { appendFileSync } from "node:fs";\nif (process.argv[2] === "version") process.exit(0);\nappendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(" ") + "\\n");\nprocess.exit(Number(process.env.FAKE_CODE));\n`);
     const hook = join(dir, "pre-push");
     writeFileSync(hook, prePushHook(`node ${JSON.stringify(fake).replace(/\\\\/g, "/")}`));
     const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();

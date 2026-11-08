@@ -22,6 +22,11 @@ import { dirname, isAbsolute, join, relative } from "node:path";
  * worktree of the pushed commit, linking the checkout's node_modules only when the root lockfiles match.
  * Links are removed before the worktree, so cleanup can never delete the real dependencies.
  *
+ * NOT INSTALLED (2026-11-08). In a checkout without dependencies, `npx --no-install diffci` printed npm's
+ * 404 and exited 1, which the hook read as failing tests and blocked the push. The hook now runs
+ * `diffci version` first. When DiffCI does not run, the hook says how to install it and treats the push
+ * as unverifiable (exit 2), not failed.
+ *
  * REPORTING (2026-10-29). When DIFFCI_API_URL and DIFFCI_TOKEN are set, the hook also sends an
  * observation report for the pushed range, the same report the GitHub Action sends. A dogfood repository
  * whose GitHub Actions minutes ran out sent nothing for two weeks while its builds moved to another CI;
@@ -30,6 +35,7 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 export const HOOK_MARKER = "# diffci:managed pre-push hook";
 
 export function prePushHook(command: string): string {
+  const install = installHint(command);
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Verifies the commits being pushed with DiffCI's affected tests. Skip once: git push --no-verify
@@ -52,6 +58,13 @@ link_dir() {
 }
 unlink_dir() {
   if [ "$windows" = "1" ]; then cmd //c rmdir "$(cygpath -w "$1")" >/dev/null 2>&1; else rm -f "$1"; fi
+}
+
+# Whether DiffCI runs here. Not installed means "could not verify", never a failed verification.
+diffci_runs() {
+  if ${command} version >/dev/null 2>&1 </dev/null; then return 0; fi
+  echo "diffci: DiffCI did not start; ${install}, then push again" >&2
+  return 2
 }
 
 # Verifies the pushed commit in a clean temporary worktree, so uncommitted or untracked files in this
@@ -86,7 +99,7 @@ verify_in_worktree() {
         linked="$linked $tree/$dir"
       fi
     done
-    (cd "$tree" && ${command} verify --base "$1" --head "$2" </dev/null)
+    (cd "$tree" && diffci_runs && ${command} verify --base "$1" --head "$2" </dev/null)
     result=$?
   fi
   # Links first: removing the worktree must never reach through a link into this checkout.
@@ -109,8 +122,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   fi
   if [ "$local_sha" = "$head" ] && [ -z "$(git status --porcelain 2>/dev/null)" ]; then
     echo "diffci: verifying $base..$local_sha before push" >&2
-    ${command} verify --base "$base" --head "$local_sha" </dev/null
-    code=$?
+    if diffci_runs; then
+      ${command} verify --base "$base" --head "$local_sha" </dev/null
+      code=$?
+    else
+      code=2
+    fi
   else
     echo "diffci: verifying $base..$local_sha in a clean temporary worktree (this checkout has other changes or another branch)" >&2
     verify_in_worktree "$base" "$local_sha"
@@ -134,6 +151,16 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done
 exit $status
 `;
+}
+
+/** What to tell someone whose checkout cannot run DiffCI, by the command the hook was written for. */
+export function installHint(command: string): string {
+  if (command.startsWith("npx --no-install")) return "install the repository's dependencies (npm ci)";
+  if (command.startsWith("pnpm ")) return "install the repository's dependencies (pnpm install)";
+  if (command.startsWith("yarn ")) return "install the repository's dependencies (yarn install)";
+  if (command.startsWith("bunx ")) return "install the repository's dependencies (bun install)";
+  if (command.startsWith("npx --yes")) return "check that npm can reach its registry";
+  return "install the repository's dependencies";
 }
 
 /** The command the hook runs: the installed binary when the repository has DiffCI as a dependency,

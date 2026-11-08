@@ -40,6 +40,8 @@ function setup() {
   const stub = join(root, "stub.sh").replace(/\\/g, "/");
   writeFileSync(stub, [
     "#!/bin/sh",
+    // `diffci version` is the hook's "does DiffCI start here" check; STUB_VERSION_EXIT makes it fail.
+    'if [ "$1" = version ]; then exit "${STUB_VERSION_EXIT:-0}"; fi',
     `{ echo "cwd=$(pwd)"; if [ -f node_modules/marker/KEEP ]; then echo deps=linked; else echo deps=missing; fi; echo "dirty=$(git status --porcelain | wc -l | tr -d ' ')"; echo "args=$*"; } >> "${log}"`,
     'exit "$STUB_EXIT"',
     "",
@@ -48,11 +50,11 @@ function setup() {
   return { root, work, log };
 }
 
-function commitAndPush(work: string, exit: number) {
+function commitAndPush(work: string, exit: number, env: Record<string, string> = {}) {
   writeFileSync(join(work, "a.txt"), `${Date.now()}\n`);
   git(work, "commit", "-q", "-am", "change");
   return spawnSync("git", ["push", "origin", "main"], {
-    cwd: work, encoding: "utf8", windowsHide: true, env: { ...process.env, STUB_EXIT: String(exit) },
+    cwd: work, encoding: "utf8", windowsHide: true, env: { ...process.env, STUB_EXIT: String(exit), ...env },
   });
 }
 
@@ -106,6 +108,30 @@ describe("pre-push hook", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // 2026-11-08: in a worktree without node_modules, npm's 404 for `npx --no-install diffci` exited 1 and
+  // the hook blocked the push as if tests had failed.
+  for (const dirty of [false, true]) {
+    it(`treats DiffCI that does not start as unverifiable, not failed (${dirty ? "temporary worktree" : "in place"})`, () => {
+      const { root, work, log } = setup();
+      try {
+        if (dirty) writeFileSync(join(work, "True"), "");
+        const push = commitAndPush(work, 1, { STUB_VERSION_EXIT: "1" });
+        assert.equal(push.status, 0, push.stderr);
+        assert.match(push.stderr, /DiffCI did not start; install the repository's dependencies, then push again/);
+        assert.match(push.stderr, /could not verify \(exit 2\); pushing anyway/);
+        assert.doesNotMatch(push.stderr, /verification failed/);
+        assert.equal(existsSync(log), false, "verify never ran");
+        assert.equal(git(work, "worktree", "list").split("\n").length, 1, "the temporary worktree is removed");
+
+        const strict = commitAndPush(work, 1, { STUB_VERSION_EXIT: "1", DIFFCI_HOOK_STRICT: "1" });
+        assert.notEqual(strict.status, 0, "DIFFCI_HOOK_STRICT=1 still blocks");
+        assert.match(strict.stderr, /push blocked because DIFFCI_HOOK_STRICT=1/);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("verifies in place when the checkout is clean", () => {
     const { root, work, log } = setup();
