@@ -237,6 +237,7 @@
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",
     "packages/diffci-cli/tests/client/check.test.ts",
     "packages/diffci-cli/tests/client/cli-agent.test.ts",
+    "packages/diffci-cli/tests/client/hook.test.ts",
     "packages/diffci-cli/tests/client/comparator-selection-observability.test.ts",
     "packages/diffci-cli/tests/client/context.test.ts",
     "packages/diffci-cli/tests/client/delivery-warning.test.ts",
