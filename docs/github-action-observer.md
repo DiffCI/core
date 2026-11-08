@@ -23,8 +23,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
       - uses: DiffCI/core@<reviewed-core-release-or-commit>
 ```
 
@@ -34,7 +32,10 @@ the missing history itself when the checkout is shallow: it adds git objects
 only and leaves the working tree, HEAD and branches unchanged. `fetch-depth: 0`
 still works and skips that fetch, and versions before v0.3.36 need it. If the
 fetch fails, for example with `persist-credentials: false` on a private
-repository, the step warns and the observation refuses with what to add. By default, the report remains as a seven-day workflow artifact and
+repository, the step warns and the observation refuses with what to add.
+From v0.3.37 the CLI does the same in GitHub Actions and GitLab CI, so a
+`diffci observe` or `diffci verify` step needs neither `fetch-depth: 0` nor
+`GIT_DEPTH: "0"`; it never fetches into a local clone. By default, the report remains as a seven-day workflow artifact and
 nothing is sent to a DiffCI endpoint. Set both `api-url` and `api-token` only
 when the repository has deliberately configured ingest; pass the token through
 a repository secret, never as a literal.
@@ -60,8 +61,6 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
       - uses: DiffCI/core@<reviewed-core-release-or-commit>
         with:
           comment: "true"
@@ -99,8 +98,6 @@ the full suite is required, so `fromJSON` fails instead of running nothing:
       tests: ${{ steps.diffci.outputs.affected-tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
       - id: diffci
         uses: DiffCI/core@<reviewed-core-release-or-commit>
 

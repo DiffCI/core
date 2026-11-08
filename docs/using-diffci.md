@@ -63,8 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - run: npm ci
       - run: npx @diffci.com/diffci@latest verify --base ${{ github.event.pull_request.base.sha }} --head ${{ github.sha }} --shard ${{ matrix.shard }}/3 --timings .diffci/timings.json
 ```
@@ -72,6 +70,8 @@ jobs:
 Without `--timings`, files are split by count. With it, they are split by time: `diffci outcomes --timings > .diffci/timings.json` writes each test file's typical duration from your local outcome log, and every job must read the same copy, for example a committed file. The jobs' own outcome logs are never used for the split, because they differ between jobs. When the change needs the full suite, or the selected command cannot be split, shard 1 runs everything and the other shards pass without running anything. Test-script phases and affected tests outside the full suite also run in shard 1.
 
 ## Recover a missing base in a shallow checkout
+
+From v0.3.37, `diffci observe`, `verify` and `check` do this themselves in GitHub Actions and GitLab CI: when the range cannot be resolved and the clone is shallow, they run `git fetch --no-tags --unshallow origin` once, which adds commits and moves no ref, HEAD or file. They never fetch into a local clone. If that fetch fails (for example, a checkout with `persist-credentials: false` on a private repository), the refusal says why and still names `fetch-depth: 0` or `GIT_DEPTH: "0"`. The steps below are for the Core `plan` command and older CLI versions.
 
 DiffCI must be able to read both revisions, and the checkout must still be at the requested head. In CI, set `BASE` and `HEAD` to the full commit IDs supplied by the pull-request or merge-request event, then verify them before asking DiffCI for a plan:
 

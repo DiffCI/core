@@ -230,6 +230,30 @@ function resolveGitlabRange(env: ObservationEnvironment, git: GitRunner): Commit
   return undefined;
 }
 
+/**
+ * Shallow CI clones (2026-11-08). `actions/checkout` fetches one commit and GitLab twenty, so the base
+ * commit is usually missing, and every new user had to learn `fetch-depth: 0` or `GIT_DEPTH: "0"` before
+ * DiffCI said anything. The Action already fetched the history itself (v0.3.36); the CLI does the same
+ * here, so a CLI step needs no setting either.
+ *
+ * Only in CI, only when the clone is shallow, and only after a range failed to resolve: a local clone is
+ * never fetched into, and a deep enough checkout costs nothing. Fetching adds commits to the object store
+ * and moves no ref, HEAD or file, so the checkout DiffCI observes is unchanged. When the fetch fails
+ * (a checkout that kept no credentials, as with `persist-credentials: false`), the refusal keeps its
+ * `fetch-depth: 0` hint and says why the fetch failed.
+ */
+export function resolveCommitRangeFetchingHistory(options: ResolveCommitRangeOptions): CommitRangeResolution {
+  const first = resolveCommitRange(options);
+  if (first.ok) return first;
+  const { env, git } = options;
+  if (env.GITHUB_ACTIONS !== "true" && env.GITLAB_CI !== "true") return first;
+  const shallow = git(["rev-parse", "--is-shallow-repository"]);
+  if (!shallow.ok || shallow.stdout.trim() !== "true") return first;
+  const fetched = git(["fetch", "--quiet", "--no-tags", "--unshallow", "origin"]);
+  if (!fetched.ok) return { ok: false, reason: `${first.reason} (fetching the full history failed: ${fetched.error})` };
+  return resolveCommitRange(options);
+}
+
 export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRangeResolution {
   const { env, git, baseOverride, headOverride } = options;
 

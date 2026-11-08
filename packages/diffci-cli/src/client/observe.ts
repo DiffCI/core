@@ -4,7 +4,8 @@
  * This is the whole product, executed on someone else's runner: resolve a commit range, build the real
  * dependency graph from the checkout that is already there, work out which tests DiffCI would have run,
  * work out what a simple path-rule CI would have run, and write a report. It runs nothing, changes
- * nothing, and cancels nothing.
+ * nothing, and cancels nothing. (In CI, a shallow clone may have history fetched into its object store
+ * first; see resolveCommitRangeFetchingHistory. No ref, HEAD or file moves.)
  *
  * Two properties are load-bearing, and both are enforced here rather than promised:
  *
@@ -28,7 +29,7 @@ import type { ObservationAgent } from "./agent-identity.js";
 import { economicsContext, evaluateEconomics, type EconomicsDecision } from "./economics.js";
 import {
   readCiEnvironment,
-  resolveCommitRange,
+  resolveCommitRangeFetchingHistory,
   type GitRunner,
   type ObservationEnvironment,
   type ResolvedCommitRange,
@@ -232,7 +233,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
   };
 
   try {
-    const resolved = resolveCommitRange({
+    const resolved = resolveCommitRangeFetchingHistory({
       env: options.env,
       git,
       baseOverride: options.baseOverride,
