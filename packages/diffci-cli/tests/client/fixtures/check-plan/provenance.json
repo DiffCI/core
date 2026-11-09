@@ -41,6 +41,21 @@
       "fixtureSha256": "77c18781c3e60b204c46813414ae769d91b3e282d50345ef76d5c611f7c217f1",
       "testcases": 9,
       "failedTestcases": 5
+    },
+    {
+      "file": "node-test-windows.xml",
+      "node": "v24.16.0",
+      "platform": "win32",
+      "normalization": [
+        "Fixture project absolute path replaced with C:\\fixture",
+        "hostname replaced with synthetic-host",
+        "time values set to 0",
+        "CRLF changed to LF if present"
+      ],
+      "rawSha256": "b0678a1ef5ab0503b5d67855d5a3d3007025cc18dc39b18b2dabfea1e8500730",
+      "fixtureSha256": "bcf46f52c46c247c4bd4617712949ea232c2d6f05cf4e712a3bb3908b11a0054",
+      "testcases": 9,
+      "failedTestcases": 5
     }
   ]
 }

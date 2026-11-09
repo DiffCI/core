@@ -245,9 +245,29 @@ reporters: ['default', ['jest-junit', {
 }]],
 ```
 
+Node's built-in test runner (`node --test`, also through `tsx --test`) needs no
+configuration file: its `junit` reporter writes each testcase's absolute `file`, so
+supply the checkout with `--repo`. Add the reporters on the command line, or through
+`NODE_OPTIONS` to keep the test script unchanged:
+
+```sh
+NODE_OPTIONS="--test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=$RESULTS_DIR/junit.xml" npm test
+diffci check-plan --plan "$RESULTS_DIR/plan.json" --results "$RESULTS_DIR/junit.xml" --repo "$PWD"
+```
+
+- Pass test files or globs. `node --test tests/` runs `tests` as one module rather
+  than the files in it, and reports a single failing case that names no test file.
+- `NODE_OPTIONS` is split on spaces, so the destination path must not contain any.
+- It reaches every Node process the script starts. When the script runs the test
+  runner more than once (`a && b`), each run overwrites the same destination: give
+  each run its own report and compare each one separately.
+- When a root-level hook (`before`/`after` outside any `describe`) fails, Node writes
+  the rest of the report inside an `<undefined name="root">` element. `check-plan`
+  reads that element directly under `<testsuites>` as a plain container.
+
 Keep generated reports outside the checkout so they do not affect Core's
-clean-checkout check. These conventions are covered by reports generated with Vitest 5.1.0 and Jest
-30.5.2 plus jest-junit 17.0.0. Custom reporters may need different configuration.
+clean-checkout check. These conventions are covered by reports generated with Vitest 5.1.0, Jest
+30.5.2 plus jest-junit 17.0.0, and `node --test` on Node 24.16.0. Custom reporters may need different configuration.
 The [synthetic fixture notes](../packages/diffci-cli/tests/client/fixtures/check-plan/README.md)
 record their sources and reproduction steps. Go and Maven attribution are outside
 this first implementation.

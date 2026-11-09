@@ -12,5 +12,17 @@
     "tests/space & failure.test.js": "describe('outer & <group>', () => {\n  describe('inner', () => {\n    test('duplicate name', () => expect('actual').toBe('expected'));\n    test('duplicate name', () => expect(1).toBe(2));\n    test.skip('skipped failure', () => expect(1).toBe(2));\n    test.todo('not implemented');\n  });\n});\n",
     "vitest.config.mjs": "const explicit = process.env.REPORTER_VARIANT === 'explicit';\nexport default {\n  test: {\n    globals: true,\n    include: ['tests/**/*.test.js'],\n    reporters: [['junit', {\n      outputFile: `reports/vitest-${explicit ? 'explicit' : 'default'}.xml`,\n      includeConsoleOutput: false,\n      stackTrace: false,\n      ...(explicit ? {\n        addFileAttribute: true,\n        classnameTemplate: 'custom class label',\n        suiteNameTemplate: 'custom suite label',\n      } : {}),\n    }]],\n  },\n};\n",
     "jest.config.cjs": "const explicit = process.env.REPORTER_VARIANT === 'explicit';\nmodule.exports = {\n  testMatch: ['<rootDir>/tests/**/*.test.js'],\n  reporters: [['jest-junit', {\n    outputDirectory: 'reports',\n    outputName: `jest-junit-${explicit ? 'explicit' : 'default'}.xml`,\n    noStackTrace: 'true',\n    ...(explicit ? {\n      addFileAttribute: 'true',\n      reportTestSuiteErrors: 'true',\n      classNameTemplate: 'custom class label',\n      suiteNameTemplate: 'custom suite label',\n    } : {}),\n  }]],\n};\n"
+  },
+  "nodeTest": {
+    "node": "24.16.0",
+    "platform": "win32",
+    "command": "node --test --test-reporter=junit --test-reporter-destination=reports/node-test-windows.xml tests/hook-error.test.js tests/load-error.test.js tests/multiple-errors.test.js tests/pass.test.js \"tests/space & failure.test.js\"",
+    "files": {
+      "tests/pass.test.js": "const test = require('node:test');\nconst assert = require('node:assert/strict');\ntest('passes', () => assert.equal(2 + 2, 4));\n",
+      "tests/hook-error.test.js": "const { test, after } = require('node:test');\nconst assert = require('node:assert/strict');\ntest('passes before the hook fails', () => assert.ok(true));\nafter(() => { throw new Error('synthetic after error'); });\n",
+      "tests/load-error.test.js": "throw new Error('synthetic collection error');\n",
+      "tests/multiple-errors.test.js": "const { test, beforeEach, afterEach } = require('node:test');\nconst assert = require('node:assert/strict');\nbeforeEach(() => { throw new Error('synthetic beforeEach error'); });\nafterEach(() => { throw new Error('synthetic afterEach error'); });\ntest('two hook failures for one case', () => assert.ok(true));\n",
+      "tests/space & failure.test.js": "const { describe, test } = require('node:test');\nconst assert = require('node:assert/strict');\ndescribe('outer & <group>', () => {\n  describe('inner', () => {\n    test('duplicate name', () => assert.equal('actual', 'expected'));\n    test('duplicate name', () => assert.equal(1, 2));\n    test.skip('skipped failure', () => assert.equal(1, 2));\n    test.todo('not implemented');\n  });\n});\n"
+    }
   }
 }

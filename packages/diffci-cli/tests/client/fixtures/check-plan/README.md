@@ -13,6 +13,7 @@ Each run exited 1 because the fixtures deliberately fail. `source.json` contains
 | `vitest-explicit.xml` | 5 | Explicit file attributes with custom non-path classname/suite labels |
 | `jest-junit-default.xml` | 4 | Describe/test labels cannot identify files; load-failing suites are omitted by this default reporter configuration |
 | `jest-junit-explicit.xml` | 6 | Explicit files and `reportTestSuiteErrors: 'true'`; the load error produces two failed cases; hook errors make actual failures exceed declared counts |
+| `node-test-windows.xml` | 5 | Node's built-in `junit` reporter: absolute Windows `file` on every case; the root-level `after` failure makes Node wrap the rest of the report in `<undefined name="root">` |
 
 Both reporters emit two failure children for the one test in `multiple-errors.test.js`. That remains one failed testcase. The two tests named `duplicate name` remain two cases, even though their names and file identity match.
 
@@ -30,6 +31,10 @@ node node_modules/jest/bin/jest.js --ci --runInBand --config jest.config.cjs
 Set that variable through the process environment on Windows. Remove inherited `JEST_JUNIT_*`, `JEST_SUITE_NAME`, `JEST_USE_PATH_FOR_SUITE_NAME` and `NODE_TEST_CONTEXT` variables so local settings do not override the captured configurations.
 
 The raw outputs were normalized only to replace the disposable absolute directory with `/fixture`, replace the hostname with `synthetic-host`, fix timestamp attributes, set timing attributes to zero, and use LF newlines. Test identities, paths, XML structure, counters and failure messages otherwise retain reporter output. `provenance.json` records the raw and normalized SHA-256 hashes and the installation lockfile hash. These files document POSIX reporter execution; Windows and nested-XML path cases in the unit test are separately authored synthetic examples.
+
+### `node --test`
+
+`node-test-windows.xml` was emitted by Node 24.16.0 on Windows from the `node:test` versions of the same scenarios in `source.json`'s `nodeTest` object, with no dependencies, using its recorded `command` from the project directory. Clear `NODE_OPTIONS` and `NODE_TEST_CONTEXT` first. The raw output was normalized only to replace the disposable project directory with `C:\fixture`, replace the hostname with `synthetic-host`, set timing attributes to zero, and use LF newlines; `provenance.json` records both hashes. Compare it with `--repo C:\fixture` (the unit test passes `repoRoot`).
 
 ## Primary sources
 

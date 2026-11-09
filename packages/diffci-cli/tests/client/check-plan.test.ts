@@ -225,6 +225,33 @@ describe("checkPlan genuine reporter fixtures", () => {
     assert.equal(result.possibleMisses.filter((failure) => failure.file === "tests/multiple-errors.test.js").length, 1);
   });
 
+  it("reads node --test's absolute files, including the root wrapper Node writes after a root hook fails", () => {
+    const report = fixture("node-test-windows.xml");
+    assert.match(report, /<undefined name="root">/);
+    const result = checkPlan(plan(["tests/pass.test.js"], failingFiles), report, { repoRoot: "C:\\fixture" });
+    assert.deepEqual(result.summary, { failedTests: 5, missed: 0, preExisting: 0, possibleMisses: 5, selected: 0, unattributed: 0 });
+    const perFile = (file: string) => result.possibleMisses.filter((failure) => failure.file === file).length;
+    assert.equal(perFile("tests/hook-error.test.js"), 1);
+    assert.equal(perFile("tests/load-error.test.js"), 1);
+    assert.equal(perFile("tests/multiple-errors.test.js"), 1);
+    assert.equal(perFile("tests/space & failure.test.js"), 2);
+    const corrected = checkPlan(plan(failingFiles, ["tests/pass.test.js"]), report, { repoRoot: "C:\\fixture" });
+    assert.deepEqual(corrected.summary, { failedTests: 5, missed: 0, preExisting: 0, possibleMisses: 0, selected: 5, unattributed: 0 });
+  });
+
+  it("accepts Node's root wrapper only directly under the report's testsuites", () => {
+    const testcase = '<testcase name="t" file="/repo/tests/missed.test.js" failure="x"><failure/></testcase>';
+    assert.equal(checkPlan(plan(), `<testsuites><undefined name="root">${testcase}</undefined></testsuites>`, { repoRoot: "/repo" }).summary.possibleMisses, 1);
+    for (const xml of [
+      `<testsuites><undefined name="other">${testcase}</undefined></testsuites>`,
+      `<testsuites><wrapper name="root">${testcase}</wrapper></testsuites>`,
+      `<testsuites><testsuite name="s"><undefined name="root">${testcase}</undefined></testsuite></testsuites>`,
+      `<testsuite name="s"><undefined name="root">${testcase}</undefined></testsuite>`,
+    ]) {
+      assert.throws(() => checkPlan(plan(), xml, { repoRoot: "/repo" }), /inside a testsuite/);
+    }
+  });
+
   it("covers the same genuine failures when the selection is corrected or FULL", () => {
     for (const mode of ["SELECTIVE", "FULL"] as const) {
       const result = checkPlan(plan(failingFiles, [], mode), fixture("jest-junit-explicit.xml"));

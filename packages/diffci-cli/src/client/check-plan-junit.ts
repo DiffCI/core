@@ -41,6 +41,13 @@ interface Frame {
   name: string;
   suite?: Suite;
   testCase?: TestCase;
+  /** Node's `<undefined name="root">` wrapper: transparent, carries no suite identity. */
+  nodeRoot?: boolean;
+}
+
+/** A frame that may directly contain testsuite and testcase elements. */
+function isSuiteContainer(frame: Frame | undefined): boolean {
+  return frame?.name === "testsuite" || frame?.name === "testsuites" || frame?.nodeRoot === true;
 }
 
 const MAX_BYTES = 16 * 1024 * 1024;
@@ -123,8 +130,12 @@ export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boo
     if (!parent && name !== "testsuite" && name !== "testsuites") {
       invalid("The root must be testsuite or testsuites.");
     }
-    if (name === "testsuite" || name === "testsuites") {
-      if (parent && parent.name !== "testsuite" && parent.name !== "testsuites") {
+    if (name === "undefined" && attributes.name === "root" && parent?.name === "testsuites" && frames.length === 1) {
+      // Node's built-in junit reporter (verified on 24.16.0) writes the root test as this tag when a
+      // root-level hook fails, and nests the rest of the report inside it. It names no suite or file.
+      frame.nodeRoot = true;
+    } else if (name === "testsuite" || name === "testsuites") {
+      if (parent && !isSuiteContainer(parent)) {
         invalid("A test suite must be inside a suite container.");
       }
       const outer = inherited();
@@ -147,7 +158,7 @@ export function readJunit(xml: string, onCase?: (test: JunitFailure, failed: boo
       frame.suite = suite;
       suites.push(suite);
     } else if (name === "testcase") {
-      if (parent?.name !== "testsuite" && parent?.name !== "testsuites") invalid("A testcase must be inside a testsuite.");
+      if (!isSuiteContainer(parent)) invalid("A testcase must be inside a testsuite.");
       frame.testCase = {
         skipped: false,
         failed: attributes.failure !== undefined,

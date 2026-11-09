@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="passes before the hook fails" time="0" classname="test" file="C:\fixture\tests\hook-error.test.js"/>
+	<undefined name="root">
+	<testcase name="C:\fixture\tests\hook-error.test.js" time="0" classname="test" file="C:\fixture\tests\hook-error.test.js" failure="synthetic after error">
+		<failure type="hookFailed" message="synthetic after error">
+[Error [ERR_TEST_FAILURE]: synthetic after error] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'hookFailed',
+  cause: Error: synthetic after error
+      at TestContext.&lt;anonymous> (C:\fixture\tests\hook-error.test.js:4:21)
+      at TestHook.runInAsyncScope (node:async_hooks:227:14)
+      at TestHook.run (node:internal/test_runner/test:1306:25)
+      at TestHook.run (node:internal/test_runner/test:1651:18)
+      at TestHook.run (node:internal/util:602:20)
+      at Test.runHook (node:internal/test_runner/test:1198:20)
+      at after (node:internal/test_runner/test:1251:20)
+      at Test.run (node:internal/test_runner/test:1332:13)
+}
+		</failure>
+	</testcase>
+	<testcase name="tests\load-error.test.js" time="0" classname="test" file="C:\fixture\tests\load-error.test.js" failure="test failed">
+		<failure type="testCodeFailure" message="test failed">
+[Error: test failed] { code: 'ERR_TEST_FAILURE', failureType: 'testCodeFailure', cause: 'test failed', exitCode: 1, signal: null }
+		</failure>
+	</testcase>
+	<testcase name="two hook failures for one case" time="0" classname="test" file="C:\fixture\tests\multiple-errors.test.js" failure="failed running beforeEach hook">
+		<failure type="hookFailed" message="failed running beforeEach hook">
+[Error [ERR_TEST_FAILURE]: failed running beforeEach hook] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'hookFailed',
+  cause: Error: synthetic beforeEach error
+      at TestContext.&lt;anonymous> (C:\fixture\tests\multiple-errors.test.js:3:26)
+      at TestHook.runInAsyncScope (node:async_hooks:227:14)
+      at TestHook.run (node:internal/test_runner/test:1306:25)
+      at TestHook.run (node:internal/test_runner/test:1651:18)
+      at Test.runHook (node:internal/test_runner/test:1198:20)
+      at Test.run (node:internal/test_runner/test:1268:27)
+      at Test.start (node:internal/test_runner/test:1177:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:385:17)
+}
+		</failure>
+	</testcase>
+	<testcase name="passes" time="0" classname="test" file="C:\fixture\tests\pass.test.js"/>
+	<testsuite name="outer &amp; &lt;group>" time="0" disabled="0" errors="0" tests="1" failures="1" skipped="1" hostname="synthetic-host">
+		<testsuite name="inner" time="0" disabled="0" errors="0" tests="4" failures="2" skipped="2" hostname="synthetic-host">
+			<testcase name="duplicate name" time="0" classname="test" file="C:\fixture\tests\space &amp; failure.test.js" failure="Expected values to be strictly equal:&#10;+ actual - expected&#10;&#10;+ 'actual'&#10;- 'expected'&#10;">
+				<failure type="testCodeFailure" message="Expected values to be strictly equal:&#10;+ actual - expected&#10;&#10;+ 'actual'&#10;- 'expected'">
+Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:
++ actual - expected
+
++ 'actual'
+- 'expected'
+
+    at new Promise (&lt;anonymous>)
+    at Array.map (&lt;anonymous>) {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'actual'
+  - 'expected'
+  
+      at TestContext.&lt;anonymous> (C:\fixture\tests\space &amp; failure.test.js:5:41)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1306:25)
+      at Test.start (node:internal/test_runner/test:1177:17)
+      at node:internal/test_runner/test:1769:71
+      at node:internal/per_context/primordials:466:82
+      at new Promise (&lt;anonymous>)
+      at new SafePromise (node:internal/per_context/primordials:435:3)
+      at node:internal/per_context/primordials:466:9
+      at Array.map (&lt;anonymous>) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'actual',
+    expected: 'expected',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+}
+				</failure>
+			</testcase>
+			<testcase name="duplicate name" time="0" classname="test" file="C:\fixture\tests\space &amp; failure.test.js" failure="Expected values to be strictly equal:&#10;&#10;1 !== 2&#10;">
+				<failure type="testCodeFailure" message="Expected values to be strictly equal:&#10;&#10;1 !== 2">
+Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:
+
+1 !== 2
+
+    at async Promise.all (index 0)
+    at async Promise.all (index 0) {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 2
+  
+      at TestContext.&lt;anonymous> (C:\fixture\tests\space &amp; failure.test.js:6:41)
+      at Test.runInAsyncScope (node:async_hooks:227:14)
+      at Test.run (node:internal/test_runner/test:1306:25)
+      at Suite.processPendingSubtests (node:internal/test_runner/test:897:18)
+      at Test.postRun (node:internal/test_runner/test:1447:19)
+      at Test.run (node:internal/test_runner/test:1372:12)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1771:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1771:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+}
+				</failure>
+			</testcase>
+			<testcase name="skipped failure" time="0" classname="test" file="C:\fixture\tests\space &amp; failure.test.js">
+				<skipped type="skipped" message="true"/>
+			</testcase>
+			<testcase name="not implemented" time="0" classname="test" file="C:\fixture\tests\space &amp; failure.test.js">
+				<skipped type="todo" message="true"/>
+			</testcase>
+		</testsuite>
+	</testsuite>
+	<!-- tests 9 -->
+	<!-- suites 2 -->
+	<!-- pass 2 -->
+	<!-- fail 5 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 1 -->
+	<!-- todo 1 -->
+	<!-- duration_ms 160.459 -->
+	</undefined>
+</testsuites>
