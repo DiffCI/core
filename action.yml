@@ -1,5 +1,5 @@
 name: DiffCI change impact
-description: Shows which tests a change affects, and why, in the job summary of every pull request. Observation only; skips nothing.
+description: Shows which tests a change affects, and why, on every pull request, and can run them first as a fast check. Skips nothing.
 branding:
   icon: eye
   color: gray-dark
@@ -74,6 +74,25 @@ inputs:
     description: Token used only to post the pull request comment when comment is true.
     required: false
     default: ${{ github.token }}
+  verify:
+    description: >-
+      Also run the affected tests, likeliest failures first, and fail this step as soon as one fails
+      (diffci verify --fail-fast). A fast first signal, not a replacement: keep your full test job, because
+      this skips nothing there. It runs repository code, so install dependencies before this step. When
+      DiffCI cannot narrow the change it runs nothing and leaves the change to the full test job. A DiffCI
+      problem only warns; only failing tests or checks fail the step. Off by default.
+    required: false
+    default: "false"
+  verify-checks:
+    description: >-
+      With verify, also run the repository's check script leaves (lint, typecheck) before the tests. Set
+      "false" when other jobs already run them.
+    required: false
+    default: "true"
+  verify-timeout-minutes:
+    description: With verify, stop the run after this many minutes and report it blocked, not failed.
+    required: false
+    default: "20"
 
 outputs:
   report-path:
@@ -101,6 +120,11 @@ outputs:
   reason:
     description: One line on why the full suite is required. Empty when it is not.
     value: ${{ steps.impact.outputs.reason }}
+  verify-status:
+    description: >-
+      With verify: passed, failed, blocked (DiffCI could not verify; the step only warns), or skipped (the
+      change needs the full suite). Empty without verify.
+    value: ${{ steps.verify.outputs.status }}
 
 runs:
   using: composite
@@ -112,7 +136,7 @@ runs:
 
     # The published CLI is installed outside the observed checkout. That prevents npm from touching the
     # checkout's lockfile or node_modules, and --ignore-scripts prevents package lifecycle scripts from
-    # running. This Action never runs repository scripts or changes jobs.
+    # running. This Action never changes jobs, and runs repository scripts only in the opt-in verify step.
     # actions/checkout clones one commit by default, which leaves out the base commit DiffCI compares
     # against. Fetch the missing history instead of making every installation add fetch-depth: 0. This
     # adds git objects only: the working tree, HEAD and branches are unchanged. If the fetch fails (for
@@ -173,11 +197,30 @@ runs:
         DIFFCI_GITHUB_TOKEN: ${{ inputs.github-token }}
       run: node "$GITHUB_ACTION_PATH/action/impact.mjs"
 
+    # Opt-in fast check. It runs only what the observation narrowed to, so it never runs the whole suite
+    # a second time next to the repository's own test job, and only a failing test or check fails it.
+    - name: Verify the affected tests
+      id: verify
+      if: ${{ inputs.verify == 'true' && steps.observe.outcome == 'success' }}
+      shell: bash
+      env:
+        DIFFCI_REPO: ${{ inputs.repository-path }}
+        DIFFCI_BASE: ${{ inputs.base-sha }}
+        DIFFCI_HEAD: ${{ inputs.head-sha }}
+        DIFFCI_CLI_VERSION: ${{ inputs.cli-version }}
+        DIFFCI_FULL: ${{ steps.impact.outputs.full-suite-required }}
+        DIFFCI_REASON: ${{ steps.impact.outputs.reason }}
+        DIFFCI_VERIFY_CHECKS: ${{ inputs.verify-checks }}
+        DIFFCI_VERIFY_TIMEOUT: ${{ inputs.verify-timeout-minutes }}
+      run: bash "$GITHUB_ACTION_PATH/action/verify.sh"
+
     - name: Upload observation report
-      if: ${{ inputs.upload-artifact == 'true' && steps.observe.outputs.report-path != '' }}
+      if: ${{ always() && inputs.upload-artifact == 'true' && steps.observe.outputs.report-path != '' }}
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.artifact-name }}
-        path: ${{ steps.observe.outputs.report-path }}
+        path: |
+          ${{ steps.observe.outputs.report-path }}
+          ${{ steps.verify.outputs.receipt-path }}
         retention-days: ${{ inputs.artifact-retention-days }}
         if-no-files-found: warn

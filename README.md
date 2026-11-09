@@ -117,6 +117,12 @@ the pull request up to date with the answer, where reviewers see it. Outputs
 such as `full-suite-required` and `affected-tests` let a workflow act on the
 answer; see [outputs](docs/github-action-observer.md#outputs).
 
+Set `verify: "true"` for a [fast check](docs/github-action-observer.md#fast-check):
+the Action also runs the affected tests and lint/typecheck, likeliest failures
+first, and fails within minutes when one breaks. It adds a job and skips
+nothing, so your full test job stays as it is
+([example](examples/github-actions-fast-check.yml)).
+
 The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
 remains publicly available at tagged Core commit `4c76be14` (`cli-v0.3.10-source`)
 while distribution migrates to the Core-native CLI package.

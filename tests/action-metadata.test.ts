@@ -62,9 +62,13 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "api-token",
     "fail-on-error",
     "comment",
-    "github-token"
+    "github-token",
+    "verify",
+    "verify-checks",
+    "verify-timeout-minutes"
   ]);
   assert.equal(action.inputs.comment?.default, "false", "commenting is opt-in");
+  assert.equal(action.inputs.verify?.default, "false", "running repository code is opt-in");
   assert.deepEqual(Object.keys(action.outputs), [
     "report-path",
     "status",
@@ -72,7 +76,8 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "affected-tests",
     "affected-test-count",
     "total-test-count",
-    "reason"
+    "reason",
+    "verify-status"
   ]);
   assert.match(raw, /cd "\$RUNNER_TEMP"/);
   assert.match(raw, /uses: actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1/);
@@ -108,6 +113,18 @@ test("public observer Action passes the comment token only through the environme
   assert.ok(impact, "impact step is present");
   assert.equal(impact.env?.DIFFCI_GITHUB_TOKEN, "${{ inputs.github-token }}");
   assert.equal(impact.run, 'node "$GITHUB_ACTION_PATH/action/impact.mjs"');
+});
+
+test("public observer Action runs the fast check only on request, after the impact answer", async () => {
+  const { action } = await readAction();
+  const ids = action.runs.steps.map((step) => step.id);
+  assert.ok(ids.indexOf("verify") > ids.indexOf("impact"), "verify reads the impact outputs");
+  const verify = action.runs.steps.find((step) => step.id === "verify") as { if?: string; env?: Record<string, string>; run?: string };
+  assert.match(verify.if ?? "", /inputs\.verify == 'true'/);
+  assert.equal(verify.run, 'bash "$GITHUB_ACTION_PATH/action/verify.sh"', "inputs reach the script only through the environment");
+  assert.equal(verify.env?.DIFFCI_FULL, "${{ steps.impact.outputs.full-suite-required }}");
+  const upload = action.runs.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@")) as { if?: string };
+  assert.match(upload.if ?? "", /^\$\{\{ always\(\) &&/, "the report is kept when the fast check fails");
 });
 
 test("public observer Action fetches missing history only into a shallow checkout", async () => {

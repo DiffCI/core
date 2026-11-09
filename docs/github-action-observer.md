@@ -1,14 +1,15 @@
 # DiffCI change impact Action
 
 The public `DiffCI/core` Action ("DiffCI change impact", formerly "DiffCI Core
-observer") is an observation-only wrapper around the pinned published DiffCI
-CLI. Its job summary leads with what the change affects: how many test files
+observer") is a wrapper around the pinned published DiffCI CLI. By default it
+only observes; the opt-in [fast check](#fast-check) also runs the affected
+tests. Its job summary leads with what the change affects: how many test files
 are affected and why each was selected, or that the full suite is needed and
 why, with the full text report collapsed below. It analyzes a checkout and
 writes a JSON report;
-it never runs tests, skips tests, cancels jobs, edits the checkout, or changes
-a check result unless `fail-on-error` is explicitly enabled for installation
-debugging. It comments on pull requests only when you set `comment: "true"`.
+without `verify` it never runs tests, and it never skips tests, cancels jobs or
+edits the checkout. It changes a check result only when `fail-on-error` is
+enabled for installation debugging, or when the fast check's tests fail. It comments on pull requests only when you set `comment: "true"`.
 
 Use it as its own advisory job and retain every required test, build, lint, and
 security job unchanged. Pin `uses:` to a reviewed Core release tag or full
@@ -71,6 +72,56 @@ read-only token on the `pull_request` event, so they get a warning in the log
 instead of a comment; do not switch to `pull_request_target` for this. A failed
 comment never fails the step. The comment shows test and file paths, which the
 pull request diff already shows; with `redact-paths` it shows digests instead.
+
+## Fast check
+
+Set `verify: "true"` to also run what the change affects, as a fast first job
+next to your normal CI. DiffCI runs `diffci verify --fail-fast` on the pull
+request's range: the repository's check script leaves (lint, typecheck) first,
+then the affected test files with the ones most likely to fail first, and the
+step fails as soon as one of them fails. A breakage shows up in a few minutes
+instead of at the end of the full suite.
+
+It adds a job and skips nothing. Keep your full test job and required checks
+unchanged; the fast check is a signal, not a replacement, so you can try it
+without trusting DiffCI to skip anything.
+
+```yaml
+jobs:
+  diffci-fast-check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: npm ci
+      - uses: DiffCI/core@<reviewed-core-release-or-commit>
+        with:
+          node-version: "22"
+          verify: "true"
+```
+
+- **It runs your code.** Unlike observation, the fast check runs the
+  repository's own test and check commands in the checkout, so install
+  dependencies before the step, as your test job does. The Action sets up Node
+  `node-version` for the rest of the job; set it to the version you test on.
+- **It runs nothing when DiffCI is unsure.** When `full-suite-required` is
+  `"true"`, the step runs nothing, passes with a notice and leaves the change to
+  your full test job, instead of running the whole suite twice.
+- **Only real failures fail it.** Failing tests or checks fail the step. A
+  DiffCI problem (it could not verify, timed out after
+  `verify-timeout-minutes`, or did not start) only warns.
+- **`verify-checks: "false"`** skips lint and typecheck when other jobs already
+  run them first.
+- Nothing is sent anywhere and no outcome log is kept on the runner. The
+  verification receipt is uploaded with the observation report, and the
+  verification output is in the job summary.
+
+The `verify-status` output is `passed`, `failed`, `blocked` or `skipped`. See
+the [fast check example](../examples/github-actions-fast-check.yml).
 
 ## Outputs
 

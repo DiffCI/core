@@ -1,0 +1,31 @@
+name: DiffCI fast check
+
+# A fast first signal next to your normal CI: DiffCI runs only the tests (and lint/typecheck) this change
+# affects, likeliest failures first, and fails within minutes when one breaks. It adds a job and skips
+# nothing: keep your full test workflow and its required checks exactly as they are.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  # Only for comment: "true" below. Fork pull requests get a read-only token and a warning instead.
+  pull-requests: write
+
+jobs:
+  diffci-fast-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Install the way your test job does: the fast check runs your own test and check commands.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: DiffCI/core@<reviewed-core-release-or-commit>
+        with:
+          # Match the Node version above: the Action sets up Node for the rest of this job.
+          node-version: "22"
+          verify: "true"
+          comment: "true"
