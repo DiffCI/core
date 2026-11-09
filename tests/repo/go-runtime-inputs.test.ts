@@ -40,7 +40,7 @@ function planChange(graph: DependencyGraphResult, file: ChangedFile, analysis?: 
 // descriptors. This suite does not need a Go installation and does not execute Go repository code.
 async function fixture(
   extraFiles: Record<string, string>,
-  run: (graph: DependencyGraphResult, root: string) => void | Promise<void>,
+  run: (graph: DependencyGraphResult, root: string, files: Record<string, string>) => void | Promise<void>,
   embeds: { production?: string[]; test?: string[]; external?: string[] } = {},
   extraServiceTestName?: string,
 ) {
@@ -71,11 +71,21 @@ async function fixture(
       { Dir: join(root, "service"), ImportPath: "example.com/project/service", Name: "service", GoFiles: ["service.go"], TestGoFiles: extraServiceTestName ? ["service_test.go", extraServiceTestName] : ["service_test.go"], Imports: ["example.com/project/p"], TestImports: ["testing"] },
       { Dir: join(root, "unrelated"), ImportPath: "example.com/project/unrelated", Name: "unrelated", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], TestImports: ["testing"] },
     ].map(pkg => JSON.stringify(pkg)).join("\n");
-    goAdapter.analyze = context => analyzeGoMetadata(context, metadata);
+    goAdapter.analyze = context => {
+      // Mirror the real adapter's nested-module scoping (root-module scope excludes the nested
+      // roots from the metadata analysis and records them on the profile).
+      if (context.profile.diffciConfig?.go?.scope === "root-module") {
+        const nestedRoots = context.files.filter((file: string) => file.endsWith("/go.mod")).map((file: string) => file.slice(0, -"/go.mod".length));
+        context.profile.goExcludedModuleRoots = nestedRoots;
+        const scopedFiles = context.files.filter((file: string) => !nestedRoots.some(root => file.startsWith(root)));
+        return analyzeGoMetadata({ ...context, files: scopedFiles }, metadata);
+      }
+      return analyzeGoMetadata(context, metadata);
+    };
     const graph = await buildDependencyGraph({ repoPath: root });
     assert.deepEqual(graph.adapterBlockers, []);
     assert.equal(graph.confidence, "COMPLETE");
-    await run(graph, root);
+    await run(graph, root, files);
   } finally {
     goAdapter.analyze = originalAnalyze;
     rmSync(root, { recursive: true, force: true });
@@ -318,5 +328,32 @@ test("declared inputs add their tests to the package-owned testdata selection", 
     assert.deepEqual([...plan.selectedTests].sort(), ["p/value_test.go", "service/service_test.go"]);
     assert.ok(impact.affectedTests.some(t => t.path === "service/service_test.go" && t.reasons.includes("DECLARED_INPUT")));
     assert.ok(impact.affectedTests.some(t => t.path === "p/value_test.go" && t.reasons.includes("GO_TESTDATA")));
+  });
+});
+
+test("non-test Go helper naming testdata", async () => {
+  // A shared helper in an ordinary `.go` file (the testutil/golden.go pattern) reads another
+  // package's testdata on behalf of its callers' tests; the cross-package check must scan
+  // ordinary sources, not only `_test.go` files (2026-11-09 review of #85).
+  const files = {
+    "p/testdata/settings.json": "expected",
+    "service/service.go": 'package service\nimport "os"\nfunc Read(name string) ([]byte, error) { return os.ReadFile("../p/testdata/settings.json") }\n',
+  };
+  await fixture(files, (graph, root, files) => {
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", allTests, { repoPath: root, fileContents: files });
+  });
+});
+
+test("a test outside every go-reported package naming the testdata keeps full validation", async () => {
+  // A test in a nested module (excluded from go list package discovery) reads the testdata
+  // directly; it runs with its own working directory, so the package-owned convention cannot
+  // hold and the reference must unlock full validation (2026-11-09 review of #85).
+  const files = {
+    "diffci.json": '{\n  "go": { "scope": "root-module" }\n}\n',
+    "legacy/go.mod": "module example.com/legacy\n\ngo 1.24\n",
+    "legacy/tools/manual_test.go": 'package tools\nimport "os"\nimport "testing"\nfunc TestManual(t *testing.T) { if data, err := os.ReadFile("../../p/testdata/settings.json"); err != nil || string(data) != "expected" { t.Fatal("bad runtime input") } }\n',
+  };
+  await fixture(files, (graph, root, files) => {
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", allTests, { repoPath: root, fileContents: files });
   });
 });

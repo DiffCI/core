@@ -22,6 +22,18 @@ const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error
 function isLockfile(filePath: string): boolean { return /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(filePath); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
+function isGoReaderFile(filePath: string): boolean { return filePath.endsWith(".go"); }
+/**
+ * Reads a go reader's references without its import clauses: an import names the package, not any
+ * directory inside it, and counting `example.com/project/p` as a reference to a changed `p/...`
+ * path would disqualify every sibling package's package-owned testdata route (2026-11-09, review of
+ * #85). String literals and call arguments — where a testdata read actually appears — are kept.
+ */
+function goReaderReferences(content: string): string {
+  return content
+    .replace(/^[ \t]*import[ \t]+[^(){}[\]\n]*\n/gm, "")
+    .replace(/^[ \t]*import[ \t]*\([^)]*\)[ \t]*(?:\/\/[^\n]*)?\n/gm, "");
+}
 /** Vitest's default `typecheck.include`: tests whose outcome is the type checker's. */
 const TYPE_TEST_FILE = /\.(?:test|spec)-d\.[cm]?[jt]sx?$/;
 // "Is this a test?" is answered by the profile's test patterns (src/repo/test-discovery.ts) - one shared
@@ -281,6 +293,15 @@ export class ImpactAnalyzer {
   /** Go test files grouped by their package's directory value (`profile.goTestPackages` keys are test
    * files; go test files always end `_test.go`). Built once per analysis. */
   private goPackageTestFilesByOwner = new Map<string, string[]>();
+  /** Each go-reported package's full file list keyed like `testPackages` (owner itself included). Profiles
+   * from the current adapter put a package's test files into `sourcePaths` too, so when this map is
+   * populated a package's members are exactly its sourcePaths; legacy cached profiles leave it empty. */
+  private goSourceFilesByOwner = new Map<string, string[]>();
+  /** Repository files that no go-reported package reported — tests in nested modules or other
+   * languages, ordinary `.go` files excluded from package discovery. Their references to a package's
+   * testdata disqualify the selective route like a cross-package one (a nested module cannot take the
+   * package-owned convention: its tests run with a different working directory). */
+  private goOutsideReaders = new Set<string>();
   /** A changed `testdata/` path selects its owning package's tests when the parent directory is a Go
    * package with tests and no other package's test file names it by reference; every other
    * discovery-excluded path keeps full validation. */
@@ -340,6 +361,29 @@ export class ImpactAnalyzer {
       else byOwner.set(owner, [test]);
     }
     this.goPackageTestFilesByOwner = byOwner;
+    // A helper in another package's ordinary `.go` file (the `testutil/golden.go` pattern) can read a
+    // package's testdata on behalf of its callers' tests, so the cross-package check must scan
+    // ordinary sources too, not only `_test.go` files (2026-11-09, review of #85). The current go
+    // adapter puts each package's test files into `sourcePaths`, so with source metadata a package's
+    // members are exactly its sourcePaths and the test-file grouping only stands in for it.
+    this.goSourceFilesByOwner = new Map<string, string[]>();
+    const knownSources = new Set<string>();
+    for (const source of profile.goDependencyPaths?.sources ?? []) {
+      knownSources.add(source);
+      const dir = source.slice(0, source.lastIndexOf("/"));
+      const pkg = dir ? `./${dir}` : ".";
+      const members = this.goSourceFilesByOwner.get(pkg);
+      if (members) members.push(source);
+      else this.goSourceFilesByOwner.set(pkg, [source]);
+    }
+    // And readers outside every go-reported package (tests in nested modules or other languages,
+    // ordinary `.go` files excluded from package discovery) can name a package's testdata directly;
+    // they run with a different working directory, so the package-owned convention cannot hold and
+    // such a reference disqualifies the selective route (2026-11-09, review of #85).
+    const reportedGoTests = new Set(Object.keys(profile.goTestPackages ?? {}));
+    this.goOutsideReaders = new Set((this.sortedRepositoryFiles ?? []).filter(file =>
+      !knownSources.has(file) && !reportedGoTests.has(file)
+      && (file.endsWith(".go") || this.isTestFile(file))));
     if (!profile.goTestPackages || !this.readRepositoryFile) return this.goPackageTestDataOwner;
     const readRepositoryFile = this.readRepositoryFile;
     for (const path of new Set(delta.files.flatMap(allChangePaths))) {
@@ -370,17 +414,28 @@ export class ImpactAnalyzer {
     const dataDir = [...segments.slice(0, at), "testdata"].join("/");
     const filePattern = referencePattern(referenceTokens(path));
     const dirPattern = referencePattern(referenceTokens(dataDir));
-    for (const [pkg, readers] of byOwner) {
+    const disqualifies = (reader: string): boolean => {
+      const content = readRepositoryFile(reader);
+      // A listed test file that cannot be read could still name the testdata; without its
+      // contents the conservative answer is no selective route at all.
+      if (content === undefined) return true;
+      const references = isGoReaderFile(reader) ? goReaderReferences(content) : content;
+      return contentNamesPath(references, reader, path, filePattern, true)
+          || contentNamesPath(references, reader, dataDir, dirPattern, true);
+    };
+    for (const [pkg, testFiles] of byOwner) {
       if (pkg === owner) continue;
-      for (const reader of readers) {
-        const content = readRepositoryFile(reader);
-        // A listed test file that cannot be read could still name the testdata; without its
-        // contents the conservative answer is no selective route at all.
-        if (content === undefined) return undefined;
-        if (contentNamesPath(content, reader, path, filePattern, true)
-            || contentNamesPath(content, reader, dataDir, dirPattern, true)) return undefined;
-      }
+      // With source metadata available a package's members are its sourcePaths (which include its test
+      // files); legacy cached profiles only ever knew the listed tests.
+      const goFiles = this.goSourceFilesByOwner.get(pkg);
+      const readers = goFiles?.length ? [...new Set([...goFiles, ...testFiles])] : testFiles;
+      if (readers.some(disqualifies)) return undefined;
     }
+    // Readers outside the go-reported packages (tests of nested modules or other languages, ordinary
+    // `.go` files outside package discovery) never take the package-owned convention, since their
+    // tests run with a different working directory; a reference there disqualifies the selective
+    // route exactly like a cross-package one (2026-11-09, review of #85).
+    if ([...this.goOutsideReaders].some(disqualifies)) return undefined;
     return owner;
   }
 
