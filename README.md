@@ -17,7 +17,7 @@ Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/usin
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: DiffCI/core@v0.3.36
+- uses: DiffCI/core@v0.3.37
 ```
 
 Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same answer appears on the pull request itself, updated in place on each push:
