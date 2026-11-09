@@ -86,6 +86,7 @@
     "packages/diffci-cli/src/client/job-summary.ts",
     "packages/diffci-cli/src/client/install.ts",
     "packages/diffci-cli/src/client/mcp.ts",
+    "packages/diffci-cli/src/client/node-bin-launch.ts",
     "packages/diffci-cli/src/client/observe.ts",
     "packages/diffci-cli/src/client/package-identity.ts",
     "packages/diffci-cli/src/client/pilot-packet.ts",

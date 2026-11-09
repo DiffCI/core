@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { describe, it } from "node:test";
-import { batchCommand, measureCommands } from "../packages/diffci-cli/src/client/command-batches.js";
+import { batchCommand, COMMAND_LINE_LIMIT, measureCommands } from "../packages/diffci-cli/src/client/command-batches.js";
+import { windowsLaunch, withPathEntry } from "../packages/diffci-cli/src/client/node-bin-launch.js";
 
 describe("batchCommand", () => {
   const paths = Array.from({ length: 10 }, (_, i) => `tests/suite-${String(i).padStart(2, "0")}.test.ts`);
@@ -67,5 +68,147 @@ describe("measureCommands", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("long selections through repository-local runners", () => {
+  // DentalPresence, 2026-11-09: 282 of 625 files selected, about 12,300 characters, run as
+  // `npx --no-install tsx --test <files>`. On Windows `npx.cmd` and `tsx.cmd` re-expand the arguments
+  // into further cmd.exe lines, escaping quoted globs such as "src/app/@([(])public@([)])/x.test.ts"
+  // with `^`, so a 7,989-character part failed with exit 255 before any test ran.
+  const linkNodeModules = (dir: string) => symlinkSync(resolve("node_modules"), join(dir, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  const body = (name: string, fails = false) => `import test from "node:test";
+test(${JSON.stringify(name)}, () => { ${fails ? 'throw new Error("boom");' : ""} });
+`;
+
+  it("runs a 282-file npx tsx selection over 8,191 characters, quoted globs included", () => {
+    const dir = join(tmpdir(), `diffci-npx-batches-${randomUUID()}`);
+    try {
+      mkdirSync(join(dir, "src", "lib", "directory"), { recursive: true });
+      // The repository's own node_modules, with npm's real `.bin` shims for tsx.
+      linkNodeModules(dir);
+      const files = Array.from({ length: 282 }, (_, i) => `src/lib/directory/publication-region-layer-case-${String(i).padStart(3, "0")}.test.ts`);
+      for (const file of files) writeFileSync(join(dir, file), body(file));
+      // Next.js route groups and catch-all segments, as Core's planner quotes them for node --test.
+      const special = ["src/app/(public)/homepage-seo.test.ts", "src/app/ingest/[...path]/route.test.ts", "src/app/(site)/[slug]/page.test.ts"];
+      for (const file of special) {
+        mkdirSync(join(dir, file, ".."), { recursive: true });
+        writeFileSync(join(dir, file), body(file));
+      }
+      const glob = (path: string) => `"${path.replace(/[[\]()]/g, (c) => `@([${c}])`)}"`;
+      const tokens = [...special.map(glob), ...files];
+      const command = `npx --no-install tsx --conditions react-server --test --test-isolation=none ${tokens.join(" ")}`;
+      assert.ok(command.length > 8191, `command is ${command.length} characters`);
+      const paths = [...special, ...files];
+      const parts = batchCommand(command, paths);
+      assert.ok(parts.length > 1);
+      for (const part of parts) assert.ok(part.length <= COMMAND_LINE_LIMIT && part.length < 8191, `part is ${part.length} characters`);
+      assert.deepEqual(parts.flatMap((part) => part.split(" ").slice(7)), tokens);
+      const result = measureCommands(parts, { cwd: dir, timeoutMs: 300_000, tailBytes: 4000 });
+      assert.equal(result.exitCode, 0, result.stderrTail || result.stdoutTail);
+      assert.equal(result.runnerTestCount, paths.length, result.stdoutTail);
+      assert.equal(result.command, parts.join(" && "));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Through `npx.cmd` and `tsx.cmd` a line stops working at about 7,950 characters, below cmd.exe's own
+  // 8,191, so a part the batching allowed (at most 8,000 until 2026-11-09) could still fail.
+  it("runs a part that fits cmd.exe but not the runner's .cmd shims", () => {
+    const dir = join(tmpdir(), `diffci-npx-shim-${randomUUID()}`);
+    try {
+      mkdirSync(join(dir, "src", "lib", "directory"), { recursive: true });
+      linkNodeModules(dir);
+      const files = Array.from({ length: 400 }, (_, i) => `src/lib/directory/publication-region-layer-case-${String(i).padStart(3, "0")}.test.ts`);
+      let command = "npx --no-install tsx --conditions react-server --test --test-isolation=none";
+      const used: string[] = [];
+      for (const file of files) {
+        if (command.length + 1 + file.length > 8100) break;
+        command += ` ${file}`;
+        used.push(file);
+        writeFileSync(join(dir, file), body(file));
+      }
+      assert.ok(command.length > 8000 && command.length < 8191, `command is ${command.length} characters`);
+      const result = measureCommands([command], { cwd: dir, timeoutMs: 300_000, tailBytes: 4000 });
+      assert.equal(result.exitCode, 0, result.stderrTail || result.stdoutTail);
+      assert.equal(result.runnerTestCount, used.length, result.stdoutTail);
+      assert.equal(result.command, command);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the failing part's exit code and failures across parts", () => {
+    const dir = join(tmpdir(), `diffci-npx-exit-${randomUUID()}`);
+    try {
+      mkdirSync(join(dir, "tests"), { recursive: true });
+      linkNodeModules(dir);
+      const files = Array.from({ length: 6 }, (_, i) => `tests/case-${i}.test.ts`);
+      files.forEach((file, i) => writeFileSync(join(dir, file), body(`t${i}`, i === 2)));
+      const parts = batchCommand(`npx --no-install tsx --test --test-isolation=none ${files.join(" ")}`, files, 80);
+      assert.ok(parts.length > 2);
+      const result = measureCommands(parts, { cwd: dir, timeoutMs: 300_000, tailBytes: 4000 });
+      assert.equal(result.exitCode, 1);
+      assert.deepEqual(result.failingTests, ["t2"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("windowsLaunch", () => {
+  const fixture = (shim: string, files: Record<string, string> = {}) => {
+    const dir = join(tmpdir(), `diffci-launch-${randomUUID()}`);
+    mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(dir, "node_modules", ".bin", "runner"), shim);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    return dir;
+  };
+  const npmShim = `#!/bin/sh
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/../runner-pkg/dist/cli.mjs" "$@"
+else 
+  exec node  "$basedir/../runner-pkg/dist/cli.mjs" "$@"
+fi
+`;
+
+  it("starts a JavaScript bin with node and puts node_modules/.bin on PATH", () => {
+    const dir = fixture(npmShim, { "node_modules/runner-pkg/dist/cli.mjs": "" });
+    try {
+      const launch = windowsLaunch("npx --no-install runner --test a.test.ts b.test.ts", dir);
+      assert.equal(launch.command, "node node_modules/runner-pkg/dist/cli.mjs --test a.test.ts b.test.ts");
+      assert.equal(launch.pathEntry, join(dir, "node_modules", ".bin"));
+      // A package directory below the working directory still finds the repository's runner.
+      mkdirSync(join(dir, "packages", "app"), { recursive: true });
+      assert.equal(windowsLaunch("npx --no-install runner x", join(dir, "packages", "app")).command, "node ../../node_modules/runner-pkg/dist/cli.mjs x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves commands it cannot resolve unchanged", () => {
+    const native = fixture(`#!/bin/sh
+exec "$basedir/../runner-pkg/bin/runner.exe" "$@"
+`, { "node_modules/runner-pkg/bin/runner.exe": "" });
+    const missing = fixture(npmShim);
+    try {
+      for (const command of ["npx --no-install runner x", "node --test x", "npx runner x", "npm test"]) {
+        assert.deepEqual(windowsLaunch(command, native), { command });
+      }
+      assert.deepEqual(windowsLaunch("npx --no-install runner x", missing), { command: "npx --no-install runner x" });
+      assert.deepEqual(windowsLaunch("npx --no-install other x", missing), { command: "npx --no-install other x" });
+    } finally {
+      rmSync(native, { recursive: true, force: true });
+      rmSync(missing, { recursive: true, force: true });
+    }
+  });
+
+  it("prepends to PATH under the key the environment already uses", () => {
+    assert.deepEqual(withPathEntry({ Path: "C:/a", X: "1" }, "C:/bin"), { Path: `C:/bin${delimiter}C:/a`, X: "1" });
+    assert.deepEqual(withPathEntry({}, "/bin"), { PATH: "/bin" });
   });
 });

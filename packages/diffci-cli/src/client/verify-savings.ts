@@ -4,6 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { arch, cpus, platform, release, totalmem } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { failingTestNames } from "./failure-baseline.js";
+import { windowsLaunch, withPathEntry } from "./node-bin-launch.js";
 import { runnerTestCount } from "./selected-coverage.js";
 import { parseTestFileResults, type TestFileResult } from "./test-results.js";
 
@@ -436,23 +437,29 @@ export function measureCommand(command: string, options: Pick<VerifySavingsOptio
   const started = Date.now();
   // Match the shell used by Windows package scripts, including && short-circuiting
   // and native exit codes; Windows PowerShell 5 cannot execute those chains.
-  const shellCommand = process.platform === "win32" ? "cmd.exe" : "sh";
-  const shellArgv = process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command];
+  const windows = process.platform === "win32";
+  const shellCommand = windows ? "cmd.exe" : "sh";
+  // On Windows a repository-local runner starts as `node <script>`, not through `npx.cmd` and its bin's
+  // `.cmd` shim, each of which re-expands the arguments into another cmd.exe line (node-bin-launch.ts).
+  // The measurement still reports the command as planned.
+  const launch = windows ? windowsLaunch(command, options.cwd) : { command };
+  const shellArgv = windows ? ["/d", "/s", "/c", launch.command] : ["-c", command];
+  const env: NodeJS.ProcessEnv = {
+    ...withoutTestRunnerContext(process.env),
+    ...options.env,
+    CI: "1",
+    FORCE_COLOR: "0",
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
+    npm_config_yes: "true",
+  };
   const result = spawnSync(shellCommand, shellArgv, {
     cwd: options.cwd,
     encoding: "utf8",
     timeout: options.timeoutMs,
     maxBuffer: 256 * 1024 * 1024,
     shell: false,
-    windowsVerbatimArguments: process.platform === "win32",
-    env: {
-      ...withoutTestRunnerContext(process.env),
-      ...options.env,
-      CI: "1",
-      FORCE_COLOR: "0",
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
-      npm_config_yes: "true",
-    },
+    windowsVerbatimArguments: windows,
+    env: launch.pathEntry ? withPathEntry(env, launch.pathEntry) : env,
   });
   const finishedAt = new Date().toISOString();
   const failingTests = result.status === 0 ? [] : failingTestNames(`${result.stdout ?? ""}

@@ -14,8 +14,14 @@ import { measureCommand, type CommandMeasurement } from "./verify-savings.js";
  * listing a share of the files, run one after another and reported as one verification. Splitting only
  * happens when the command ends in exactly the selected paths as plain tokens; anything else is left
  * whole, because rewriting a command that is not understood could change what it runs.
+ *
+ * The Windows budget is 6,000 rather than 8,191 (2026-11-09): a part that still goes through `.cmd`
+ * shims (`npx.cmd`, then the runner's own) is re-expanded into further cmd.exe lines that add the node
+ * and shim paths and npm's `^` escapes. A 7,989-character part of a 282-file DentalPresence selection
+ * failed that way; measureCommand now also starts JavaScript runners with node directly
+ * (node-bin-launch.ts), and the margin covers the runners it cannot.
  */
-export const COMMAND_LINE_LIMIT = process.platform === "win32" ? 8000 : 100_000;
+export const COMMAND_LINE_LIMIT = process.platform === "win32" ? 6000 : 100_000;
 
 /**
  * The runner prefix and the selected paths `command` ends with, one token each, or undefined when it does
