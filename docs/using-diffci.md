@@ -496,7 +496,9 @@ _The runtime-input check (`Go runtime inputs outside source/embed metadata …`)
 | `Go …: runtime plugins require full validation` | `import "plugin"` | No |
 | `Go …: generated or linked dependencies require full validation` | A `//go:generate` or `//go:linkname` directive | No |
 | `Go runtime inputs outside source/embed metadata require full validation: …` | Edit `config.yaml` beside a Go package that a test opens | No |
-| `Changes in Go discovery-excluded paths require full validation, including runtime test data` | Edit `testdata/input.json` or a file under a `_`-prefixed directory | No |
+| `Changes in Go discovery-excluded paths require full validation, including runtime test data` | Edit a `testdata` file of a package without `_test.go` files, a file under a `_`-prefixed directory, a `_`/`.`-prefixed directory inside the `testdata` tree, `testdata` that `go:embed` embeds, or `testdata` a sibling package's test file names | No - plain owned `testdata` selects the owning package's tests instead (see below) |
+
+_Package testdata (#83): a plain `testdata/` input whose parent directory is a reported Go package with `_test.go` files selects that package's tests (reason `GO_TESTDATA`) instead of falling back - the go tool runs a package's tests with the package directory as the working directory. It falls back when another package's `_test.go` file names the path or its `testdata` directory, when a `_`-prefixed or `.`-prefixed directory lies on the way or below `testdata`, when the cached profile predates the package-test evidence, or when the file is embedded. A declared `inputs` entry adds its declared tests on top of the package's._
 
 ### Maven
 

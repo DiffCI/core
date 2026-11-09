@@ -8,7 +8,7 @@ import { refineConfidenceForDelta, relevantScopedAdapterBlockers } from "./graph
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { compilerConfigNames, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
+import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -22,6 +22,18 @@ const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error
 function isLockfile(filePath: string): boolean { return /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(filePath); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
+function isGoReaderFile(filePath: string): boolean { return filePath.endsWith(".go"); }
+/**
+ * Reads a go reader's references without its import clauses: an import names the package, not any
+ * directory inside it, and counting `example.com/project/p` as a reference to a changed `p/...`
+ * path would disqualify every sibling package's package-owned testdata route (2026-11-09, review of
+ * #85). String literals and call arguments — where a testdata read actually appears — are kept.
+ */
+function goReaderReferences(content: string): string {
+  return content
+    .replace(/^[ \t]*import[ \t]+[^(){}[\]\n]*\n/gm, "")
+    .replace(/^[ \t]*import[ \t]*\([^)]*\)[ \t]*(?:\/\/[^\n]*)?\n/gm, "");
+}
 /** Vitest's default `typecheck.include`: tests whose outcome is the type checker's. */
 const TYPE_TEST_FILE = /\.(?:test|spec)-d\.[cm]?[jt]sx?$/;
 // "Is this a test?" is answered by the profile's test patterns (src/repo/test-discovery.ts) - one shared
@@ -278,6 +290,29 @@ export class ImpactAnalyzer {
   private walkerTests: string[] | undefined;
   private knownTests: string[] | undefined;
   private declaredCovered = new Set<string>();
+  /** Go test files grouped by their package's directory value (`profile.goTestPackages` keys are test
+   * files; go test files always end `_test.go`). Built once per analysis. */
+  private goPackageTestFilesByOwner = new Map<string, string[]>();
+  /** Each go-reported package's full file list keyed like `testPackages` (owner itself included). Profiles
+   * from the current adapter put a package's test files into `sourcePaths` too, so when this map is
+   * populated a package's members are exactly its sourcePaths; legacy cached profiles leave it empty. */
+  private goSourceFilesByOwner = new Map<string, string[]>();
+  /** Every go-reported package's testdata-reading candidates keyed by its directory: with source
+   * metadata the package's members (ordinary sources and test files, a package without tests of its
+   * own included — helpers there read other packages' testdata for their callers' tests); legacy
+   * cached profiles only ever knew the listed tests. The cross-package scan checks every package's
+   * entry except the owner (2026-11-09, review of #85). */
+  private goReadersByPackage = new Map<string, string[]>();
+  /** Repository files that no go-reported package reported — code outside package discovery whose
+   * references to a package's testdata disqualify the selective route like a cross-package one:
+   * tests in nested modules or other languages, ordinary `.go` files excluded from package
+   * discovery, and non-test source modules in a mixed repository. Their readers run with a
+   * different working directory, so the package-owned convention cannot hold for them. */
+  private goOutsideReaders = new Set<string>();
+  /** A changed `testdata/` path selects its owning package's tests when the parent directory is a Go
+   * package with tests and no other package's test file names it by reference; every other
+   * discovery-excluded path keeps full validation. */
+  private goPackageTestDataOwner = new Map<string, string>();
 
   /** Test files known to the graph: nodes matching the profile's test globs or the test-file matcher. */
   private knownTestPaths(profile: RepositoryProfile, graph: DependencyGraph): string[] {
@@ -301,7 +336,129 @@ export class ImpactAnalyzer {
     const inputs = (profile.diffciConfig?.inputs ?? []).filter((input) => input.files.some((glob) => matchesTestGlob(path, glob)));
     if (inputs.length === 0) return undefined;
     const globs = inputs.flatMap((input) => input.tests);
-    return this.knownTestPaths(profile, graph).filter((test) => globs.some((glob) => matchesTestGlob(test, glob)));
+    // Go profiles declare no test locations (`profile.tests` is a JS-runner notion), so the go
+    // adapter's package-reported `_test.go` files join the candidates; without them a declaration
+    // naming any Go path is always stale and files the very fallback the declaration was meant to
+    // override. They are additional candidates behind globs the repository names - nothing is
+    // selected that the declaration did not ask for (2026-11-09, issue #83).
+    const goTestCandidates = profile.adapters?.some(adapter => adapter.id === "go")
+      ? Object.keys(profile.goTestPackages ?? {}).filter(test => test.endsWith("_test.go"))
+      : [];
+    return [...this.knownTestPaths(profile, graph), ...goTestCandidates].filter((test) => globs.some((glob) => matchesTestGlob(test, glob)));
+  }
+
+  /**
+   * Groups the Go adapter's test files by their package's directory and maps each changed
+   * `testdata/` path to its owning package (`testdata` is excluded from package discovery, so go
+   * list cannot report this ownership itself; the go tool runs a package's tests with its
+   * directory as the working directory, which is the convention the path follows). Paths that
+   * qualify select that package's tests for the changed path instead of full validation; a legacy
+   * cached profile without test-package evidence, repository contents being unavailable, a parent
+   * directory that is no Go package with tests, `_`-prefixed or `.`-prefixed directories, or
+   * another package naming the path or its `testdata` directory by literal reference (its test
+   * files or ordinary sources, a helper package with no tests of its own included, or a source
+   * module outside the go-reported packages; also, a `_`/`.`-prefixed directory inside the
+   * testdata tree) leave the fallback as before.
+   */
+  private mapGoPackageTestData(delta: GitDelta, profile: RepositoryProfile): Map<string, string> {
+    this.goPackageTestDataOwner = new Map();
+    const byOwner = new Map<string, string[]>();
+    for (const [test, owner] of Object.entries(profile.goTestPackages ?? {})) {
+      if (!test.endsWith("_test.go")) continue;
+      const tests = byOwner.get(owner);
+      if (tests) tests.push(test);
+      else byOwner.set(owner, [test]);
+    }
+    this.goPackageTestFilesByOwner = byOwner;
+    // The current go adapter puts each package's test files into `sourcePaths`, so with source
+    // metadata a package's members are exactly its sourcePaths and the test-file grouping only
+    // stands in for it.
+    this.goSourceFilesByOwner = new Map<string, string[]>();
+    const knownSources = new Set<string>();
+    for (const source of profile.goDependencyPaths?.sources ?? []) {
+      knownSources.add(source);
+      const dir = source.slice(0, source.lastIndexOf("/"));
+      const pkg = dir ? `./${dir}` : ".";
+      const members = this.goSourceFilesByOwner.get(pkg);
+      if (members) members.push(source);
+      else this.goSourceFilesByOwner.set(pkg, [source]);
+    }
+    // The cross-package scan checks every go-reported package's readers, not only packages with
+    // tests: a helper in an ordinary `.go` file of a package with no tests of its own (the
+    // `testutil/golden.go` pattern) can read a package's testdata on behalf of its callers' tests,
+    // and such a package never enters the test-file grouping (2026-11-09, review of #85). With
+    // source metadata a package's readers are its sourcePaths (which include its test files);
+    // legacy cached profiles only ever knew the listed tests, so their entries keep just those.
+    this.goReadersByPackage = new Map();
+    for (const pkg of new Set([...this.goSourceFilesByOwner.keys(), ...byOwner.keys()])) {
+      const sourceFiles = this.goSourceFilesByOwner.get(pkg);
+      const testFiles = byOwner.get(pkg);
+      if (sourceFiles?.length) {
+        this.goReadersByPackage.set(pkg, testFiles?.length ? [...new Set([...sourceFiles, ...testFiles])] : sourceFiles);
+      } else {
+        this.goReadersByPackage.set(pkg, testFiles ?? []);
+      }
+    }
+    // And readers outside every go-reported package (tests in nested modules or other languages,
+    // ordinary `.go` files excluded from package discovery, and non-test source modules in a mixed
+    // repository) can name a package's testdata directly; they run with a different working
+    // directory, so the package-owned convention cannot hold and such a reference disqualifies
+    // the selective route (2026-11-09, review of #85).
+    const reportedGoTests = new Set(Object.keys(profile.goTestPackages ?? {}));
+    const pythonSources = new Set(profile.pythonSources ?? []);
+    this.goOutsideReaders = new Set((this.sortedRepositoryFiles ?? []).filter(file =>
+      !knownSources.has(file) && !reportedGoTests.has(file)
+      && (isSourceFilePath(file) || pythonSources.has(file) || this.isTestFile(file))));
+    if (!profile.goTestPackages || !this.readRepositoryFile) return this.goPackageTestDataOwner;
+    const readRepositoryFile = this.readRepositoryFile;
+    for (const path of new Set(delta.files.flatMap(allChangePaths))) {
+      const owner = this.goPackageTestDataOwnerFor(path, byOwner, readRepositoryFile);
+      if (owner !== undefined) this.goPackageTestDataOwner.set(path, owner);
+    }
+    return this.goPackageTestDataOwner;
+  }
+
+  private goPackageTestDataOwnerFor(
+    path: string,
+    byOwner: ReadonlyMap<string, string[]>,
+    readRepositoryFile: (path: string) => string | undefined,
+  ): string | undefined {
+    const segments = path.split("/");
+    const at = segments.indexOf("testdata");
+    if (at === -1) return undefined;
+    // An embedded testdata file is a production runtime input, not only test input: it keeps the
+    // embed fallback, and never takes the package-owned test data route.
+    if (this.goEmbedPaths.has(path)) return undefined;
+    // Only `testdata` gets the package convention: discovery-excluded directory names around it
+    // (both on the way to the package and inside the testdata tree) keep the fallback.
+    const ignored = (segment: string) => segment === "" || segment.startsWith("_") || segment.startsWith(".");
+    if (segments.slice(0, at).some(ignored) || segments.slice(at + 1).some(ignored)) return undefined;
+    const owner = segments.slice(0, at).length === 0 ? "." : `./${segments.slice(0, at).join("/")}`;
+    const tests = byOwner.get(owner);
+    if (!tests?.length) return undefined;
+    const dataDir = [...segments.slice(0, at), "testdata"].join("/");
+    const filePattern = referencePattern(referenceTokens(path));
+    const dirPattern = referencePattern(referenceTokens(dataDir));
+    const disqualifies = (reader: string): boolean => {
+      const content = readRepositoryFile(reader);
+      // A listed test file that cannot be read could still name the testdata; without its
+      // contents the conservative answer is no selective route at all.
+      if (content === undefined) return true;
+      const references = isGoReaderFile(reader) ? goReaderReferences(content) : content;
+      return contentNamesPath(references, reader, path, filePattern, true)
+          || contentNamesPath(references, reader, dataDir, dirPattern, true);
+    };
+    for (const [pkg, readers] of this.goReadersByPackage) {
+      if (pkg === owner) continue;
+      if (readers.some(disqualifies)) return undefined;
+    }
+    // Readers outside the go-reported packages (tests of nested modules or other languages, ordinary
+    // `.go` files outside package discovery, non-test source modules in a mixed repository) never
+    // take the package-owned convention, since their tests run with a different working directory;
+    // a reference there disqualifies the selective route exactly like a cross-package one
+    // (2026-11-09, review of #85).
+    if ([...this.goOutsideReaders].some(disqualifies)) return undefined;
+    return owner;
   }
 
   /** Dependents whose tests a change to `path` can affect. When the graph allows runtime selection
@@ -366,16 +523,18 @@ export class ImpactAnalyzer {
     }
     const hasGoAdapter = profile.adapters?.some(adapter => adapter.id === "go");
     this.goEmbedPaths = new Set(hasGoAdapter ? profile.goDependencyPaths?.embeds : []);
+    const goPackageTestDataOwner = hasGoAdapter ? this.mapGoPackageTestData(delta, profile) : new Map<string, string>();
     if (hasGoAdapter) {
       // go list models package sources and embeds, not arbitrary runtime reads. Neither a
       // familiar extension/directory nor membership in another adapter's graph proves ownership.
       // Check both identities of renames/copies, including files absent from the HEAD inventory.
       // Missing metadata in older cached profiles deliberately fails closed as well.
       const modeledPaths = new Set([...(profile.goDependencyPaths?.sources ?? []), ...this.goEmbedPaths]);
-      const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))].filter(path => !modeledPaths.has(path));
+      const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))]
+        .filter(path => !modeledPaths.has(path) && !goPackageTestDataOwner.has(path));
       if (unmodeledPaths.length) fallbackReasons.push(`Go runtime inputs outside source/embed metadata require full validation: ${unmodeledPaths.slice(0, 20).join(", ")}`);
     }
-    if (hasGoAdapter && delta.files.some(file => allChangePaths(file).some(isGoDiscoveryIgnoredPath))) {
+    if (hasGoAdapter && delta.files.some(file => allChangePaths(file).some(path => isGoDiscoveryIgnoredPath(path) && !goPackageTestDataOwner.has(path)))) {
       fallbackReasons.push("Changes in Go discovery-excluded paths require full validation, including runtime test data");
     }
     const excludedGoRoots = profile.goExcludedModuleRoots ?? [];
@@ -791,6 +950,18 @@ export class ImpactAnalyzer {
     // Traverse it before generic unknown/docs classification can discard the dependency.
     if (this.goEmbedPaths.has(changedPath)) {
       this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
+      return;
+    }
+    // A `testdata/` path whose parent directory is a Go package's is conventionally read by that
+    // package's tests. Ownership and cross-references were resolved above, so every path reaching
+    // here selects those tests; the loosened cases (no owner package, cross-package readers,
+    // discovery-excluded directory names) fell back and never reach this route.
+    const goPackageOwner = this.goPackageTestDataOwner.get(changedPath);
+    if (goPackageOwner !== undefined) {
+      evidence.push(makeEvidence("GO_TESTDATA", changedPath, `${changedPath} is testdata of Go package ${goPackageOwner}`));
+      for (const test of this.goPackageTestFilesByOwner.get(goPackageOwner) ?? []) {
+        this.addAffectedTest(changedPath, test, graph, affectedTests, "GO_TESTDATA", evidence);
+      }
       return;
     }
     // Non-code files are resolved by reference below, directories included; code is not, so a test that
