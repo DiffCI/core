@@ -8,6 +8,7 @@ import type { ChangedFile, GitDelta } from "../../src/git/types.js";
 import { DefaultCIPlanner } from "../../src/planner/planner.js";
 import { createTaskRegistry } from "../../src/planner/task-registry.js";
 import { analyzeGoMetadata, goAdapter } from "../../src/repo/adapters/go.js";
+import { analyzePythonRepository, pythonAdapter, type PythonFileImports } from "../../src/repo/adapters/python.js";
 import { repositoryFileReader } from "../../src/repo/file-references.js";
 import { buildDependencyGraph, hydrateDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
@@ -43,6 +44,7 @@ async function fixture(
   run: (graph: DependencyGraphResult, root: string, files: Record<string, string>) => void | Promise<void>,
   embeds: { production?: string[]; test?: string[]; external?: string[] } = {},
   extraServiceTestName?: string,
+  pythonImports?: Record<string, PythonFileImports>,
 ) {
   const root = mkdtempSync(join(tmpdir(), "diffci-go-runtime-inputs-"));
   const declarations = (paths: string[] = []) => paths.map((path, index) => `//go:embed ${path}\nvar embedded${index} string\n`).join("");
@@ -61,6 +63,7 @@ async function fixture(
     ...extraFiles,
   };
   const originalAnalyze = goAdapter.analyze;
+  let originalPythonAnalyze: typeof pythonAdapter.analyze | undefined;
   try {
     for (const [path, content] of Object.entries(files)) {
       mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -70,6 +73,11 @@ async function fixture(
       { Dir: join(root, "p"), ImportPath: "example.com/project/p", Name: "p", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], Imports: ["os", ...(embeds.production?.length ? ["embed"] : [])], TestImports: ["testing", ...(embeds.test?.length ? ["embed"] : [])], EmbedFiles: embeds.production, TestEmbedFiles: embeds.test, XTestGoFiles: embeds.external?.length ? ["value_external_test.go"] : [], XTestImports: embeds.external?.length ? ["testing", "embed"] : [], XTestEmbedFiles: embeds.external },
       { Dir: join(root, "service"), ImportPath: "example.com/project/service", Name: "service", GoFiles: ["service.go"], TestGoFiles: extraServiceTestName ? ["service_test.go", extraServiceTestName] : ["service_test.go"], Imports: ["example.com/project/p"], TestImports: ["testing"] },
       { Dir: join(root, "unrelated"), ImportPath: "example.com/project/unrelated", Name: "unrelated", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], TestImports: ["testing"] },
+      // A helper package reported without test files is still a reported package: mirrors whatever
+      // testutil sources the fixture carries (currently golden.go importing "os").
+      ...(Object.keys(files).some(path => /^testutil\/.+\.go$/.test(path) && !path.endsWith("_test.go")) ? [{
+        Dir: join(root, "testutil"), ImportPath: "example.com/project/testutil", Name: "testutil", GoFiles: Object.keys(files).filter(path => /^testutil\/.+\.go$/.test(path) && !path.endsWith("_test.go")).map(path => path.slice("testutil/".length)), TestGoFiles: [], Imports: ["os"], TestImports: [],
+      }] : []),
     ].map(pkg => JSON.stringify(pkg)).join("\n");
     goAdapter.analyze = context => {
       // Mirror the real adapter's nested-module scoping (root-module scope excludes the nested
@@ -82,12 +90,19 @@ async function fixture(
       }
       return analyzeGoMetadata(context, metadata);
     };
+    // The python adapter is stubbed the same way: hand the resolver the file parses directly, so
+    // the mixed-repository fixtures need no interpreter and still exercise real adapter logic.
+    if (pythonImports) {
+      originalPythonAnalyze = pythonAdapter.analyze;
+      pythonAdapter.analyze = context => analyzePythonRepository(context, listed => Object.fromEntries(listed.map(file => [file, pythonImports[file] ?? { imports: [] }])));
+    }
     const graph = await buildDependencyGraph({ repoPath: root });
     assert.deepEqual(graph.adapterBlockers, []);
     assert.equal(graph.confidence, "COMPLETE");
     await run(graph, root, files);
   } finally {
     goAdapter.analyze = originalAnalyze;
+    if (originalPythonAnalyze) pythonAdapter.analyze = originalPythonAnalyze;
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -355,5 +370,39 @@ test("a test outside every go-reported package naming the testdata keeps full va
   };
   await fixture(files, (graph, root, files) => {
     assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", allTests, { repoPath: root, fileContents: files });
+  });
+});
+
+test("a helper package without tests of its own naming testdata keeps full validation", async () => {
+  // The usual testutil/golden.go shape: a helper package with no tests of its own reads another
+  // package's testdata for the callers' tests (service imports testutil below and its test calls
+  // Golden). A cross-package scan over packages with tests alone never reaches that package,
+  // since it contributes no `_test.go` file of its own (2026-11-09 review of #85).
+  const files = {
+    "p/testdata/settings.json": "expected",
+    "testutil/golden.go": 'package testutil\nimport "os"\nfunc Golden() ([]byte, error) { return os.ReadFile("../p/testdata/settings.json") }\n',
+    "service/service_test.go": 'package service\nimport "testing"\nimport "example.com/project/testutil"\nfunc TestGolden(t *testing.T) { if _, err := testutil.Golden(); err != nil { t.Fatal(err) } }\n',
+  };
+  await fixture(files, (graph, root, files) => {
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", allTests, { repoPath: root, fileContents: files });
+  });
+});
+
+test("a python helper in a modeled mixed repository naming testdata keeps full validation", async () => {
+  // In a mixed (go + python) repository a non-test helper reads a package's testdata for the test
+  // that imports it; the outside-readers pool only took `.go` files and test-matched files, so the
+  // helper's reference was never checked (2026-11-09 review of #85). A Go adapter plus any
+  // JavaScript file is itself a mixed-repo blocker, so the JS variant cannot reach a healthy graph.
+  const files = {
+    "p/testdata/settings.json": "expected",
+    "pyproject.toml": '[project]\nname = "mixed"\n',
+    "tools/snapshot.py": 'from pathlib import Path\n\ndef snapshot() -> str:\n    return Path("../p/testdata/settings.json").read_text()\n',
+    "tools/test_snapshot.py": 'from .snapshot import snapshot\n\ndef test_snapshot():\n    assert snapshot() == "expected"\n',
+  };
+  await fixture(files, (graph, root, files) => {
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", [...allTests, "tools/test_snapshot.py"], { repoPath: root, fileContents: files });
+  }, {}, undefined, {
+    "tools/snapshot.py": { imports: [] },
+    "tools/test_snapshot.py": { imports: [[".snapshot", 1, ["snapshot"]]] },
   });
 });
