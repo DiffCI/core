@@ -97,13 +97,16 @@ test(${JSON.stringify(name)}, () => { ${fails ? 'throw new Error("boom");' : ""}
       }
       const glob = (path: string) => `"${path.replace(/[[\]()]/g, (c) => `@([${c}])`)}"`;
       const tokens = [...special.map(glob), ...files];
-      const command = `npx --no-install tsx --conditions react-server --test --test-isolation=none ${tokens.join(" ")}`;
+      const command = `npx --no-install tsx --conditions react-server --test ${tokens.join(" ")}`;
       assert.ok(command.length > 8191, `command is ${command.length} characters`);
       const paths = [...special, ...files];
-      const parts = batchCommand(command, paths);
+      // Windows' limit on every platform: elsewhere COMMAND_LINE_LIMIT never splits this selection, and
+      // the parts must run the same on Linux CI as on Windows.
+      const limit = Math.min(COMMAND_LINE_LIMIT, 6000);
+      const parts = batchCommand(command, paths, limit);
       assert.ok(parts.length > 1);
-      for (const part of parts) assert.ok(part.length <= COMMAND_LINE_LIMIT && part.length < 8191, `part is ${part.length} characters`);
-      assert.deepEqual(parts.flatMap((part) => part.split(" ").slice(7)), tokens);
+      for (const part of parts) assert.ok(part.length <= limit && part.length < 8191, `part is ${part.length} characters`);
+      assert.deepEqual(parts.flatMap((part) => part.split(" ").slice(6)), tokens);
       const result = measureCommands(parts, { cwd: dir, timeoutMs: 300_000, tailBytes: 4000 });
       assert.equal(result.exitCode, 0, result.stderrTail || result.stdoutTail);
       assert.equal(result.runnerTestCount, paths.length, result.stdoutTail);
@@ -121,7 +124,7 @@ test(${JSON.stringify(name)}, () => { ${fails ? 'throw new Error("boom");' : ""}
       mkdirSync(join(dir, "src", "lib", "directory"), { recursive: true });
       linkNodeModules(dir);
       const files = Array.from({ length: 400 }, (_, i) => `src/lib/directory/publication-region-layer-case-${String(i).padStart(3, "0")}.test.ts`);
-      let command = "npx --no-install tsx --conditions react-server --test --test-isolation=none";
+      let command = "npx --no-install tsx --conditions react-server --test";
       const used: string[] = [];
       for (const file of files) {
         if (command.length + 1 + file.length > 8100) break;
@@ -146,7 +149,7 @@ test(${JSON.stringify(name)}, () => { ${fails ? 'throw new Error("boom");' : ""}
       linkNodeModules(dir);
       const files = Array.from({ length: 6 }, (_, i) => `tests/case-${i}.test.ts`);
       files.forEach((file, i) => writeFileSync(join(dir, file), body(`t${i}`, i === 2)));
-      const parts = batchCommand(`npx --no-install tsx --test --test-isolation=none ${files.join(" ")}`, files, 80);
+      const parts = batchCommand(`npx --no-install tsx --test ${files.join(" ")}`, files, 80);
       assert.ok(parts.length > 2);
       const result = measureCommands(parts, { cwd: dir, timeoutMs: 300_000, tailBytes: 4000 });
       assert.equal(result.exitCode, 1);
