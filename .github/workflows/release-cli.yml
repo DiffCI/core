@@ -231,12 +231,16 @@ jobs:
             echo "GitHub Release $release_tag already targets this release commit"
             exit 0
           fi
+          # Changes land on main without pull requests, so --generate-notes alone
+          # lists nothing; name the feat/fix commits since the previous release.
+          notes_file=$(mktemp)
+          node "$GITHUB_WORKSPACE/scripts/release-notes.mjs" "$GITHUB_SHA" "$package_name@$package_version" >"$notes_file"
           gh release create "$release_tag" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "$release_tag" \
             --latest \
-            --notes "npm: \`$package_name@$package_version\`" \
+            --notes-file "$notes_file" \
             --generate-notes
 
       - name: Tag the matching observer Action release

@@ -111,6 +111,7 @@
     "scripts/check-muse-plugin-integrity.mjs",
     "scripts/fallback-reasons.d.mts",
     "scripts/fallback-reasons.mjs",
+    "scripts/release-notes.mjs",
     "scripts/release-surfaces.d.mts",
     "scripts/release-surfaces.mjs",
     "scripts/verify-mcp-registry.mjs",

@@ -13,6 +13,8 @@ npx "@diffci.com/diffci@latest" check
 
 Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/using-diffci.md).
 
+If DiffCI saves you CI time, a ⭐ helps others find it.
+
 **On every pull request**, add one job beside your existing CI. Its job summary shows which tests the change affects and why, or that the full suite is needed and why. It runs no tests and skips or changes nothing:
 
 ```yaml
