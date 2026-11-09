@@ -468,6 +468,20 @@ export class ImpactAnalyzer {
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
     }
 
+    // The same blind spot inside one workspace package (2026-11-09, Sentry): node-integration-tests runs
+    // `vitest run` on `./**/test.ts` from a vite.config.ts DiffCI does not read, so its 277 tests were plain
+    // source. A change reaching that package selected none of them, not even the changed one. A changed or
+    // affected file inside a package whose own test script runs a framework with no discovered test falls back.
+    for (const { packageRoot, profile: child } of profile.workspaceTestPackages ?? []) {
+      if (child.testUniverse?.blindSpot !== true) continue;
+      const prefix = `${packageRoot}/`;
+      const reached = [...changedPaths, ...affectedSources.keys(), ...affectedTests.keys()].some((path) => path.startsWith(prefix));
+      if (!reached) continue;
+      const message = `Workspace package ${packageRoot} declares ${child.testUniverse.declaredFrameworks.join(", ")} but no test files were discovered in it; full validation required`;
+      riskSignals.push({ level: "critical", reason: "WORKSPACE_TEST_UNIVERSE_EMPTY", message });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+    }
+
     // 2026-10-21: affected tests that `npm test` never runs are not part of the full suite, so they are
     // reported beside the selection rather than inside it (src/repo/script-universe.ts). They have
     // already satisfied the changed-test invariant above and are still meant to be run.

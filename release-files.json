@@ -170,6 +170,7 @@
     "src/repo/types.ts",
     "src/repo/vue-scope.ts",
     "src/repo/workflow-test-steps.ts",
+    "src/repo/workspace-sources.ts",
     "src/repo/workspaces.ts",
     "src/research/baseline/matcher.ts",
     "src/research/baseline/path-baseline.ts",

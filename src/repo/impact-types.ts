@@ -33,6 +33,7 @@ export type ImpactReason =
   | "DIRECT_TEST_CHANGE"
   | "TEST_SELECTION_INVARIANT"
   | "TEST_UNIVERSE_EMPTY"
+  | "WORKSPACE_TEST_UNIVERSE_EMPTY"
   | "EMPTY_DELTA";
 
 export interface ImpactEvidencePath {

@@ -12,7 +12,7 @@
  * packages and every edge into server-utils was missing. Those imports must fall back, not skip.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -30,6 +30,19 @@ function write(root: string, rel: string, content: string): void {
 }
 
 const APP = "dev-packages/e2e-tests/test-applications/nuxt-app";
+
+/** Sentry's package shape: `types` and `exports` point at build/, and tsconfig.types.json maps build/types
+ * back to src. `nested` puts `types` under `import`/`require`, as `@sentry-internal/test-utils` does. */
+function buildOutputManifest(root: string, shape: "flat" | "nested"): void {
+  const types = "./build/types/index.d.ts";
+  const exports = shape === "flat"
+    ? { "./package.json": "./package.json", ".": { types, import: "./build/esm/index.js", require: "./build/cjs/index.js" } }
+    : { ".": { import: { types, default: "./build/esm/index.js" }, require: { types, default: "./build/cjs/index.js" } } };
+  write(root, "packages/utils/package.json", JSON.stringify({ name: "@sdk/utils", version: "1.0.0", main: "build/cjs/index.js", module: "build/esm/index.js", types: "build/types/index.d.ts", exports, scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+  write(root, "packages/utils/tsconfig.json", JSON.stringify({ extends: "../../tsconfig.json", include: ["src/**/*"] }));
+  write(root, "packages/utils/tsconfig.types.json", JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { declaration: true, emitDeclarationOnly: true, outDir: "build/types", rootDir: "./src" } }));
+  write(root, "packages/utils/src/index.ts", "export { bedrock } from './bedrock';\nexport { other } from './other';\n");
+}
 
 function sdkRepo(options: { nuxtConfig?: string; consumer?: boolean } = {}): string {
   const root = mkdtempSync(join(tmpdir(), "diffci-scoped-blockers-"));
@@ -145,7 +158,7 @@ describe("framework blockers confined to nested package directories", () => {
     const root = sdkRepo({ consumer: true });
     try {
       const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
-      const reason = "Workspace package @sdk/utils is imported by 1 file but does not resolve to its repository sources; install and link dependencies before analysis";
+      const reason = "Workspace package @sdk/utils is imported by 1 file but DiffCI cannot map the import to the package's source files; point the package's types entry at a tsconfig outDir or declarationDir with a rootDir, or at source";
       assert.ok((graph.scopedAdapterBlockers ?? []).some((b) => b.reason === reason && b.directories.join() === "packages/utils"), JSON.stringify(graph.scopedAdapterBlockers));
       assert.ok(impact.fallbackReasons.includes(reason), JSON.stringify(impact.fallbackReasons));
       assert.equal(plan.mode, "FULL");
@@ -159,6 +172,100 @@ describe("framework blockers confined to nested package directories", () => {
       assert.deepEqual(impact.fallbackReasons, []);
       assert.equal(plan.mode, "SELECTIVE");
       assert.deepEqual(plan.selectedTests, ["packages/node/test/index.test.ts"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  for (const shape of ["flat", "nested"] as const) {
+    it(`maps an unbuilt workspace package's build/types entry to its source (${shape} exports)`, async () => {
+      const root = sdkRepo({ consumer: true });
+      try {
+        buildOutputManifest(root, shape);
+        const { impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+        assert.deepEqual(impact.fallbackReasons, []);
+        assert.equal(plan.mode, "SELECTIVE");
+        assert.ok(plan.selectedTests.includes("packages/node/test/index.test.ts"), JSON.stringify(plan.selectedTests));
+        assert.ok(plan.selectedTests.includes("packages/utils/test/bedrock.test.ts"));
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    });
+  }
+
+  it("follows a built and linked workspace package to its source, not to its generated declarations", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // What `pnpm install` and `build:types` leave behind: a workspace link and generated declarations.
+      write(root, "packages/utils/build/types/index.d.ts", "export { bedrock } from './bedrock';\nexport { other } from './other';\n");
+      write(root, "packages/utils/build/types/bedrock.d.ts", "export declare const bedrock: () => string;\n");
+      write(root, "packages/utils/build/types/other.d.ts", "export declare const other: () => string;\n");
+      mkdirSync(join(root, "packages/node/node_modules/@sdk"), { recursive: true });
+      symlinkSync(join(root, "packages/utils"), join(root, "packages/node/node_modules/@sdk/utils"), "junction");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok(graph.graph.dependenciesOf("packages/node/src/index.ts").includes("packages/utils/src/index.ts"), JSON.stringify(graph.graph.dependenciesOf("packages/node/src/index.ts")));
+      assert.ok(!graph.graph.nodes.some((node) => node.path.includes("/build/")), "no edge may end in build output");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(plan.selectedTests.includes("packages/node/test/index.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("maps a JavaScript-only export through a tsconfig outDir, and a deep import of a declaration path", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // Sentry's @sentry/deno: `./import` exports only build/import.mjs, and tsconfig.build.json states outDir build.
+      const manifest = JSON.parse(readFileSync(join(root, "packages/utils/package.json"), "utf8"));
+      manifest.exports["./import"] = { import: "./build/import.mjs" };
+      write(root, "packages/utils/package.json", JSON.stringify(manifest));
+      write(root, "packages/utils/tsconfig.build.json", JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { outDir: "build", rootDir: "./src", allowJs: true } }));
+      write(root, "packages/utils/src/import.mjs", "export const hook = 1;\n");
+      write(root, "packages/node/src/hook.ts", "import { hook } from '@sdk/utils/import'; export const h = hook;");
+      write(root, "packages/node/src/types.ts", "import type { bedrock } from '@sdk/utils/build/types/bedrock'; export type B = typeof bedrock;");
+      const { graph } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(graph.graph.dependenciesOf("packages/node/src/types.ts"), ["packages/utils/src/bedrock.ts"]);
+      const hookRef = graph.references.find((ref) => ref.importer === "packages/node/src/hook.ts");
+      assert.equal(hookRef?.resolution, "internal-source", JSON.stringify(hookRef));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("falls back when a change reaches a workspace package whose tests DiffCI cannot see", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // Sentry's node-integration-tests: `vitest run` on `./**/test.ts`, declared in a vite.config.ts.
+      write(root, "pnpm-workspace.yaml", "packages:\n  - 'packages/*'\n  - 'dev-packages/e2e-tests'\n  - 'dev-packages/integration'\n");
+      write(root, "dev-packages/integration/package.json", JSON.stringify({ name: "@sdk-internal/integration", private: true, scripts: { test: "vitest run" }, dependencies: { "@sdk/node": "workspace:*" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "dev-packages/integration/vite.config.ts", "import base from '../../vite.base'; export default { ...base, test: { ...base.test, include: ['./**/test.ts'] } };\n");
+      write(root, "packages/node/package.json", JSON.stringify({ name: "@sdk/node", version: "1.0.0", types: "./src/index.ts", scripts: { test: "vitest run" }, dependencies: { "@sdk/utils": "workspace:*" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "dev-packages/integration/suites/bedrock/test.ts", "import { it } from 'vitest'; import { init } from '@sdk/node'; it('runs', () => { init(); });");
+      const reason = "Workspace package dev-packages/integration declares vitest but no test files were discovered in it; full validation required";
+      const reached = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok(reached.impact.fallbackReasons.includes(reason), JSON.stringify(reached.impact.fallbackReasons));
+      assert.equal(reached.plan.mode, "FULL");
+      write(root, "packages/utils/src/internal.ts", "export const internal = 1;");
+      write(root, "packages/utils/test/internal.test.ts", "import { it } from 'vitest'; import { internal } from '../src/internal'; it('works', () => { internal; });");
+      const elsewhere = await planFor(root, "packages/utils/src/internal.ts");
+      assert.ok(!elsewhere.impact.fallbackReasons.includes(reason), JSON.stringify(elsewhere.impact.fallbackReasons));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("falls back when the types entry has no tsconfig mapping back to source", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      write(root, "packages/utils/tsconfig.types.json", JSON.stringify({ extends: "./tsconfig.json", compilerOptions: { declaration: true, emitDeclarationOnly: true, outDir: "build/types" } }));
+      const { impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok(impact.fallbackReasons.some((reason) => reason.startsWith("Workspace package @sdk/utils is imported by 1 file but DiffCI cannot map")), JSON.stringify(impact.fallbackReasons));
+      assert.equal(plan.mode, "FULL");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("leaves imports from outside the workspace to the registry or tarball they install from", async () => {
+    const root = sdkRepo();
+    try {
+      write(root, `${APP}/composables/useThing.ts`, "import { bedrock } from '@sdk/utils'; export const useThing = () => bedrock();");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok(!(graph.scopedAdapterBlockers ?? []).some((b) => b.reason.startsWith("Workspace package")), JSON.stringify(graph.scopedAdapterBlockers));
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.equal(plan.mode, "SELECTIVE");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

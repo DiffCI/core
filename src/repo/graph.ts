@@ -1,13 +1,14 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createTestFileMatcher, DEFAULT_TEST_FILE_MATCHER, testFileMatcherForProfile, type TestFileMatcher } from "./test-discovery.js";
 import { isBuiltin } from "node:module";
-import { dirname, extname, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
 import { applyVueScope, inVuePackage } from "./vue-scope.js";
 import { declaredWorkspaceRoots } from "./workspaces.js";
+import { WorkspaceSources } from "./workspace-sources.js";
 import type {
   DependencyEdge,
   DependencyEdgeKind,
@@ -886,6 +887,17 @@ export async function buildDependencyGraph(
   const packageDirectories = new Map<string, string>();
   const packageScope = (path: string) => nearestPackageDirectory(repoPath, path, packageDirectories);
   const workspaceRoots = new Set(declaredWorkspaceRoots(repoPath));
+  const workspaceSources = new WorkspaceSources(repoPath, workspaceRoots);
+  // The package manager links workspace packages only into workspace members (and the root project).
+  const inWorkspace = (rel: string) => { const directory = packageScope(rel); return directory === "" || workspaceRoots.has(directory); };
+  let realRepoRoot: string | undefined;
+  const physicalRelative = (file: string): string | undefined => {
+    try {
+      realRepoRoot ??= realpathSync.native(repoPath);
+      const rel = relative(realRepoRoot, realpathSync.native(file)).replace(/\\/g, "/");
+      return rel && !rel.startsWith("../") && rel !== ".." && !isAbsolute(rel) ? rel : undefined;
+    } catch { return undefined; }
+  };
   for (const item of contributions) for (const { path, reason } of [...(item.fileBlockers ?? []), ...(item.subjectBlockers ?? [])]) addScope(reason, packageScope(path));
   if (profile.diffciConfig?.configurationError && !adapterBlockers.includes(profile.diffciConfig.configurationError)) adapterBlockers.push(profile.diffciConfig.configurationError);
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
@@ -1198,6 +1210,31 @@ export async function buildDependencyGraph(
         moduleResolutionCache,
       );
 
+      // A workspace package's build output is not its source (2026-11-09, Sentry: `@sentry/server-utils`
+      // resolves to nothing before a build and to build/types/index.d.ts after one). Map the import to the
+      // package's source file, or leave it external so the workspace guard falls back.
+      const workspaceImport = !scope && specifierCategory === "package" && workspaceSources.size && inWorkspace(importerRel)
+        ? workspaceSources.packageFor(resolvableSpecifier)
+        : undefined;
+      if (workspaceImport) {
+        const { pkg, subpath } = workspaceImport;
+        const resolvedFile = resolution.resolvedModule?.resolvedFileName;
+        // Through real paths: a workspace link, or a repository path spelled differently (a Windows 8.3
+        // short name), must still land inside the package.
+        const resolvedRel = resolvedFile ? physicalRelative(resolvedFile) : undefined;
+        const insidePackage = resolvedRel !== undefined && resolvedRel.startsWith(`${pkg.root}/`);
+        if (!resolvedFile || (insidePackage && (/\.d\.[mc]?ts$/.test(resolvedRel!) || !internalSourcePaths.has(resolvedRel!)))) {
+          const source = (insidePackage ? workspaceSources.sourceForFile(pkg, resolvedRel!) : undefined) ?? workspaceSources.sourceForSubpath(pkg, subpath);
+          if (source && internalSourcePaths.has(source)) {
+            addEdge(importerRel, source, ref.kind);
+            recordReference("internal-source", importerRel, ref);
+          } else {
+            recordReference("external-package", importerRel, ref);
+          }
+          continue;
+        }
+      }
+
       if (!resolution.resolvedModule || !resolution.resolvedModule.resolvedFileName) {
         const category = classifySpecifier(ref.specifier);
         if (category === "relative" || category === "absolute" || category === "alias") {
@@ -1323,7 +1360,7 @@ export async function buildDependencyGraph(
   if (scope && unresolved.length) adapterBlockers.push("Unresolved dependencies in the declared Vue suite require full validation");
   if (scope && edges.some(edge => outsideScope(edge.from) || outsideScope(edge.to))) adapterBlockers.push("Vue asset or macro dependency crosses the declared package boundary");
   const scopedAdapterBlockers = scopeAdapterBlockers(adapterBlockers, blockerScopes);
-  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references, workspaceRoots));
+  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references.filter((ref) => inWorkspace(ref.importer)), workspaceRoots));
   profile.adapterBlockers = [...adapterBlockers];
   markPhase("importExtractionAndResolution");
 
@@ -1809,10 +1846,11 @@ function scopeAdapterBlockers(adapterBlockers: string[], scopes: Map<string, Set
   return [...scoped].map(([reason, directories]) => ({ reason, directories: [...directories].sort() }));
 }
 
-/** A declared workspace package imported by name that resolves to no repository file, typically because
- * dependencies are not installed, hides every edge into that package (2026-11-08: in an uninstalled
- * Sentry checkout, 18 packages import `@sentry/server-utils`, and none of those edges existed). A change
- * reaching the package then falls back instead of skipping its dependents. */
+/** A declared workspace package imported by name from a workspace member whose import could not be mapped
+ * to the package's source files hides every edge into that package (2026-11-08: in an uninstalled Sentry
+ * checkout, 18 packages import `@sentry/server-utils`, and none of those edges existed). A change reaching
+ * the package then falls back instead of skipping its dependents. Imports from outside the workspace get
+ * the package from elsewhere (a registry or a tarball) and are left out by the caller. */
 function uninstalledWorkspaceBlockers(repoPath: string, references: ResolutionReference[], workspaceRoots: ReadonlySet<string>): ScopedAdapterBlocker[] {
   const external = references.filter((ref) => ref.resolution === "external-package");
   if (!external.length) return [];
@@ -1834,7 +1872,7 @@ function uninstalledWorkspaceBlockers(repoPath: string, references: ResolutionRe
     set.add(ref.importer);
   }
   return [...importers].sort(([a], [b]) => a.localeCompare(b)).map(([name, files]) => ({
-    reason: `Workspace package ${name} is imported by ${files.size} file${files.size === 1 ? "" : "s"} but does not resolve to its repository sources; install and link dependencies before analysis`,
+    reason: `Workspace package ${name} is imported by ${files.size} file${files.size === 1 ? "" : "s"} but DiffCI cannot map the import to the package's source files; point the package's types entry at a tsconfig outDir or declarationDir with a rootDir, or at source`,
     directories: [packages.get(name)!],
   }));
 }
