@@ -241,7 +241,7 @@ What stays in Core, and never moves to Cloud, is set out in [STEWARDSHIP.md](STE
 
 ## Contributing
 
-Most open work is teaching DiffCI to narrow changes it currently treats as "run everything": config files, `package.json` edits and lockfiles. Each case is small and comes with a synthetic fixture, so you don't need to learn the whole engine. Python and Rust support are next and split into one-PR steps: see the [Python](https://github.com/DiffCI/core/issues/61) and [Rust](https://github.com/DiffCI/core/issues/62) tracking issues. Pick a [good first issue](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22) and see [CONTRIBUTING.md](CONTRIBUTING.md); a dev container is included.
+Most open work is teaching DiffCI to narrow changes it currently treats as "run everything": config files, `package.json` edits and lockfiles. Each case is small and comes with a synthetic fixture, so you don't need to learn the whole engine. Django, Rust and PHP support are next and split into one-PR steps: see the [Django](https://github.com/DiffCI/core/issues/87), [Rust](https://github.com/DiffCI/core/issues/62) and [PHP](https://github.com/DiffCI/core/issues/88) tracking issues, or the [Go](https://github.com/DiffCI/core/issues/76) and [Maven](https://github.com/DiffCI/core/issues/89) ones for fewer full-suite fallbacks. Pick a [good first issue](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22) and see [CONTRIBUTING.md](CONTRIBUTING.md); a dev container is included.
 
 ### Contributors
 

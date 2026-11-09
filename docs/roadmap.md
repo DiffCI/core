@@ -12,13 +12,15 @@ This is an evaluation roadmap, not a delivery guarantee. Existing support limits
 
 ## Language support
 
-JS/TS, Vue, Go and Maven are supported today. Python, Rust and Gradle are next and open for contributors; each tracking issue lists small steps that are one PR each:
+JS/TS, Vue, Go, Maven and Python (pytest) are supported today. Django, Rust, PHP and Gradle are next and open for contributors; each tracking issue lists small steps that are one PR each:
 
-- [Python (pytest)](https://github.com/DiffCI/core/issues/61)
+- [Python (pytest)](https://github.com/DiffCI/core/issues/61) ([design partners](https://github.com/DiffCI/core/issues/75))
+- [Django](https://github.com/DiffCI/core/issues/87)
 - [Rust (Cargo)](https://github.com/DiffCI/core/issues/62)
+- [PHP (Composer + PHPUnit/Pest)](https://github.com/DiffCI/core/issues/88)
 - [Gradle (Java/Kotlin)](https://github.com/DiffCI/core/issues/68)
 
-Go is supported, but many real Go repositories still fall back to the full suite (mixed Go/TypeScript, `go:generate`, `go.work`, build tags and more). [The Go tracking issue](https://github.com/DiffCI/core/issues/76) lists the steps to close those fallbacks, each one PR.
+Go is supported, but many real Go repositories still fall back to the full suite (mixed Go/TypeScript, `go:generate`, `go.work`, build tags and more). [The Go tracking issue](https://github.com/DiffCI/core/issues/76) lists the steps to close those fallbacks, each one PR. [The Maven tracking issue](https://github.com/DiffCI/core/issues/89) does the same for custom source roots, external parent POMs and unresolved `${property}` versions.
 
 Want another language? 👍 an existing tracking issue or open one with the `adapter` label. Reactions decide what comes next.
 
