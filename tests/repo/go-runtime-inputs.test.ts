@@ -8,6 +8,7 @@ import type { ChangedFile, GitDelta } from "../../src/git/types.js";
 import { DefaultCIPlanner } from "../../src/planner/planner.js";
 import { createTaskRegistry } from "../../src/planner/task-registry.js";
 import { analyzeGoMetadata, goAdapter } from "../../src/repo/adapters/go.js";
+import { repositoryFileReader } from "../../src/repo/file-references.js";
 import { buildDependencyGraph, hydrateDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import type { DependencyGraphResult } from "../../src/repo/types.js";
@@ -23,9 +24,14 @@ function delta(file: ChangedFile): GitDelta {
   };
 }
 
-function planChange(graph: DependencyGraphResult, file: ChangedFile) {
+function planChange(graph: DependencyGraphResult, file: ChangedFile, analysis?: { repoPath: string; fileContents?: Record<string, string> }) {
   const change = delta(file);
-  const impact = new ImpactAnalyzer().analyze(change, graph, graph.profile);
+  // Content checks need the same wiring the engine uses (src/analyze.ts): the repository reader and the
+  // file inventory. Tests that only assert fallback behavior can omit them and fail closed instead.
+  const analysisOptions = analysis ? { repositoryFiles: new Set(Object.keys(analysis.fileContents ?? {})), readRepositoryFile: repositoryFileReader(analysis.repoPath) } : undefined;
+  const impact = analysisOptions
+    ? new ImpactAnalyzer().analyze(change, graph, graph.profile, analysisOptions)
+    : new ImpactAnalyzer().analyze(change, graph, graph.profile);
   const plan = new DefaultCIPlanner(createTaskRegistry([])).plan({ delta: change, impact, profile: graph.profile });
   return { impact, plan };
 }
@@ -36,6 +42,7 @@ async function fixture(
   extraFiles: Record<string, string>,
   run: (graph: DependencyGraphResult, root: string) => void | Promise<void>,
   embeds: { production?: string[]; test?: string[]; external?: string[] } = {},
+  extraServiceTestName?: string,
 ) {
   const root = mkdtempSync(join(tmpdir(), "diffci-go-runtime-inputs-"));
   const declarations = (paths: string[] = []) => paths.map((path, index) => `//go:embed ${path}\nvar embedded${index} string\n`).join("");
@@ -61,7 +68,7 @@ async function fixture(
     }
     const metadata = [
       { Dir: join(root, "p"), ImportPath: "example.com/project/p", Name: "p", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], Imports: ["os", ...(embeds.production?.length ? ["embed"] : [])], TestImports: ["testing", ...(embeds.test?.length ? ["embed"] : [])], EmbedFiles: embeds.production, TestEmbedFiles: embeds.test, XTestGoFiles: embeds.external?.length ? ["value_external_test.go"] : [], XTestImports: embeds.external?.length ? ["testing", "embed"] : [], XTestEmbedFiles: embeds.external },
-      { Dir: join(root, "service"), ImportPath: "example.com/project/service", Name: "service", GoFiles: ["service.go"], TestGoFiles: ["service_test.go"], Imports: ["example.com/project/p"], TestImports: ["testing"] },
+      { Dir: join(root, "service"), ImportPath: "example.com/project/service", Name: "service", GoFiles: ["service.go"], TestGoFiles: extraServiceTestName ? ["service_test.go", extraServiceTestName] : ["service_test.go"], Imports: ["example.com/project/p"], TestImports: ["testing"] },
       { Dir: join(root, "unrelated"), ImportPath: "example.com/project/unrelated", Name: "unrelated", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], TestImports: ["testing"] },
     ].map(pkg => JSON.stringify(pkg)).join("\n");
     goAdapter.analyze = context => analyzeGoMetadata(context, metadata);
@@ -75,12 +82,12 @@ async function fixture(
   }
 }
 
-function assertFullRuntimeFallback(graph: DependencyGraphResult, file: ChangedFile, unmodeledPath = file.path) {
-  const { impact, plan } = planChange(graph, file);
+function assertFullRuntimeFallback(graph: DependencyGraphResult, file: ChangedFile, unmodeledPath = file.path, allTestPaths = allTests, analysis?: { repoPath: string; fileContents?: Record<string, string> }) {
+  const { impact, plan } = planChange(graph, file, analysis);
   assert.equal(impact.fallbackRequired, true);
   assert.ok(impact.fallbackReasons.some(reason => reason.includes("Go runtime inputs outside source/embed metadata") && reason.includes(unmodeledPath)), impact.fallbackReasons.join("\n"));
   assert.equal(plan.mode, "FULL");
-  assert.deepEqual(plan.selectedTests, allTests);
+  assert.deepEqual([...plan.selectedTests].sort(), [...allTestPaths].sort());
   assert.deepEqual(plan.skippedTests, []);
   assert.deepEqual(plan.commandSpecs, []);
   assert.equal(plan.commandSynthesis?.status, "NOT_APPLICABLE");
@@ -185,6 +192,23 @@ test("Go testdata, hidden and underscore paths retain full validation even when 
   }, { production: paths });
 });
 
+test("embedded package testdata keeps full validation also with repository contents available", async () => {
+  const files = { "p/testdata/settings.json": "embedded" };
+  await fixture(files, (graph, root) => {
+    // The engine wires repository contents (src/analyze.ts); this is the production wiring, not
+    // the fail-closed absence of it, and the embed still keeps its discovery-excluded fallback.
+    const analysis = { repoPath: root, fileContents: files };
+    const { impact, plan } = planChange(graph, { path: "p/testdata/settings.json", changeType: "modified" }, analysis);
+    assert.equal(impact.fallbackRequired, true);
+    assert.ok(impact.fallbackReasons.some(reason => reason.includes("Go discovery-excluded paths")), impact.fallbackReasons.join("\n"));
+    // the embed is modeled, so the "runtime inputs outside source/embed metadata" message never names it
+    assert.ok(impact.fallbackReasons.every(reason => !reason.includes("runtime inputs outside source/embed metadata")), impact.fallbackReasons.join("\n"));
+    assert.equal(plan.mode, "FULL");
+    assert.deepEqual([...plan.selectedTests].sort(), [...allTests].sort());
+    assert.ok(!impact.affectedTests.some(t => t.reasons.includes("GO_TESTDATA")));
+  }, { production: ["testdata/settings.json"] });
+});
+
 test("Go modeled-path evidence survives graph caching", async () => {
   await fixture({ "p/data/embedded.json": "embedded" }, (graph, root) => {
     const cache = new GraphCache({ cacheDir: join(root, ".cache") });
@@ -213,4 +237,86 @@ test("Go legacy cached profiles without modeled-path evidence fail closed", asyn
     assertFullRuntimeFallback(loaded, { path: "p/data/embedded.json", changeType: "modified" });
     assertFullRuntimeFallback(loaded, { path: "p/value.go", changeType: "modified" });
   }, { production: ["data/embedded.json"] });
+});
+
+// -- Go package testdata (issue 83): `testdata/` of a package with tests selects those tests -------------
+test("a changed package testdata input selects the owning package's tests", async () => {
+  const files = { "p/testdata/settings.json": "expected" };
+  await fixture(files, (graph, root) => {
+    const { impact, plan } = planChange(graph, { path: "p/testdata/settings.json", changeType: "modified" }, { repoPath: root, fileContents: files });
+    assert.equal(impact.fallbackRequired, false);
+    assert.equal(plan.mode, "SELECTIVE");
+    assert.deepEqual(plan.selectedTests, ["p/value_test.go"]);
+    assert.deepEqual(plan.skippedTests, ["service/service_test.go", "unrelated/value_test.go"]);
+    assert.ok(impact.affectedTests.some(t => t.reasons.includes("GO_TESTDATA")), impact.affectedTests.map(t => t.reasons.join("|")).join("\n"));
+    assert.ok(impact.evidence.some(e => e.reason === "GO_TESTDATA" && e.message.includes("p/testdata/settings.json")));
+  });
+});
+
+test("a sibling package's test file naming the testdata keeps full validation", async () => {
+  const files = {
+    "p/testdata/settings.json": "expected",
+    // package service's sibling test names ../p/testdata, so p's testdata is not package-private
+    "service/service_relative_test.go": 'package service\nimport "testing"\nfunc TestRelative(t *testing.T) { _ = "../p/testdata/settings.json" }',
+  };
+  await fixture(files, (graph, root) => {
+    const relative = [...allTests, "service/service_relative_test.go"];
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", relative, { repoPath: root, fileContents: files });
+    const { impact, plan } = planChange(graph, { path: "p/testdata/settings.json", changeType: "modified" }, { repoPath: root, fileContents: files });
+    assert.ok(impact.fallbackReasons.some(reason => reason.includes("Go discovery-excluded paths")), impact.fallbackReasons.join("\n"));
+    assert.equal(plan.mode, "FULL");
+  }, {}, "service_relative_test.go");
+});
+
+test("sibling test files naming only the testdata directory also fall back", async () => {
+  const files = {
+    "p/testdata/settings.json": "expected",
+    // written the way the issue describes it: `"../p/testdata"` without the file name
+    "service/service_relative_test.go": 'package service\nimport "testing"\nfunc TestRelative(t *testing.T) { _ = "../p/testdata" }',
+  };
+  await fixture(files, (graph, root) => {
+    const relative = [...allTests, "service/service_relative_test.go"];
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", relative, { repoPath: root, fileContents: files });
+  }, {}, "service_relative_test.go");
+});
+
+test("testdata below an owning package without tests, and *_/.-named directories, fall back", async t => {
+  const paths = ["orphan/testdata/case.json", "_scratch/p/testdata/case.json", "p/testdata/_hidden/case.json"];
+  await fixture(Object.fromEntries(paths.map(path => [path, "data"])), async graph => {
+    for (const path of paths) await t.test(path, () => {
+      const { impact, plan } = planChange(graph, { path, changeType: "modified" });
+      assert.equal(impact.fallbackRequired, true);
+      assert.ok(impact.fallbackReasons.some(reason => reason.includes("Go runtime inputs outside source/embed metadata") && reason.includes(path)), impact.fallbackReasons.join("\n"));
+      assert.ok(impact.fallbackReasons.some(reason => reason.includes("Go discovery-excluded paths")));
+      assert.equal(plan.mode, "FULL");
+      assert.deepEqual(plan.selectedTests, allTests);
+    });
+  });
+});
+
+test("a legacy cached profile without test-package evidence fails closed for testdata", async () => {
+  await fixture({ "p/testdata/settings.json": "expected" }, (graph, root) => {
+    delete graph.profile.goTestPackages;
+    const cache = new GraphCache({ cacheDir: join(root, ".cache") });
+    const key = buildGraphCacheKey({ commitSha: "head" });
+    cache.save(key, graph);
+    const loaded = cache.load(key)!;
+    assert.ok(loaded);
+    loaded.graph = hydrateDependencyGraph(loaded.graph, root);
+    assertFullRuntimeFallback(loaded, { path: "p/testdata/settings.json", changeType: "modified" });
+  });
+});
+
+test("declared inputs add their tests to the package-owned testdata selection", async () => {
+  const files = { "p/testdata/settings.json": "expected" };
+  await fixture(files, (graph, root) => {
+    graph.profile.diffciConfig = { inputs: [{ files: ["p/testdata/**"], tests: ["service/**"] }] };
+    const { impact, plan } = planChange(graph, { path: "p/testdata/settings.json", changeType: "modified" }, { repoPath: root, fileContents: files });
+    assert.equal(impact.fallbackRequired, false);
+    assert.equal(plan.mode, "SELECTIVE");
+    // the declaration's tests and the owning package's tests union into one selection
+    assert.deepEqual([...plan.selectedTests].sort(), ["p/value_test.go", "service/service_test.go"]);
+    assert.ok(impact.affectedTests.some(t => t.path === "service/service_test.go" && t.reasons.includes("DECLARED_INPUT")));
+    assert.ok(impact.affectedTests.some(t => t.path === "p/value_test.go" && t.reasons.includes("GO_TESTDATA")));
+  });
 });
