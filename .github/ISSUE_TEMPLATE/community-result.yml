@@ -1,0 +1,85 @@
+name: Community result
+description: Share what DiffCI did on your repository, good or bad, and say whether we may publish it.
+title: "Result: <repository or alias> at <short head SHA>"
+labels: ["community result"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for trying DiffCI on your repository. Every result helps, including full fallbacks,
+        refusals and misses. A miss (DiffCI left out a test that would have failed) is the most useful
+        report you can send: we fix it first and credit you in the release notes.
+
+        The fastest way to fill this in is to run one of these outside your checkout and paste the file it writes:
+
+        - `npx -y -p @diffci.com/diffci@latest diffci pilot-packet` writes `../diffci-output/pilot-packet.md`. It only analyses and does not run your tests.
+        - `npx -y -p @diffci.com/diffci@latest diffci pilot --full "npm test"` also times your full and selected test commands and writes `../diffci-output/diffci-savings.md`. It runs your test command twice or more.
+
+        Add `--redact-paths` to either command if file paths are sensitive. Do not paste secrets, tokens or private source code.
+  - type: dropdown
+    id: consent
+    attributes:
+      label: May we publish this result?
+      description: We publish only what you allow here. You can change your mind in a comment at any time before publication, and we will remove a published result if you ask.
+      options:
+        - Public, named. Use the repository name and link it.
+        - Public, anonymized. Describe the repository (language, size), not its name.
+        - Private. Use it to improve DiffCI, but never publish it.
+    validations:
+      required: true
+  - type: input
+    id: repository
+    attributes:
+      label: Repository
+      description: A public URL, or a short description if you chose anonymized or private (for example "TypeScript monorepo, about 40k lines, Vitest").
+      placeholder: https://github.com/owner/name
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: What happened?
+      options:
+        - DiffCI selected a subset of tests
+        - DiffCI fell back to running everything
+        - DiffCI refused or could not analyse the repository
+        - DiffCI left out a test that should have run (a miss)
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DiffCI version
+      description: The output of `npx -y -p @diffci.com/diffci@latest diffci version`, or the version printed in your report.
+      placeholder: "0.3.38"
+    validations:
+      required: true
+  - type: input
+    id: revisions
+    attributes:
+      label: Base and head commits
+      description: Full SHAs, so the result can be reproduced. Leave blank only if the repository is private.
+      placeholder: "base 1a2b3c... head 4d5e6f..."
+  - type: textarea
+    id: report
+    attributes:
+      label: Report
+      description: Paste `pilot-packet.md` or `diffci-savings.md`, or attach `diffci-observe.json`. If you ran DiffCI another way, paste its output.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Was the selection right? Did a test DiffCI left out fail later? What would make DiffCI useful enough to keep running?
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: The report contains no secrets, tokens or private source code.
+          required: true
+        - label: I am allowed to share this result for the repository named above.
+          required: true
