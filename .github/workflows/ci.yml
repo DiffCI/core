@@ -4,6 +4,8 @@ permissions:
   contents: read
 jobs:
   check:
+    env:
+      DIFFCI_REQUIRE_CARGO: "1"
     strategy:
       matrix:
         os: [ubuntu-26.04, windows-latest]

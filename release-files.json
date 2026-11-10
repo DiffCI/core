@@ -226,6 +226,7 @@
     "tests/repo/language-adapters.test.ts",
     "tests/repo/rust-adapter.test.ts",
     "tests/repo/rust-integration.test.ts",
+    "tests/repo/rust-execution.test.ts",
     "tests/repo/layout.test.ts",
     "tests/repo/lockfile-free-dependencies.test.ts",
     "tests/repo/removed-files.test.ts",
