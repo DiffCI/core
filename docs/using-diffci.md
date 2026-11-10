@@ -585,7 +585,7 @@ For supported languages and setup limits, see [What is included](../README.md#wh
 
 ### Rust adapter safety
 
-Cargo package ownership and crate dependencies are not registered for selection yet. Command synthesis and integration remain separate milestones in #62. Metadata unions all features and target-platform dependencies, including dev-dependencies. Feature-conditional source stays crate-granular; required-feature test targets and custom build behavior retain full validation.
+Cargo workspaces and single crates support conservative crate-level selection. Commands require verified plain `cargo test` evidence; wrappers and unmodeled execution contexts remain advisory. Metadata unions all features and target-platform dependencies, including dev-dependencies. Feature-conditional source stays crate-granular; required-feature test targets and custom build behavior retain full validation.
 
 | Reason | Meaning / next step |
 | --- | --- |
