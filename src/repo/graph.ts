@@ -48,6 +48,9 @@ interface ImportRef {
   /** For `export ... from`: the names it forwards as [exported, imported] pairs, `star` for `export *`,
    * or `namespace` for `export * as ns`. */
   reexport?: { pairs?: [string, string][]; star?: boolean; namespace?: string };
+  /** A computed load outside any function body (or in an immediately invoked one): it runs when the
+   * module loads, so a test that merely loads the module may run it. */
+  atLoad?: boolean;
 }
 
 /** Test-runner calls whose literal first argument names a module the test depends on. */
@@ -282,9 +285,20 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
   let shadowDepth = 0;
   let consts: Map<string, ts.Expression> | undefined;
 
+  // A function body runs when called, not when the module loads; an immediately invoked one runs at load.
+  // Program source files have no parent pointers, so a call marks the function it invokes on the way down.
+  let functionDepth = 0;
+  const invokedAtOnce = new Set<ts.Node>();
   function visit(node: ts.Node) {
     const shadows = scopeShadowsRequire(node);
     if (shadows) shadowDepth++;
+    if (ts.isCallExpression(node)) {
+      let callee: ts.Expression = node.expression;
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      if (ts.isFunctionLike(callee)) invokedAtOnce.add(callee);
+    }
+    const body = ts.isFunctionLike(node) && !invokedAtOnce.has(node);
+    if (body) functionDepth++;
     if (ts.isImportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
@@ -330,6 +344,7 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
           dynamic: isImport || !syntaxLiteral,
           computed: !literal,
           ...(patterns ? { patterns } : {}),
+          ...(!literal && functionDepth === 0 ? { atLoad: true } : {}),
         });
       } else if (firstArg && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)
         && MOCK_MODULE_CALLS.has(`${node.expression.expression.text}.${node.expression.name.text}`)
@@ -346,11 +361,13 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
           dynamic: true,
           computed: true,
           ...(patterns.length && patterns.every(Boolean) ? { patterns: patterns as NonNullable<ImportRef["patterns"]> } : {}),
+          ...(functionDepth === 0 ? { atLoad: true } : {}),
         });
       }
     }
 
     ts.forEachChild(node, visit);
+    if (body) functionDepth--;
     if (shadows) shadowDepth--;
   }
 
@@ -1250,23 +1267,6 @@ export async function buildDependencyGraph(
     return compilerOptions;
   }
 
-  for (const sf of sourceFiles) {
-    const importerRel = toRelativeInternal(repoPath, sf.fileName);
-    if (!importerRel || !isSourceFileName(sf.fileName)) continue;
-    if (isExcludedPath(importerRel, options.excludeDirs ?? [])) continue;
-
-    const importerOptions = optionsFor(sf.fileName);
-
-    const keepsTypeImports = keepsTypeOnlyImports(importerOptions);
-    const refs = extractImportRefs(sf).map((ref) => ref.inlineTypeOnly && !keepsTypeImports ? { ...ref, kind: "type-import" as const } : ref);
-    const { locals, opaque } = exportedLocals(sf);
-    const own = bindingsOf(importerRel);
-    own.locals = locals;
-    if (opaque) own.opaque = true;
-    if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
-    for (const ref of refs) {
-      // Expression text is not a module name. In particular, import(name) must
-      // not be classified as an external package called "name".
   /** Parses an implementation file an import reaches outside the initial walk, rather than silently dropping
    * the edge or loading every TypeScript declaration library again; false, with a blocker, past the budget. */
   function followImplementation(absolute: string, rel: string): boolean {
@@ -1285,6 +1285,24 @@ export async function buildDependencyGraph(
     return true;
   }
 
+  for (const sf of sourceFiles) {
+    const importerRel = toRelativeInternal(repoPath, sf.fileName);
+    if (!importerRel || !isSourceFileName(sf.fileName)) continue;
+    if (isExcludedPath(importerRel, options.excludeDirs ?? [])) continue;
+
+    const importerOptions = optionsFor(sf.fileName);
+
+    const keepsTypeImports = keepsTypeOnlyImports(importerOptions);
+    const refs = extractImportRefs(sf).map((ref) => ref.inlineTypeOnly && !keepsTypeImports ? { ...ref, kind: "type-import" as const } : ref);
+    const { locals, opaque } = exportedLocals(sf);
+    const own = bindingsOf(importerRel);
+    own.locals = locals;
+    if (opaque) own.opaque = true;
+    if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
+    for (const ref of refs) {
+      // Expression text is not a module name. In particular, import(name) must
+      // not be classified as an external package called "name".
+      if (ref.computed && ref.atLoad) bindingsOf(importerRel).computedAtLoad = true;
       if (ref.computed && ref.patterns) {
         const targets = resolvePatternTargets(sf.fileName, ref.patterns, importerOptions);
         if (targets) {

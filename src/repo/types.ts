@@ -260,6 +260,9 @@ export interface ModuleBindings {
   sideEffectFree?: boolean;
   /** Names imported from each target, or "*" for the whole module. */
   imports: Record<string, string[] | "*">;
+  /** The module makes a computed load when it loads (not inside a function), so every test that loads it may
+   * run that load. */
+  computedAtLoad?: boolean;
   /** Targets imported with `import type` (or only inline `type` specifiers), which can fail a test that is
    * type-checked as it runs. */
   typeImports?: string[];

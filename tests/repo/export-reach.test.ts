@@ -129,6 +129,50 @@ export const d = 4;
 ` }, typeOnly);
     assert.ok(tests.includes("tests/e.test.ts"), tests.join(","));
   });
+  it("selects for a computed load in a function only the tests that reach its module by name", async () => {
+    const loader = {
+      "packages/lib/src/index.ts": `export { a } from "./a.js";
+export { b } from "./b.js";
+export * from "./c.js";
+export { d } from "./d.js";
+export { load } from "./load.js";
+`,
+      "packages/lib/src/load.ts": `export async function load(name: string) {
+  return import(name);
+}
+`,
+      "tests/load.test.ts": `import { load } from "../packages/lib/src/index.js";
+import { test } from "vitest";
+test("load", () => load("x"));
+`,
+    };
+    const { tests } = await selected(false, { "packages/lib/src/c.ts": `export const c = 30;
+` }, loader);
+    assert.deepEqual(tests, ["tests/c.test.ts", "tests/load.test.ts"]);
+  });
+  for (const [label, body] of [["at module top level", `const mod = await import(process.env.X ?? "x");
+export const load = () => mod;
+`], ["in an immediately invoked function", `export const load = (() => import(process.env.X ?? "x"))();
+`]] as const) {
+    it(`keeps every importer of a module with a computed load ${label}`, async () => {
+      const loader = {
+        "packages/lib/src/index.ts": `export { a } from "./a.js";
+export { b } from "./b.js";
+export * from "./c.js";
+export { d } from "./d.js";
+export { load } from "./load.js";
+`,
+        "packages/lib/src/load.ts": body,
+        "tests/load.test.ts": `import { load } from "../packages/lib/src/index.js";
+import { test } from "vitest";
+test("load", () => load);
+`,
+      };
+      const { tests } = await selected(false, { "packages/lib/src/c.ts": `export const c = 30;
+` }, loader);
+      assert.deepEqual(tests, ["tests/a.test.ts", "tests/b.test.ts", "tests/c.test.ts", "tests/load.test.ts"]);
+    });
+  }
   it("accepts a sideEffects list naming only stylesheets", async () => {
     assert.deepEqual((await selected(["*.css"], { "packages/lib/src/c.ts": `export const c = 30;\n` })).tests, ["tests/c.test.ts"]);
   });

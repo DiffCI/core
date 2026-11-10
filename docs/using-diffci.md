@@ -408,6 +408,9 @@ Some cases stay at file level or broaden the selection:
 - Namespace imports (`import * as x`), CommonJS modules and names DiffCI can't find count as the whole module.
 - A barrel still loads every module it re-exports, so an error thrown while a changed file loads would fail tests
   that never use it. When no selected test reaches the changed file by name, one of its importers is kept to load it.
+- A computed `import(name)` inside a function selects only the tests whose imports reach its module, since only
+  those can call it. One that runs when its module loads (at the top level, or in a function invoked at once)
+  selects every test that loads the module.
 - Type tests (`*.test-d.ts`, `*.tst.ts`) are never dropped. Where tests may be type-checked as they run (Jest,
   tstyche, tsd, `--typecheck`), a type import counts as the whole module.
 

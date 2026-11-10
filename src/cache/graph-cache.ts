@@ -10,7 +10,8 @@ import type { DependencyGraphResult } from "../repo/types.js";
 // 7: folded computed specifiers and root-absolute Vite globs have edges (2026-11-06).
 // 8: Python projects have a graph, and the profile carries pythonSources/pythonTests (2026-11-06).
 // 11: results carry export-level `bindings` (2026-11-10).
-export const GRAPH_CACHE_SCHEMA_VERSION = "11";
+// 12: bindings mark computed loads that run when a module loads (2026-11-10).
+export const GRAPH_CACHE_SCHEMA_VERSION = "12";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

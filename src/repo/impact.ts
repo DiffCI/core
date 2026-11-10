@@ -477,6 +477,22 @@ export class ImpactAnalyzer {
     return selected;
   }
 
+  /** Tests among `loaders` whose code reaches `importer` by name, or all of them when the walk does not apply. */
+  private computedLoadRunners(importer: string, loaders: string[]): string[] {
+    const bindings = this.bindings;
+    if (!bindings || bindings[importer]?.computedAtLoad || !bindings[importer]) return loaders;
+    return loaders.filter((test) => test === importer || TYPE_TEST_FILE.test(test) || TYPE_CHECK_TEST_FILE.test(test) || this.reachOf(test, bindings).has(importer));
+  }
+
+  private reachOf(test: string, bindings: NonNullable<DependencyGraphResult["bindings"]>): Set<string> {
+    let reach = this.exportReach.get(test);
+    if (!reach) {
+      reach = exportLevelReach(test, bindings, (file) => this.runtimeForward.get(file) ?? [], !this.runtimeTestSelection);
+      this.exportReach.set(test, reach);
+    }
+    return reach;
+  }
+
   /** Drops tests whose imports never reach `path` by name (export-reach.ts). Without bindings (older
    * caches) the file-level set stands. */
   private exportLevelTests(path: string, tests: ReadonlySet<string>, evidence: ImpactEvidence[]): ReadonlySet<string> {
@@ -488,12 +504,7 @@ export class ImpactAnalyzer {
     let reaching = 0;
     for (const test of tests) {
       if (!this.isTestFile(test) || TYPE_TEST_FILE.test(test) || TYPE_CHECK_TEST_FILE.test(test)) { kept.add(test); continue; }
-      let reach = this.exportReach.get(test);
-      if (!reach) {
-        reach = exportLevelReach(test, bindings, (file) => this.runtimeForward.get(file) ?? [], !this.runtimeTestSelection);
-        this.exportReach.set(test, reach);
-      }
-      if (reach.has(path)) { kept.add(test); reaching++; } else droppedTests.push(test);
+      if (this.reachOf(test, bindings).has(path)) { kept.add(test); reaching++; } else droppedTests.push(test);
     }
     if (!droppedTests.length) return kept;
     // A barrel still loads every module it re-exports, so an error thrown while `path` loads fails every
@@ -1548,9 +1559,14 @@ export class ImpactAnalyzer {
       }
       const importerDependents = graph.transitiveDependentsOf(importer);
       const testDependents = this.testDependents(graph, importer, importerDependents);
-      const runners = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));
+      const loaders = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));
+      // A load inside a function runs only when that function's module runs in the test (export-reach.ts):
+      // a test that imports other names from the importer's barrel never calls it. A load at module load
+      // time runs for every test that loads the module, so those keep every dependent.
+      const runners = this.computedLoadRunners(importer, loaders);
       for (const test of runners) this.addAffectedTest(importer, test, graph, affectedTests, "COMPUTED_IMPORT", evidence);
-      evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected`));
+      const skipped = loaders.length - runners.length;
+      evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected${skipped ? ` (${skipped} that only load its package through re-exports are not)` : ""}`));
     }
   }
 
