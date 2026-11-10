@@ -45,6 +45,8 @@
     "docs/release-boundary.md",
     "docs/research/2026-11-10-rust-glob-replay.md",
     "docs/research/2026-11-10-rust-glob-replay.json",
+    "docs/research/2026-11-10-rust-linux-execution.md",
+    "docs/research/2026-11-10-rust-linux-execution.json",
     "docs/source-archives.md",
     "docs/using-diffci.md",
     "funding.json",

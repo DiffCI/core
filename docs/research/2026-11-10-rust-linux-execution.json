@@ -1,0 +1,537 @@
+{
+  "schema": "diffci-rust-linux-execution-v1",
+  "date": "2026-11-10",
+  "coreSourceCommit": "e1228a68534a112cd34f60d18ff7858092a87557",
+  "executionTestSha256": "233f4257f910c72b6a3dac16a3f3ff574179d72afd7296bfc3692218595bcf4e",
+  "environment": {
+    "node": "v24.18.0",
+    "platform": "linux",
+    "architecture": "x64",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "runnerImage": null
+  },
+  "selectiveExecution": {
+    "fixture": "synthetic three-crate workspace",
+    "usesRealGitCommits": true,
+    "usesRealCargoMetadata": true,
+    "executesGeneratedArgvUnchanged": true,
+    "healthySelectedRustTests": 6,
+    "healthyFullRustTests": 9,
+    "seededRuntimeRegressionKinds": [
+      "unit",
+      "integration",
+      "doctest"
+    ],
+    "gitRedirectionNegativeControl": "passed: rejected before writing outside fixture",
+    "diagnostics": [
+      {
+        "scenario": "healthy",
+        "mode": "full",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test"
+            ],
+            "exitCode": 0,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... ok",
+              "test tests::leaf_unit_contract ... ok",
+              "test leaf_integration_contract ... ok",
+              "test tests::unrelated_unit_contract ... ok",
+              "test unrelated_integration_contract ... ok",
+              "test consumer/src/lib.rs - consumer_doc_value (line 5) ... ok",
+              "test leaf/src/lib.rs - leaf_doc_value (line 5) ... ok",
+              "test unrelated/src/lib.rs - unrelated_doc_value (line 4) ... ok"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "healthy",
+        "mode": "selected",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "-p",
+              "execution-consumer",
+              "-p",
+              "execution-leaf"
+            ],
+            "exitCode": 0,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... ok",
+              "test tests::leaf_unit_contract ... ok",
+              "test leaf_integration_contract ... ok",
+              "test consumer/src/lib.rs - consumer_doc_value (line 5) ... ok",
+              "test leaf/src/lib.rs - leaf_doc_value (line 5) ... ok"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "unit-test source regression",
+        "mode": "selected",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "-p",
+              "execution-consumer",
+              "-p",
+              "execution-leaf"
+            ],
+            "exitCode": 101,
+            "testResults": [
+              "test tests::consumer_unit_contract ... FAILED"
+            ],
+            "summaries": [
+              "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "unit-test source regression",
+        "mode": "full",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test"
+            ],
+            "exitCode": 101,
+            "testResults": [
+              "test tests::consumer_unit_contract ... FAILED"
+            ],
+            "summaries": [
+              "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "integration-only source regression",
+        "mode": "selected",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "-p",
+              "execution-consumer",
+              "-p",
+              "execution-leaf"
+            ],
+            "exitCode": 101,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... FAILED"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "integration-only source regression",
+        "mode": "full",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test"
+            ],
+            "exitCode": 101,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... FAILED"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "doctest-only source regression",
+        "mode": "selected",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "-p",
+              "execution-consumer",
+              "-p",
+              "execution-leaf"
+            ],
+            "exitCode": 101,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... ok",
+              "test tests::leaf_unit_contract ... ok",
+              "test leaf_integration_contract ... ok",
+              "test consumer/src/lib.rs - consumer_doc_value (line 5) ... FAILED"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "doctest-only source regression",
+        "mode": "full",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test"
+            ],
+            "exitCode": 101,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... ok",
+              "test tests::leaf_unit_contract ... ok",
+              "test leaf_integration_contract ... ok",
+              "test tests::unrelated_unit_contract ... ok",
+              "test unrelated_integration_contract ... ok",
+              "test consumer/src/lib.rs - consumer_doc_value (line 5) ... FAILED"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "restored",
+        "mode": "selected",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test",
+              "-p",
+              "execution-consumer",
+              "-p",
+              "execution-leaf"
+            ],
+            "exitCode": 0,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... ok",
+              "test tests::leaf_unit_contract ... ok",
+              "test leaf_integration_contract ... ok",
+              "test consumer/src/lib.rs - consumer_doc_value (line 5) ... ok",
+              "test leaf/src/lib.rs - leaf_doc_value (line 5) ... ok"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s"
+            ]
+          }
+        ]
+      },
+      {
+        "scenario": "restored",
+        "mode": "full",
+        "runs": [
+          {
+            "command": [
+              "cargo",
+              "test"
+            ],
+            "exitCode": 0,
+            "testResults": [
+              "test tests::consumer_unit_contract ... ok",
+              "test consumer_integration_contract ... ok",
+              "test tests::leaf_unit_contract ... ok",
+              "test leaf_integration_contract ... ok",
+              "test tests::unrelated_unit_contract ... ok",
+              "test unrelated_integration_contract ... ok",
+              "test consumer/src/lib.rs - consumer_doc_value (line 5) ... ok",
+              "test leaf/src/lib.rs - leaf_doc_value (line 5) ... ok",
+              "test unrelated/src/lib.rs - unrelated_doc_value (line 4) ... ok"
+            ],
+            "summaries": [
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s",
+              "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s"
+            ]
+          }
+        ]
+      },
+      {
+        "baseSha": "78a12ba10e2d9a2edc181448b355f42050cb5897",
+        "headSha": "4aee84fed60bd278aef0fba8ca50f51fe8790705",
+        "changes": [
+          {
+            "path": "leaf/src/value.rs",
+            "changeType": "modified",
+            "isBinary": false
+          }
+        ],
+        "selectedTests": [
+          "consumer/src/lib.rs",
+          "consumer/tests/api.rs",
+          "leaf/src/lib.rs",
+          "leaf/tests/api.rs"
+        ],
+        "skippedTests": [
+          "unrelated/src/lib.rs",
+          "unrelated/tests/api.rs"
+        ]
+      },
+      {
+        "baseSha": "4aee84fed60bd278aef0fba8ca50f51fe8790705",
+        "headSha": "a78f1622709aad7e16c91a4b45848ead86efc965",
+        "changes": [
+          {
+            "path": "leaf/src/value.rs",
+            "changeType": "modified",
+            "isBinary": false
+          }
+        ],
+        "selectedTests": [
+          "consumer/src/lib.rs",
+          "consumer/tests/api.rs",
+          "leaf/src/lib.rs",
+          "leaf/tests/api.rs"
+        ],
+        "skippedTests": [
+          "unrelated/src/lib.rs",
+          "unrelated/tests/api.rs"
+        ]
+      },
+      {
+        "baseSha": "4aee84fed60bd278aef0fba8ca50f51fe8790705",
+        "headSha": "60781ec60cffca4b08ac66d6b17db8db1b354354",
+        "changes": [
+          {
+            "path": "leaf/src/value.rs",
+            "changeType": "modified",
+            "isBinary": false
+          }
+        ],
+        "selectedTests": [
+          "consumer/src/lib.rs",
+          "consumer/tests/api.rs",
+          "leaf/src/lib.rs",
+          "leaf/tests/api.rs"
+        ],
+        "skippedTests": [
+          "unrelated/src/lib.rs",
+          "unrelated/tests/api.rs"
+        ]
+      },
+      {
+        "baseSha": "4aee84fed60bd278aef0fba8ca50f51fe8790705",
+        "headSha": "bb13b8565edf88578d4de846af5f5b06a21c05c4",
+        "changes": [
+          {
+            "path": "leaf/src/value.rs",
+            "changeType": "modified",
+            "isBinary": false
+          }
+        ],
+        "selectedTests": [
+          "consumer/src/lib.rs",
+          "consumer/tests/api.rs",
+          "leaf/src/lib.rs",
+          "leaf/tests/api.rs"
+        ],
+        "skippedTests": [
+          "unrelated/src/lib.rs",
+          "unrelated/tests/api.rs"
+        ]
+      },
+      {
+        "baseSha": "78a12ba10e2d9a2edc181448b355f42050cb5897",
+        "headSha": "da1238d1a54f1b396d68bcdd77ac12a71053ba4c",
+        "changes": [
+          {
+            "path": "leaf/src/value.rs",
+            "changeType": "modified",
+            "isBinary": false
+          }
+        ],
+        "selectedTests": [
+          "consumer/src/lib.rs",
+          "consumer/tests/api.rs",
+          "leaf/src/lib.rs",
+          "leaf/tests/api.rs"
+        ],
+        "skippedTests": [
+          "unrelated/src/lib.rs",
+          "unrelated/tests/api.rs"
+        ]
+      }
+    ]
+  },
+  "publicReplay": {
+    "repository": "https://github.com/rust-lang/glob.git",
+    "pinnedHead": "057cef2824f5a96f738e52d7d8ca3e024381bcc6",
+    "coreHead": "aeca26ee6a661aab6e639bb095ccecbc8fd624d0",
+    "startedAt": "2026-11-10T15:31:17.098Z",
+    "finishedAt": "2026-11-10T15:31:20.239Z",
+    "summary": {
+      "replays": 3,
+      "fullFallbacks": 3,
+      "fullTestsPassed": 3,
+      "selectiveRunsExecuted": 0,
+      "avoidedComputeClaim": false,
+      "interpretation": "Zero selectivity: fail-closed public replay. No avoided-compute claim."
+    },
+    "replays": [
+      {
+        "head": "8a903ef83cdc3ac4be8a16c4160c570fcfead655",
+        "base": "1f753241f047175126d1be051718d1a0994d29f4",
+        "subject": "Set the edition to 2021",
+        "planMode": "FULL",
+        "fullCommand": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked"
+        ],
+        "fullExitCode": 0,
+        "testSummaries": [
+          "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "lockfileSha256": "e520ab8782edb3b0ca6bce25668d6eb637b592e364cd6a8ae676626feb9ed699"
+      },
+      {
+        "head": "0639988caf1c644b78629cd0f7d65f4d0a4920c9",
+        "base": "335da33c46daaa7db629ad77e07a9531909d9dfd",
+        "subject": "Cache filename for sorting in `fill_todo` (#181)",
+        "planMode": "FULL",
+        "fullCommand": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked"
+        ],
+        "fullExitCode": 0,
+        "testSummaries": [
+          "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "lockfileSha256": "e520ab8782edb3b0ca6bce25668d6eb637b592e364cd6a8ae676626feb9ed699"
+      },
+      {
+        "head": "335da33c46daaa7db629ad77e07a9531909d9dfd",
+        "base": "e0b33b0fac2d83f37e737e7207e75a36339380a6",
+        "subject": "Replace `into_error` method with `impl Into` (#179)",
+        "planMode": "FULL",
+        "fullCommand": [
+          "cargo",
+          "test",
+          "--offline",
+          "--locked"
+        ],
+        "fullExitCode": 0,
+        "testSummaries": [
+          "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+          "test result: ok. 5 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.04s"
+        ],
+        "lockfileSha256": "e520ab8782edb3b0ca6bce25668d6eb637b592e364cd6a8ae676626feb9ed699"
+      }
+    ]
+  },
+  "limitations": [
+    "Synthetic workspace selection is not a real-project savings measurement.",
+    "The tested path is Git analysis through Core graph/planner to Cargo execution, not the published CLI binary.",
+    "Cargo stops after failures: injected cases prove detection, not execution of every affected test after failure.",
+    "Public glob replay retains full validation and makes no selectivity, zero-false-negative or avoided-compute claim."
+  ],
+  "validation": {
+    "sourceCommit": "e1228a68534a112cd34f60d18ff7858092a87557",
+    "completedAt": "2026-11-10T15:48:53Z",
+    "nodeTests": {
+      "total": 859,
+      "passed": 859,
+      "failed": 0,
+      "skipped": 0,
+      "cancelled": 0
+    },
+    "passedCommands": [
+      "npm run typecheck",
+      "npm test",
+      "npm run build",
+      "npm run audit:boundary",
+      "npm run agent:check",
+      "npm run benchmark"
+    ],
+    "finalFixtureFocusedTests": {
+      "total": 6,
+      "passed": 6,
+      "failed": 0,
+      "skipped": 0
+    },
+    "cpuQuota": "50% of one CPU for final exact-source validation",
+    "cliPackaging": {
+      "passedCommands": [
+        "npm ci --no-audit --fund=false",
+        "npm run typecheck",
+        "npm run build",
+        "npm run package:check",
+        "npm run package:smoke"
+      ],
+      "scope": "Packaging regression only. CLI keeps its own pinned Core dependency; this is not evidence that the published CLI contains the new Rust adapter."
+    }
+  }
+}
