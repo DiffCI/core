@@ -583,13 +583,12 @@ Core's path-rule baseline planners (`src/planner/path-baseline.ts` and `src/rese
 
 For supported languages and setup limits, see [What is included](../README.md#what-is-included). For the published CLI and source boundary, see [the release boundary](release-boundary.md#published-cli-source-archive).
 
-### Rust adapter foundation
+### Rust adapter safety
 
-Cargo package and target mapping is not registered for selection yet. Dependency analysis, command synthesis and integration are separate milestones in #62.
+Cargo package ownership and crate dependencies are not registered for selection yet. Command synthesis and integration remain separate milestones in #62. Metadata unions all features and target-platform dependencies, including dev-dependencies. Feature-conditional source stays crate-granular; required-feature test targets and custom build behavior retain full validation.
 
 | Reason | Meaning / next step |
 | --- | --- |
-| `Rust crate dependency analysis is not available; full validation required` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
 | `Rust support requires a Cargo workspace or crate at the repository root` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
 | `Ambiguous Cargo workspace package names require full validation` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
 | `Rust package … has an unavailable or external manifest` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
@@ -603,3 +602,18 @@ Cargo package and target mapping is not registered for selection yet. Dependency
 | `Cargo metadata unavailable: install Rust and repository dependencies; offline, locked metadata must succeed` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
 | `Cargo manifests outside workspace membership require full validation: …` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
 | `Cargo packages share a manifest; ownership is ambiguous` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
+| `Custom Cargo configuration requires full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo dependency resolution is missing or incomplete; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo dependencies outside the workspace have opaque runtime inputs; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo build scripts can read arbitrary inputs; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo procedural macros can read arbitrary inputs; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo targets requiring features need an explicitly supported test invocation; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Rust runtime inputs, computed includes or path attributes require full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Rust include outside its crate or unavailable requires full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Custom Cargo configuration or compiler environment requires full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Mixed Rust/language repositories require explicit cross-language dependencies; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Rust runtime inputs outside crate metadata or workspace configuration require full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Rust include code with a non-Rust extension requires full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo target with a non-Rust extension requires full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Cargo dependency feature unification requires the full workspace test invocation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Incomplete Rust source inventory or symlinked inputs require full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
