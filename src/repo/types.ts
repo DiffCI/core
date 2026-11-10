@@ -51,6 +51,12 @@ export interface RepositoryProfile {
   goDependencyPaths?: { sources: string[]; embeds: string[] };
   /** Maven/JUnit test file to owning reactor module (repo-relative, "." for root). */
   mavenTestModules?: Record<string, string>;
+  /** Cargo target source to owning package name and target, verified by metadata. */
+  rustTestPackages?: Record<string, string>;
+  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
+  rustSources?: string[];
+  /** Set only when the repository's test invocation is supported and reproducible. */
+  rustTestInvocation?: "cargo test";
   /** Python files and pytest test files the Python adapter modelled (adapters/python.ts), and the
    * interpreter it found. Only these `.py` files are code; other `.py` files stay unknown files. */
   pythonSources?: string[];

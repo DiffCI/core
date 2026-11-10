@@ -582,3 +582,24 @@ Core's path-rule baseline planners (`src/planner/path-baseline.ts` and `src/rese
 `npm test` checks that every reason in `src/` is listed here (`node scripts/fallback-reasons.mjs` prints them).
 
 For supported languages and setup limits, see [What is included](../README.md#what-is-included). For the published CLI and source boundary, see [the release boundary](release-boundary.md#published-cli-source-archive).
+
+### Rust adapter foundation
+
+Cargo package and target mapping is not registered for selection yet. Dependency analysis, command synthesis and integration are separate milestones in #62.
+
+| Reason | Meaning / next step |
+| --- | --- |
+| `Rust crate dependency analysis is not available; full validation required` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Rust support requires a Cargo workspace or crate at the repository root` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Ambiguous Cargo workspace package names require full validation` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Rust package … has an unavailable or external manifest` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Rust file has no verified Cargo package: …` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Rust target …/… has an unavailable, external or differently owned source` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Unsupported Cargo target kind: …/…` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Multiple Cargo test targets share a source path: …` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Cargo metadata found no supported test targets` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Invalid or incomplete Cargo metadata requires full validation` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Rust support requires a root Cargo.toml` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Cargo metadata unavailable: install Rust and repository dependencies; offline, locked metadata must succeed` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Cargo manifests outside workspace membership require full validation: …` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
+| `Cargo packages share a manifest; ownership is ambiguous` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
