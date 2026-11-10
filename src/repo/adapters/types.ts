@@ -20,6 +20,8 @@ export interface AdapterContribution {
   virtualSources: Array<{ path: string; source: string }>;
   testFiles: string[];
   testPackages: Record<string, string>;
+  /** Cargo target roots; a lib/bin root represents the crate's unit tests. */
+  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
   executionEnv?: Record<string, string>;
   /** The interpreter the adapter analysed with and its runner should use, such as ["python3"]. */
   interpreter?: string[];

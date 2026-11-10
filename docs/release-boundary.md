@@ -4,7 +4,7 @@ The initial extraction includes these engine directories:
 
 - `src/git`: change analysis and repository inventory.
 - `src/repo`: discovery, dependency graph and impact/safety analysis.
-- `src/repo/adapters`: supported Vue component, root Go module, Maven module and Python (pytest) analysis. Incomplete adapter evidence forces conservative fallback.
+- `src/repo/adapters`: supported Vue component, root Go module, Maven module, Python (pytest) and Cargo workspace (crate-level Rust) analysis. Incomplete adapter evidence forces conservative fallback.
 - `src/planner`: task registry, test command synthesis and advisory planning.
 - `src/ci-inference`: local evidence and GitHub Actions graph inference.
 - `src/cache`: local graph cache.
@@ -16,7 +16,7 @@ The following are outside this release: authentication, billing, organizations, 
 
 ## Limitations
 
-The engine is oriented toward JavaScript/TypeScript, supported Vue components, root Go modules, Maven modules, Python projects tested with pytest, and static GitHub Actions analysis. Dynamic imports/configuration, external actions, conditional behavior and other languages can exceed its coverage. Full-run fallback is conservative but is not a correctness guarantee. Selection and command availability are distinct; a selective plan with `commandSynthesis.status = UNAVAILABLE` cannot be executed as a subset. A task's command text may be a descriptive workflow label rather than a shell command.
+The engine is oriented toward JavaScript/TypeScript, supported Vue components, root Go modules, Maven modules, Python projects tested with pytest, Cargo workspaces, and static GitHub Actions analysis. Dynamic imports/configuration, external actions, conditional behavior and other languages can exceed its coverage. Full-run fallback is conservative but is not a correctness guarantee. Selection and command availability are distinct; a selective plan with `commandSynthesis.status = UNAVAILABLE` cannot be executed as a subset. A task's command text may be a descriptive workflow label rather than a shell command.
 
 Root Yarn Classic v1 lockfile edits can be narrowed for the supported registry format. Classic omits peer relationships and the installed hoisting layout, so a meaningful edit treats every old/new root dependency as potentially affected. This is broader than npm's installed-tree attribution. Exact manifest requests and dependency edges must resolve; undeclared external imports and untraceable tooling retain full validation. Tests that read the lockfile itself are also considered, including for comment-only edits. _Yarn Classic support was contributed by [Emmanuel Mawulolo Tagbor (@KingEmma7)](https://github.com/KingEmma7) in [#63](https://github.com/DiffCI/core/pull/63), [#67](https://github.com/DiffCI/core/pull/67) and [#70](https://github.com/DiffCI/core/pull/70)._
 
@@ -48,3 +48,9 @@ historical lockfile's HTTPS-only build instructions.
 
 The live `packages/diffci-cli/` directory is the separately reviewed,
 Core-native successor package. It is not a rewrite of the historical archive.
+
+Rust selection uses Cargo workspace members, target roots, and dependency edges from offline, locked, all-features metadata. The initial selective boundary is local workspace crates: registry, Git and nonmember path dependencies have opaque runtime inputs and require full validation. Crate source and member-manifest changes select that crate and dependent crates; parent crates conservatively depend on nested package sources too. Library and binary target roots are both production sources and unit-test identities. Statically resolved in-crate include inputs retain dependency ownership. Root Cargo.toml, any Cargo.lock, and every path outside the modeled source/include inventory require full validation, including deletions and rename origins. Cargo target build output is excluded. Symlinks, omitted Rust source, oversized inventory, build scripts, proc macros, known filesystem/process/FFI/unsafe operations, path attributes, computed or non-Rust code includes, custom Cargo configuration, and mixed-language repositories require full validation. This is a conservative syntax and metadata model, not a proof that arbitrary Rust code is hermetic.
+
+Feature-conditional source is modeled at crate level. Forwarded dependency features, disabled dependency defaults and feature-required test targets keep the full original invocation because a reduced package set can change Cargo feature unification. Supported unit-test packages share one command with repeated `-p` arguments; selecting a source root never drops its crate's doctests.
+
+Rust command synthesis requires explicit evidence for plain `cargo test` in a package script or GitHub Actions workflow. Flags, wrappers, environment overrides, custom shells, working directories, defaults, and prior shell setup are not reproduced; such workflow evidence stays advisory. Without a verified invocation, graph selection alone does not authorize a runnable subset. Cargo and locked dependencies must already be available; analysis does not download dependencies or generate a lockfile.

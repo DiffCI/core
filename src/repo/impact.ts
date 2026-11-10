@@ -511,7 +511,7 @@ export class ImpactAnalyzer {
     this.packageJsonSpecifiersOnly = delta.analysis.packageJsonSpecifiersOnly === true;
     this.specifiersOnlyManifests = new Set(delta.analysis.specifiersOnlyManifests ?? []);
     this.exportsRemaps = new Map(Object.entries(delta.analysis.exportsRemaps ?? {}));
-    const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved, new Set(profile.pythonSources ?? [])), reasons: changedFileReasons(file) }));
+    const changedImpacts: ChangedImpact[] = delta.files.map((file) => ({ file, category: classifyChangedFile(file, this.isTestFile, this.layout, options.repositoryFiles, referenceResolved, new Set([...(profile.pythonSources ?? []), ...(profile.rustSources ?? [])])), reasons: changedFileReasons(file) }));
     const evidence: ImpactEvidence[] = [];
     const riskSignals: ImpactRiskSignal[] = [];
     const fallbackReasons: string[] = [...(graphResult.adapterBlockers ?? []), ...testDiscoveryErrors(profile)];
@@ -520,6 +520,12 @@ export class ImpactAnalyzer {
       if (delta.files.some(file => allChangePaths(file).some(path => !inVuePackage(path, scope.packageRoot)))) fallbackReasons.push("Changes outside the declared Vue package require full validation");
       const setupDependencies = new Set((profile.vueSetupPaths ?? []).flatMap(path => [path, ...graph.transitiveDependenciesOf(path)]));
       if (delta.files.some(file => allChangePaths(file).some(path => setupDependencies.has(path)))) fallbackReasons.push("Vue suite configuration or shared setup dependency changed; full validation required");
+    }
+    if (profile.adapters?.some(adapter => adapter.id === "rust")) {
+      const modeledPaths = new Set([...(profile.rustSources ?? []), ...(profile.rustAssets ?? [])]);
+      const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))]
+        .filter(path => path === "Cargo.toml" || /(?:^|\/)Cargo\.lock$/.test(path) || !modeledPaths.has(path));
+      if (unmodeledPaths.length) fallbackReasons.push(`Rust runtime inputs outside crate metadata or workspace configuration require full validation: ${unmodeledPaths.slice(0, 20).join(", ")}`);
     }
     const hasGoAdapter = profile.adapters?.some(adapter => adapter.id === "go");
     this.goEmbedPaths = new Set(hasGoAdapter ? profile.goDependencyPaths?.embeds : []);
@@ -945,6 +951,15 @@ export class ImpactAnalyzer {
         riskSignals.push({ level: "critical", reason: "DEPENDENCY_MANIFEST", message, paths: [changedPath] });
         if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
       }
+    }
+    if (profile.rustAssets?.includes(changedPath)) {
+      this.processAssetChange(changedPath, graph, profile, affectedAssets, affectedEntryPoints, affectedTests, affectedSources, evidence);
+      return;
+    }
+    if (profile.rustSources?.includes(changedPath)) {
+      this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+      if (this.isTestFile(changedPath)) this.addAffectedTest(changedPath, changedPath, graph, affectedTests, "DIRECT_CHANGE", evidence);
+      return;
     }
     // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
     // Traverse it before generic unknown/docs classification can discard the dependency.

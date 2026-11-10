@@ -1,0 +1,56 @@
+name: Rust public repository replay
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/replay-rust.mjs'
+      - '.github/workflows/rust-replay.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+permissions:
+  contents: read
+jobs:
+  replay:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify hosted Rust toolchain
+        run: |
+          cargo --version
+          rustc -Vv
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - name: Clone pinned official Rust target into a disposable directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=$(mktemp -d "$RUNNER_TEMP/diffci-rust-replay.XXXXXX")
+          echo "RUST_REPLAY_ROOT=$root" >> "$GITHUB_ENV"
+          git clone https://github.com/rust-lang/glob.git "$root/glob"
+          git -C "$root/glob" checkout --detach 057cef2824f5a96f738e52d7d8ca3e024381bcc6
+      - name: Prepare Cargo dependencies, then analyze and run full offline baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/replay-rust.mjs \
+            --repo "$RUST_REPLAY_ROOT/glob" \
+            --disposable-root "$RUST_REPLAY_ROOT" \
+            --output "$RUNNER_TEMP/rust-replay-report.json" \
+            --prepare-dependencies
+      - name: Upload replay evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-public-replay
+          path: ${{ runner.temp }}/rust-replay-report.json
+          if-no-files-found: warn
+          retention-days: 30

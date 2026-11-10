@@ -4,6 +4,8 @@ permissions:
   contents: read
 jobs:
   check:
+    env:
+      DIFFCI_REQUIRE_CARGO: "1"
     strategy:
       matrix:
         os: [ubuntu-26.04, windows-latest]
@@ -15,6 +17,8 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      - name: Verify Cargo is available for Rust metadata fixtures
+        run: cargo --version
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
       - run: npm test

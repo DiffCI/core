@@ -1,12 +1,13 @@
-import { readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { rustAdapter } from "./rust.js";
 import { goAdapter } from "./go.js";
 import { mavenAdapter } from "./maven.js";
 import { pythonAdapter } from "./python.js";
 import { vueAdapter } from "./vue.js";
 import type { RepositoryAdapter } from "./types.js";
 
-export const REPOSITORY_ADAPTERS: readonly RepositoryAdapter[] = [vueAdapter, goAdapter, mavenAdapter, pythonAdapter];
+export const REPOSITORY_ADAPTERS: readonly RepositoryAdapter[] = [vueAdapter, goAdapter, mavenAdapter, pythonAdapter, rustAdapter];
 
 /** Never follows symlinks or scans dependency/build output directories. */
 export function adapterFiles(root: string, exclusions: readonly string[] = []): string[] {
@@ -16,7 +17,8 @@ export function adapterFiles(root: string, exclusions: readonly string[] = []): 
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (exclusions.some((excluded) => path === excluded || path.startsWith(`${excluded}/`))) continue;
-      if (entry.isDirectory() && !ignored.has(entry.name)) walk(join(dir, entry.name), path);
+      if (entry.isDirectory() && !ignored.has(entry.name)
+        && !(entry.name === "target" && existsSync(join(dir, "Cargo.toml")))) walk(join(dir, entry.name), path);
       else if (entry.isFile()) files.push(path);
     }
   }
