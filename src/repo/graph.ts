@@ -11,6 +11,7 @@ import { declaredWorkspaceRoots } from "./workspaces.js";
 import { WorkspaceSources } from "./workspace-sources.js";
 import type {
   DependencyEdge,
+  ModuleBindings,
   DependencyEdgeKind,
   DependencyGraph,
   DependencyGraphNode,
@@ -41,6 +42,12 @@ interface ImportRef {
   /** A `vi.mock("./x")` / `jest.mock("./x")` target. Vitest counts these as dependencies of the test;
    * an unresolvable one (a virtual or aliased module) is dropped rather than made unsafe. */
   mock?: boolean;
+  /** Runtime names an `import` statement binds (`default` for a default import); absent means the whole
+   * module (namespace and side-effect imports, dynamic imports, require, mocks). */
+  names?: string[];
+  /** For `export ... from`: the names it forwards as [exported, imported] pairs, `star` for `export *`,
+   * or `namespace` for `export * as ns`. */
+  reexport?: { pairs?: [string, string][]; star?: boolean; namespace?: string };
 }
 
 /** Test-runner calls whose literal first argument names a module the test depends on. */
@@ -286,7 +293,11 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
         const kind: DependencyEdgeKind = isTypeOnly ? "type-import" : "import";
         const inlineTypeOnly = !isTypeOnly && !!clause && !clause.name && !!clause.namedBindings
           && ts.isNamedImports(clause.namedBindings) && allInlineType(clause.namedBindings.elements);
-        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}) });
+        const bindings = clause && !(clause.namedBindings && ts.isNamespaceImport(clause.namedBindings))
+          ? [...(clause.name ? ["default"] : []), ...(clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+            ? clause.namedBindings.elements.filter((el) => !el.isTypeOnly).map((el) => (el.propertyName ?? el.name).text) : [])]
+          : undefined;
+        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}), ...(bindings ? { names: bindings } : {}) });
       }
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       const specifier = node.moduleReference.expression;
@@ -298,7 +309,11 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       if (ts.isStringLiteral(specifier)) {
         const kind: DependencyEdgeKind = node.isTypeOnly ? "type-import" : "re-export";
         const inlineTypeOnly = !node.isTypeOnly && !!node.exportClause && ts.isNamedExports(node.exportClause) && allInlineType(node.exportClause.elements);
-        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}) });
+        const clause = node.exportClause;
+        const reexport = !clause ? { star: true }
+          : ts.isNamespaceExport(clause) ? { namespace: clause.name.text }
+          : { pairs: clause.elements.filter((el) => !el.isTypeOnly).map((el): [string, string] => [el.name.text, (el.propertyName ?? el.name).text]) };
+        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}), reexport });
       }
     } else if (ts.isCallExpression(node)) {
       const firstArg = node.arguments[0];
@@ -341,6 +356,72 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
 
   visit(sourceFile);
   return refs;
+}
+
+/**
+ * Whether the nearest package.json at or above `path` (inside the repository) declares its JavaScript free of
+ * side effects: `"sideEffects": false`, or a list naming only stylesheets. This is the contract bundlers
+ * rely on to drop unused re-exports; without it a module's evaluation may matter, so imports stay whole.
+ */
+function sideEffectFreePackage(repoPath: string, path: string, cache: Map<string, boolean | undefined>): boolean {
+  let dir = dirname(path);
+  while (true) {
+    let declared = cache.get(dir);
+    if (!cache.has(dir)) {
+      declared = undefined;
+      try {
+        const pkg = JSON.parse(readFileSync(join(repoPath, dir, "package.json"), "utf8")) as { sideEffects?: unknown };
+        const se = pkg.sideEffects;
+        declared = se === false || (Array.isArray(se) && se.length > 0 && se.every((glob) => typeof glob === "string" && /\.(s?css|sass|less|styl)$/.test(glob)));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") declared = false;
+      }
+      cache.set(dir, declared);
+    }
+    if (declared !== undefined) return declared;
+    if (dir === "." || dir === "" || dirname(dir) === dir) return false;
+    dir = dirname(dir);
+  }
+}
+
+/**
+ * Runtime names a module defines itself, for export-level selection. `opaque` when they cannot be listed
+ * (CommonJS `module.exports`/`exports.x`, `export =`, destructured `export const { a } = ...`): an import of
+ * such a module always counts as the whole module.
+ */
+function exportedLocals(sourceFile: ts.SourceFile): { locals: string[]; opaque: boolean } {
+  const locals = new Set<string>();
+  let opaque = false;
+  const has = (node: ts.Node, kind: ts.SyntaxKind) => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === kind);
+  for (const st of sourceFile.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (!st.moduleSpecifier && !st.isTypeOnly && st.exportClause && ts.isNamedExports(st.exportClause)) {
+        for (const el of st.exportClause.elements) if (!el.isTypeOnly) locals.add(el.name.text);
+      }
+    } else if (ts.isExportAssignment(st)) {
+      locals.add("default");
+      if (st.isExportEquals) opaque = true;
+    } else if (has(st, ts.SyntaxKind.ExportKeyword)) {
+      if (ts.isInterfaceDeclaration(st) || ts.isTypeAliasDeclaration(st)) continue;
+      if (has(st, ts.SyntaxKind.DefaultKeyword)) locals.add("default");
+      else if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) {
+          if (ts.isIdentifier(d.name)) locals.add(d.name.text);
+          else opaque = true;
+        }
+      } else if ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st) || ts.isEnumDeclaration(st) || ts.isModuleDeclaration(st)) && st.name && ts.isIdentifier(st.name)) {
+        locals.add(st.name.text);
+      } else opaque = true;
+    }
+  }
+  const visit = (node: ts.Node): void => {
+    if (opaque) return;
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+      && (node.expression.text === "exports" || (node.expression.text === "module" && node.name.text === "exports"))) opaque = true;
+    else ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { locals: [...locals].sort(), opaque };
 }
 
 class DependencyGraphImpl implements DependencyGraph {
@@ -973,8 +1054,31 @@ export async function buildDependencyGraph(
   const assetPaths = new Set<string>(contributions.flatMap((item) => item.assetPaths));
   for (const item of contributions) for (const path of item.sourcePaths) internalSourcePaths.add(path);
   const edgeKeys = new Set<string>(edges.map((edge) => `${edge.from}|${edge.to}|${edge.kind}`));
+  const bindings: Record<string, ModuleBindings> = {};
+  const bindingsOf = (path: string): ModuleBindings => (bindings[path] ??= { locals: [], imports: {}, reexports: {} });
 
-  function addEdge(from: string, to: string, kind: DependencyEdgeKind): void {
+  /** Records what a runtime edge binds; an edge without a parsed statement binds the whole module. */
+  function recordBinding(from: string, to: string, kind: DependencyEdgeKind, ref?: ImportRef): void {
+    if (kind === "asset") return;
+    const b = bindingsOf(from);
+    if (kind === "type-import") {
+      if (!(b.typeImports ??= []).includes(to)) b.typeImports.push(to);
+      return;
+    }
+    if (ref?.reexport) {
+      const r = (b.reexports[to] ??= { pairs: [], star: false, namespaces: [] });
+      if (ref.reexport.star) r.star = true;
+      if (ref.reexport.namespace) r.namespaces.push(ref.reexport.namespace);
+      for (const pair of ref.reexport.pairs ?? []) r.pairs.push(pair);
+      return;
+    }
+    const current = b.imports[to];
+    if (!ref?.names || current === "*") b.imports[to] = "*";
+    else b.imports[to] = [...new Set([...(current ?? []), ...ref.names])];
+  }
+
+  function addEdge(from: string, to: string, kind: DependencyEdgeKind, ref?: ImportRef): void {
+    recordBinding(from, to, kind, ref);
     const key = `${from}|${to}|${kind}`;
     if (edgeKeys.has(key)) return;
     edgeKeys.add(key);
@@ -1155,6 +1259,10 @@ export async function buildDependencyGraph(
 
     const keepsTypeImports = keepsTypeOnlyImports(importerOptions);
     const refs = extractImportRefs(sf).map((ref) => ref.inlineTypeOnly && !keepsTypeImports ? { ...ref, kind: "type-import" as const } : ref);
+    const { locals, opaque } = exportedLocals(sf);
+    const own = bindingsOf(importerRel);
+    own.locals = locals;
+    if (opaque) own.opaque = true;
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
       // Expression text is not a module name. In particular, import(name) must
@@ -1163,7 +1271,7 @@ export async function buildDependencyGraph(
         const targets = resolvePatternTargets(sf.fileName, ref.patterns, importerOptions);
         if (targets) {
           for (const target of targets) {
-            if (internalSourcePaths.has(target)) addEdge(importerRel, target, ref.kind);
+            if (internalSourcePaths.has(target)) addEdge(importerRel, target, ref.kind, ref);
             else recordAssetEdge(importerRel, target);
           }
           recordReference(targets.some((target) => internalSourcePaths.has(target)) ? "internal-source" : "internal-asset", importerRel, ref);
@@ -1194,7 +1302,7 @@ export async function buildDependencyGraph(
         const candidate = findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases.length ? compilerAliases : profile.pathAliases, importerOptions.baseUrl ?? dirname(sf.fileName));
         const target = candidate && toRelativeInternal(repoPath, candidate);
         if (target && internalSourcePaths.has(target)) {
-          addEdge(importerRel, target, ref.kind);
+          addEdge(importerRel, target, ref.kind, ref);
           recordReference("internal-source", importerRel, ref);
           continue;
         }
@@ -1226,7 +1334,7 @@ export async function buildDependencyGraph(
         if (!resolvedFile || (insidePackage && (/\.d\.[mc]?ts$/.test(resolvedRel!) || !internalSourcePaths.has(resolvedRel!)))) {
           const source = (insidePackage ? workspaceSources.sourceForFile(pkg, resolvedRel!) : undefined) ?? workspaceSources.sourceForSubpath(pkg, subpath);
           if (source && internalSourcePaths.has(source)) {
-            addEdge(importerRel, source, ref.kind);
+            addEdge(importerRel, source, ref.kind, ref);
             recordReference("internal-source", importerRel, ref);
           } else {
             recordReference("external-package", importerRel, ref);
@@ -1291,7 +1399,7 @@ export async function buildDependencyGraph(
           }
         }
         internalSourcePaths.add(targetRel);
-        addEdge(importerRel, targetRel, ref.kind);
+        addEdge(importerRel, targetRel, ref.kind, ref);
         recordReference("internal-source", importerRel, ref);
         continue;
       }
@@ -1445,8 +1553,12 @@ export async function buildDependencyGraph(
     filesParsed: filesParsed,
   };
 
+  const sideEffectsByDir = new Map<string, boolean | undefined>();
+  for (const [path, b] of Object.entries(bindings)) if (sideEffectFreePackage(repoPath, path, sideEffectsByDir)) b.sideEffectFree = true;
+
   return {
     graph,
+    bindings,
     adapterBlockers,
     ...(scopedAdapterBlockers.length ? { scopedAdapterBlockers, confidenceWithoutScopedBlockers } : {}),
     profile,

@@ -246,7 +246,30 @@ export interface ScopedAdapterBlocker {
   directories: string[];
 }
 
+/**
+ * What one module defines and forwards, and which names it imports from each runtime dependency
+ * (2026-11-10). ImpactAnalyzer uses it to skip a test that imports `{ x }` from a side-effect-free barrel
+ * when the changed file is not reached through `x`. A dependency missing from `imports` and `reexports`
+ * is a whole-module import.
+ */
+export interface ModuleBindings {
+  locals: string[];
+  /** Exports cannot be listed (CommonJS, `export =`, destructuring): any import means the whole module. */
+  opaque?: boolean;
+  /** The nearest package.json declares `sideEffects: false`, or lists only stylesheets. */
+  sideEffectFree?: boolean;
+  /** Names imported from each target, or "*" for the whole module. */
+  imports: Record<string, string[] | "*">;
+  /** Targets imported with `import type` (or only inline `type` specifiers), which can fail a test that is
+   * type-checked as it runs. */
+  typeImports?: string[];
+  /** What `export ... from` forwards from each target. */
+  reexports: Record<string, { pairs: [string, string][]; star: boolean; namespaces: string[] }>;
+}
+
 export interface DependencyGraphResult {
+  /** Export-level bindings per parsed module. Absent (older caches) means file level. */
+  bindings?: Record<string, ModuleBindings>;
   /** Missing framework/language relationships are global, not reachability-narrowable. */
   adapterBlockers?: string[];
   /** Blockers confined to package directories; see ScopedAdapterBlocker. `confidence` still counts them. */

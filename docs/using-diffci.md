@@ -394,6 +394,25 @@ Dependency graph confidence is UNSAFE; full validation required
 
 Run `npm test` for this revision. Even though the report lists one selected test out of one discovered test, that count is not a runtime measurement or a savings claim. The computed import could reach modules static analysis did not discover, so only the repository's normal full validation remains authoritative. CLI behavior may evolve after version 0.3.2; keep the pinned version when reproducing this exact output.
 
+## Imports from barrels
+
+A test that imports `{ x }` from a package's `index.ts` depends on every file that barrel re-exports, if you
+count files. When the package's `package.json` declares `"sideEffects": false` (or lists only stylesheets), DiffCI
+follows the re-exports by name instead and selects only the tests whose imported names reach a changed file.
+This is the contract bundlers use to drop unused re-exports. Without it, imports stay whole files.
+
+Some cases stay at file level or broaden the selection:
+
+- A changed barrel, or a changed `export *` source DiffCI had to search for a name, selects every test that imports
+  through it.
+- Namespace imports (`import * as x`), CommonJS modules and names DiffCI can't find count as the whole module.
+- A barrel still loads every module it re-exports, so an error thrown while a changed file loads would fail tests
+  that never use it. When no selected test reaches the changed file by name, one of its importers is kept to load it.
+- Type tests (`*.test-d.ts`, `*.tst.ts`) are never dropped. Where tests may be type-checked as they run (Jest,
+  tstyche, tsd, `--typecheck`), a type import counts as the whole module.
+
+The result's evidence says how many tests each changed file skipped this way.
+
 ## Declare inputs the graph can't see
 
 Some files reach tests without an import: fixtures loaded by name, `.env.test`, a Prisma schema that generates the client, a migration a test applies. DiffCI looks for tests that name such a file and runs the full suite when it finds none. Declare the edge in `diffci.json` (or the `diffci` key in `package.json`) instead:

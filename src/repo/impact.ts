@@ -13,6 +13,7 @@ import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
 import { isPlaywrightSpec, nextAppRoute, routeMatches, visitedRoutes } from "./route-visits.js";
+import { exportLevelReach } from "./export-reach.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
@@ -36,6 +37,8 @@ function goReaderReferences(content: string): string {
 }
 /** Vitest's default `typecheck.include`: tests whose outcome is the type checker's. */
 const TYPE_TEST_FILE = /\.(?:test|spec)-d\.[cm]?[jt]sx?$/;
+/** tstyche type tests, which type-check whatever they import. */
+const TYPE_CHECK_TEST_FILE = /\.tst\.[cm]?[jt]sx?$/;
 // "Is this a test?" is answered by the profile's test patterns (src/repo/test-discovery.ts) - one shared
 // definition with analyzer discovery and graph node flags. Module-level helpers receive it explicitly.
 type IsTestFile = (filePath: string) => boolean;
@@ -284,6 +287,10 @@ export class ImpactAnalyzer {
   private testPhases = new Set<string>();
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
+  /** Export-level bindings (export-reach.ts) and each test's reach under them, per analysis. */
+  private bindings: DependencyGraphResult["bindings"];
+  private runtimeForward = new Map<string, string[]>();
+  private exportReach = new Map<string, Set<string>>();
   private unresolved: readonly UnresolvedDependency[] = [];
   /** Why each changed file the reference resolver could not narrow is unresolvable, for fallbackDetails. */
   private referenceBlockers = new Map<string, string[]>();
@@ -470,6 +477,34 @@ export class ImpactAnalyzer {
     return selected;
   }
 
+  /** Drops tests whose imports never reach `path` by name (export-reach.ts). Without bindings (older
+   * caches) the file-level set stands. */
+  private exportLevelTests(path: string, tests: ReadonlySet<string>, evidence: ImpactEvidence[]): ReadonlySet<string> {
+    // Type tests (`*.test-d.ts`, tstyche's `*.tst.ts`) check types, which the walk does not narrow.
+    const bindings = this.bindings;
+    if (!bindings) return tests;
+    const kept = new Set<string>();
+    const droppedTests: string[] = [];
+    let reaching = 0;
+    for (const test of tests) {
+      if (!this.isTestFile(test) || TYPE_TEST_FILE.test(test) || TYPE_CHECK_TEST_FILE.test(test)) { kept.add(test); continue; }
+      let reach = this.exportReach.get(test);
+      if (!reach) {
+        reach = exportLevelReach(test, bindings, (file) => this.runtimeForward.get(file) ?? [], !this.runtimeTestSelection);
+        this.exportReach.set(test, reach);
+      }
+      if (reach.has(path)) { kept.add(test); reaching++; } else droppedTests.push(test);
+    }
+    if (!droppedTests.length) return kept;
+    // A barrel still loads every module it re-exports, so an error thrown while `path` loads fails every
+    // importer, used names or not. Any test that reaches `path` by name shows such an error; when none does,
+    // keep one dropped test to load it.
+    if (reaching === 0) kept.add(droppedTests.sort()[0]!);
+    const skipped = droppedTests.length - (reaching === 0 ? 1 : 0);
+    if (skipped) evidence.push(makeEvidence("DEPENDENCY", path, `${skipped} test(s) import ${path} only through re-exports of names they do not use, in side-effect-free packages (export-level selection)${reaching === 0 ? `; ${droppedTests[0]} is kept to load it` : ""}`));
+    return kept;
+  }
+
   /** True when nothing in the repository runs a Worker (file-references.ts, suiteMayRunWorkers); false,
    * which keeps wrangler configs global, whenever repository contents are unavailable. */
   private workerConfigsOutsideSuite(): boolean {
@@ -494,6 +529,16 @@ export class ImpactAnalyzer {
     this.knownTests = undefined;
     this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
+    this.bindings = graphResult.bindings;
+    this.exportReach = new Map();
+    this.runtimeForward = new Map();
+    // Where tests may be type-checked as they run (no runtime test selection: Jest, ts-jest, tstyche, tsd,
+    // --typecheck), a type import can fail a test too, so the walk follows it as a whole-module edge.
+    if (this.bindings) for (const edge of graph.edges) {
+      if (edge.kind === "asset" || (edge.kind === "type-import" && this.runtimeTestSelection)) continue;
+      const targets = this.runtimeForward.get(edge.from);
+      if (targets) { if (!targets.includes(edge.to)) targets.push(edge.to); } else this.runtimeForward.set(edge.from, [edge.to]);
+    }
     this.unresolved = graphResult.unresolved ?? [];
     this.referenceBlockers = new Map();
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
@@ -1305,7 +1350,7 @@ export class ImpactAnalyzer {
     }
 
     const dependents = graph.transitiveDependentsOf(sourcePath);
-    const testDependents = this.testDependents(graph, sourcePath, dependents);
+    const testDependents = this.exportLevelTests(sourcePath, this.testDependents(graph, sourcePath, dependents), evidence);
     for (const dependent of dependents) {
       if (!this.isTestFile(dependent)) {
         if (!affectedSources.has(dependent)) affectedSources.set(dependent, []);
