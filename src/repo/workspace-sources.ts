@@ -90,6 +90,32 @@ export class WorkspaceSources {
     return this.toSource(pkg, target);
   }
 
+  /** Repository-relative non-code file (a stylesheet, JSON, an image) an `exports` entry names for `subpath`,
+   * such as payloadcms/payload's `"./css/app.css": "./src/css/app.css"` in `@payloadcms/ui`. */
+  assetForSubpath(pkg: WorkspacePackage, subpath: string): string | undefined {
+    const manifest = this.manifest(pkg.root);
+    const node = manifest?.exports === undefined ? undefined : exportNode(manifest.exports, subpath);
+    if (!node) return undefined;
+    for (const leaf of exportLeaves(node.entry, node.star)) {
+      if (leaf.startsWith("/") || /^[A-Za-z]:/.test(leaf) || SOURCE.test(leaf) || DECLARATION.test(leaf)) continue;
+      const target = posix.normalize(posix.join(pkg.root, leaf));
+      if (target.startsWith(`${pkg.root}/`) && existsSync(join(this.repoPath, target))) return target;
+    }
+    return undefined;
+  }
+
+  /** Whether an import of `subpath` names anything: a manifest entry, or a file in the package. An import
+   * that names nothing fails whether the package is installed or not. */
+  names(pkg: WorkspacePackage, subpath: string): boolean {
+    const manifest = this.manifest(pkg.root);
+    if (!manifest) return true;
+    if (manifest.exports === undefined ? subpath === "." : exportNode(manifest.exports, subpath)) return true;
+    if (subpath === ".") return true;
+    const file = posix.normalize(posix.join(pkg.root, subpath));
+    return [file, `${file}.d.ts`, `${file}.ts`, `${file}.tsx`, `${file}.js`, `${file}/index.d.ts`, `${file}/index.ts`, `${file}/index.js`]
+      .some((candidate) => existsSync(join(this.repoPath, candidate)));
+  }
+
   /** Repository-relative source file for a file inside the package that TypeScript resolved to. */
   sourceForFile(pkg: WorkspacePackage, fileRel: string): string | undefined {
     return this.toSource(pkg, fileRel);
@@ -114,7 +140,18 @@ export class WorkspaceSources {
     if (declaration) return undefined;
     // Build output is never source, even when it exists on disk.
     if (outputs.some(({ declarationDir, outDir }) => [declarationDir, outDir].some((dir) => dir && targetRel.startsWith(`${dir}/`)))) return undefined;
-    return SOURCE.test(targetRel) && existsSync(join(this.repoPath, targetRel)) ? targetRel : undefined;
+    if (!SOURCE.test(targetRel)) return undefined;
+    if (existsSync(join(this.repoPath, targetRel))) return targetRel;
+    // A `.js` specifier naming a TypeScript source beside it, as TypeScript resolves it (2026-11-10:
+    // payloadcms/payload exports `"types": "./src/exports/build-config.js"`, which exists only as `.ts`).
+    if (script) {
+      const stem = targetRel.slice(0, -script[0].length);
+      const flavor = script[1];
+      for (const extension of flavor ? [`.${flavor}ts`] : [".ts", ".tsx"]) {
+        if (existsSync(join(this.repoPath, stem + extension))) return stem + extension;
+      }
+    }
+    return undefined;
   }
 
   /** Output directories stated by tsconfig*.json files in the package root, with their rootDir. */
@@ -174,11 +211,17 @@ function entryTarget(manifest: Record<string, unknown>, subpath: string): string
     const types = manifest.types ?? manifest.typings;
     return typeof types === "string" ? types : undefined;
   }
+  const node = exportNode(exports, subpath);
+  return node ? pickEntry(node.entry, node.star) : undefined;
+}
+
+/** The `exports` entry for `subpath` and the text its `*` stands for, or undefined when none matches. */
+function exportNode(exports: unknown, subpath: string): { entry: unknown; star: string | undefined } | undefined {
   const isMap = exports !== null && typeof exports === "object" && !Array.isArray(exports);
-  const keyed = isMap && Object.keys(exports).some((key) => key.startsWith("."));
-  if (!keyed) return subpath === "." ? pickEntry(exports, undefined) : undefined;
+  const keyed = isMap && Object.keys(exports as object).some((key) => key.startsWith("."));
+  if (!keyed) return subpath === "." ? { entry: exports, star: undefined } : undefined;
   const map = exports as Record<string, unknown>;
-  if (subpath in map) return pickEntry(map[subpath], undefined);
+  if (subpath in map) return { entry: map[subpath], star: undefined };
   // Subpath patterns: the longest matching prefix wins, as in Node.
   let best: { key: string; star: string } | undefined;
   for (const key of Object.keys(map)) {
@@ -189,7 +232,19 @@ function entryTarget(manifest: Record<string, unknown>, subpath: string): string
     if (subpath.length < prefix.length + suffix.length || !subpath.startsWith(prefix) || !subpath.endsWith(suffix)) continue;
     if (!best || prefix.length > best.key.indexOf("*")) best = { key, star: subpath.slice(prefix.length, subpath.length - suffix.length) };
   }
-  return best ? pickEntry(map[best.key], best.star) : undefined;
+  return best ? { entry: map[best.key], star: best.star } : undefined;
+}
+
+/** Every string target of an `exports` entry, with `*` filled in. */
+function exportLeaves(entry: unknown, star: string | undefined): string[] {
+  const leaves: string[] = [];
+  const walk = (node: unknown) => {
+    if (typeof node === "string") leaves.push(star === undefined ? node : node.split("*").join(star));
+    else if (Array.isArray(node)) for (const item of node) walk(item);
+    else if (node && typeof node === "object") for (const value of Object.values(node)) walk(value);
+  };
+  walk(entry);
+  return leaves;
 }
 
 function pickEntry(entry: unknown, star: string | undefined): string | undefined {

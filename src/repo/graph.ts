@@ -1267,6 +1267,24 @@ export async function buildDependencyGraph(
     for (const ref of refs) {
       // Expression text is not a module name. In particular, import(name) must
       // not be classified as an external package called "name".
+  /** Parses an implementation file an import reaches outside the initial walk, rather than silently dropping
+   * the edge or loading every TypeScript declaration library again; false, with a blocker, past the budget. */
+  function followImplementation(absolute: string, rel: string): boolean {
+    if (internalSourcePaths.has(rel)) return true;
+    try {
+      if (isExcludedPath(rel, options.excludeDirs ?? []) || followedImplementationFiles >= followBudget || statSync(absolute).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
+      const followed = ts.createSourceFile(absolute, readFileSync(absolute, "utf8"), ts.ScriptTarget.Latest, true);
+      if ((followed as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length) throw new Error("invalid implementation syntax");
+      sourceFiles.push(followed);
+      followedImplementationFiles++;
+    } catch {
+      adapterBlockers.push(`Resolved implementation cannot be included in the scoped source inventory: ${rel}`);
+      return false;
+    }
+    internalSourcePaths.add(rel);
+    return true;
+  }
+
       if (ref.computed && ref.patterns) {
         const targets = resolvePatternTargets(sf.fileName, ref.patterns, importerOptions);
         if (targets) {
@@ -1333,7 +1351,15 @@ export async function buildDependencyGraph(
         const insidePackage = resolvedRel !== undefined && resolvedRel.startsWith(`${pkg.root}/`);
         if (!resolvedFile || (insidePackage && (/\.d\.[mc]?ts$/.test(resolvedRel!) || !internalSourcePaths.has(resolvedRel!)))) {
           const source = (insidePackage ? workspaceSources.sourceForFile(pkg, resolvedRel!) : undefined) ?? workspaceSources.sourceForSubpath(pkg, subpath);
-          if (source && internalSourcePaths.has(source)) {
+          const asset = source ? undefined : workspaceSources.assetForSubpath(pkg, subpath);
+          if (asset) {
+            recordAssetEdge(importerRel, asset);
+            recordReference("internal-asset", importerRel, ref);
+            continue;
+          }
+          // The package's source may sit outside the tsconfig inventory (payloadcms/payload's solution tsconfig
+          // references only some packages): parse it like any other followed implementation.
+          if (source && (internalSourcePaths.has(source) || (!/\.d\.[mc]?ts$/.test(source) && followImplementation(join(repoPath, source), source)))) {
             addEdge(importerRel, source, ref.kind, ref);
             recordReference("internal-source", importerRel, ref);
           } else {
@@ -1383,21 +1409,7 @@ export async function buildDependencyGraph(
       }
 
       if (targetRel && isSourceFileName(resolved)) {
-        if (!resolved.endsWith(".d.ts") && !internalSourcePaths.has(targetRel)) {
-          // A real import can reach generated implementation excluded from the
-          // initial walk. Parse it (and its imports) rather than silently dropping
-          // the edge or loading every TypeScript declaration library again.
-          try {
-            if (isExcludedPath(targetRel, options.excludeDirs ?? []) || followedImplementationFiles >= followBudget || statSync(resolved).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
-            const followed = ts.createSourceFile(resolved, readFileSync(resolved, "utf8"), ts.ScriptTarget.Latest, true);
-            if ((followed as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length) throw new Error("invalid implementation syntax");
-            sourceFiles.push(followed);
-            followedImplementationFiles++;
-          } catch {
-            adapterBlockers.push(`Resolved implementation cannot be included in the scoped source inventory: ${targetRel}`);
-            continue;
-          }
-        }
+        if (!resolved.endsWith(".d.ts") && !followImplementation(resolved, targetRel)) continue;
         internalSourcePaths.add(targetRel);
         addEdge(importerRel, targetRel, ref.kind, ref);
         recordReference("internal-source", importerRel, ref);
@@ -1468,7 +1480,14 @@ export async function buildDependencyGraph(
   if (scope && unresolved.length) adapterBlockers.push("Unresolved dependencies in the declared Vue suite require full validation");
   if (scope && edges.some(edge => outsideScope(edge.from) || outsideScope(edge.to))) adapterBlockers.push("Vue asset or macro dependency crosses the declared package boundary");
   const scopedAdapterBlockers = scopeAdapterBlockers(adapterBlockers, blockerScopes);
-  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references.filter((ref) => inWorkspace(ref.importer)), workspaceRoots));
+  // A type-only import of a subpath the package neither exports nor contains resolves nowhere, installed or not
+  // (payloadcms/payload's stale `import type { ... } from 'payload/types'`): it hides no edge a change can reach.
+  const namesNothing = (ref: ResolutionReference) => {
+    if (ref.kind !== "type-import") return false;
+    const target = workspaceSources.packageFor(stripImportQuery(ref.specifier));
+    return target !== undefined && !workspaceSources.names(target.pkg, target.subpath);
+  };
+  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references.filter((ref) => inWorkspace(ref.importer) && !namesNothing(ref)), workspaceRoots));
   profile.adapterBlockers = [...adapterBlockers];
   markPhase("importExtractionAndResolution");
 

@@ -12,7 +12,7 @@
  * packages and every edge into server-utils was missing. Those imports must fall back, not skip.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
@@ -223,6 +223,68 @@ describe("framework blockers confined to nested package directories", () => {
       assert.deepEqual(graph.graph.dependenciesOf("packages/node/src/types.ts"), ["packages/utils/src/bedrock.ts"]);
       const hookRef = graph.references.find((ref) => ref.importer === "packages/node/src/hook.ts");
       assert.equal(hookRef?.resolution, "internal-source", JSON.stringify(hookRef));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("maps a `.js` export entry to the TypeScript source beside it", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      // payloadcms/payload: `"types": "./src/exports/build-config.js"` names src/exports/build-config.ts.
+      write(root, "packages/utils/package.json", JSON.stringify({ name: "@sdk/utils", version: "1.0.0", main: "./src/index.ts",
+        exports: { ".": { types: "./src/index.js", import: "./src/index.js" }, "./config": { types: "./src/config.js", default: "./src/config.js" } },
+        scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "packages/utils/tsconfig.json", JSON.stringify({ extends: "../../tsconfig.json", compilerOptions: { outDir: "dist", rootDir: "./src" }, include: ["src/**/*"] }));
+      write(root, "packages/utils/src/index.ts", "export { bedrock } from './bedrock';\nexport { other } from './other';\n");
+      write(root, "packages/utils/src/config.ts", "export const config = 1;\n");
+      write(root, "packages/node/src/config.ts", "import { config } from '@sdk/utils/config'; export const c = config;");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.deepEqual(graph.graph.dependenciesOf("packages/node/src/config.ts"), ["packages/utils/src/config.ts"]);
+      assert.ok(plan.selectedTests.includes("packages/node/test/index.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("follows a workspace import into a package no tsconfig lists", async () => {
+    // The long path: on Windows tmpdir() can be an 8.3 short name that TypeScript's resolved paths do not use.
+    const root = realpathSync.native(sdkRepo({ consumer: true }));
+    try {
+      // payloadcms/payload: the root tsconfig references some packages; the rest are reached only by import.
+      write(root, "tsconfig.json", JSON.stringify({ compilerOptions: { module: "esnext", moduleResolution: "bundler", target: "es2022", strict: true }, include: ["packages/node"] }));
+      write(root, "packages/utils/package.json", JSON.stringify({ name: "@sdk/utils", version: "1.0.0", exports: { ".": { types: "./src/index.ts", import: "./src/index.ts" } }, scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "packages/utils/src/index.ts", "export { bedrock } from './bedrock';\nexport { other } from './other';\n");
+      // What `pnpm install` leaves: TypeScript resolves the import through the link into packages/utils/src.
+      mkdirSync(join(root, "packages/node/node_modules/@sdk"), { recursive: true });
+      symlinkSync(join(root, "packages/utils"), join(root, "packages/node/node_modules/@sdk/utils"), "junction");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(graph.graph.dependenciesOf("packages/node/src/index.ts").includes("packages/utils/src/index.ts"), JSON.stringify(graph.graph.dependenciesOf("packages/node/src/index.ts")));
+      assert.ok(plan.selectedTests.includes("packages/node/test/index.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("maps a stylesheet export to an asset, and ignores a type import of a subpath the package does not have", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // payloadcms/payload: `@payloadcms/ui/css/app.css`, and a stale `import type ... from 'payload/types'`.
+      const manifest = JSON.parse(readFileSync(join(root, "packages/utils/package.json"), "utf8"));
+      manifest.exports["./css/app.css"] = "./src/css/app.css";
+      write(root, "packages/utils/package.json", JSON.stringify(manifest));
+      write(root, "packages/utils/src/css/app.css", "body { margin: 0; }\n");
+      write(root, "packages/node/src/layout.ts", "import '@sdk/utils/css/app.css';\nimport type { Missing } from '@sdk/utils/types';\nexport type M = Missing;\nexport const layout = 1;\n");
+      const { graph, impact } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(graph.graph.dependenciesOf("packages/node/src/layout.ts").includes("packages/utils/src/css/app.css"), JSON.stringify(graph.graph.dependenciesOf("packages/node/src/layout.ts")));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("still falls back for a runtime import of a workspace subpath it cannot map", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      write(root, "packages/node/src/missing.ts", "import { x } from '@sdk/utils/missing';\nexport const m = x;\n");
+      const { impact } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok(impact.fallbackReasons.some((reason) => reason.startsWith("Workspace package @sdk/utils is imported by 1 file")), JSON.stringify(impact.fallbackReasons));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
