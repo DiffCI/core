@@ -218,6 +218,14 @@ function matchesTestGlob(path: string, pattern: string): boolean {
   return matchesGlob(path, pattern);
 }
 
+/**
+ * Build-output names skipped only where output goes: beside a package.json or at the repository root.
+ * 2026-11-10: skipping them at any depth hid payloadcms/payload's
+ * `packages/payload/src/cli/commands/build/build.spec.ts`, a source test Vitest runs, so a narrowed selection
+ * could never include it.
+ */
+const OUTPUT_DIR_NAMES = new Set(["dist", "build", "tmp", "temp"]);
+
 function scanFiles(
   dirPath: string,
   repoPath: string,
@@ -225,9 +233,15 @@ function scanFiles(
   callback: (relativePath: string, fileName: string) => void,
 ): void {
   const entries = readdirSync(dirPath, { withFileTypes: true });
+  let outputRoot: boolean | undefined;
   for (const entry of entries) {
     if (entry.isDirectory()) {
-      if (excludeDirs.has(entry.name) || entry.name.startsWith(".")) continue;
+      if (entry.name.startsWith(".")) continue;
+      if (excludeDirs.has(entry.name)) {
+        if (!OUTPUT_DIR_NAMES.has(entry.name)) continue;
+        outputRoot ??= dirPath === repoPath || existsSync(join(dirPath, "package.json"));
+        if (outputRoot) continue;
+      }
       scanFiles(join(dirPath, entry.name), repoPath, excludeDirs, callback);
       continue;
     }
