@@ -43,6 +43,8 @@
     "README.md",
     "context7.json",
     "docs/release-boundary.md",
+    "docs/research/2026-11-10-rust-glob-replay.md",
+    "docs/research/2026-11-10-rust-glob-replay.json",
     "docs/source-archives.md",
     "docs/using-diffci.md",
     "funding.json",
