@@ -522,7 +522,7 @@ _The runtime-input check (`Go runtime inputs outside source/embed metadata …`)
 | Reason | Example change | Narrow |
 | --- | --- | --- |
 | `Go support requires one root go.mod; workspaces and nested modules require full validation` | Add `tools/go.mod` | Yes: `"go": { "scope": "root-module" }` |
-| `Go root-module scope with local replacements requires full validation` | `replace example.com/x => ./x` with `go.scope` set | No |
+| `Go root-module scope with local replacements requires full validation` | A local `replace` with `go.scope` set whose directory is not a nested module root in the repository. `replace example.com/x => ./x`, where `x/go.mod` exists, is modelled instead: changes to the `x/` packages the root build uses select their importers, and other `x/` files (its own tests, unused packages) fall back as runtime inputs | No |
 | `Changes in a Go module outside the declared root-module scope require full validation` | Edit `tools/main.go` with `go.scope` set | No |
 | `Go metadata unavailable: install Go and repository dependencies before analysis (go list must succeed offline)` | Run without Go installed or without downloaded modules | No |
 | `Go custom build flags or incomplete build context require full validation` | Set `GOFLAGS=-tags=integration` | No |
