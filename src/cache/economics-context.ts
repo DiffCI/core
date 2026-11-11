@@ -4,11 +4,14 @@ import { join } from "node:path";
 import { LOCKFILE_NAMES } from "../repo/lockfiles.js";
 import { readRepositoryConfig } from "../repo/repo-config.js";
 
-/** Files that determine whether a cached Vue analysis still matches the checkout configuration. */
+/**
+ * Files that determine whether a cached Vue analysis still matches the checkout configuration.
+ * The declared Vue package can carry its own lockfile, so every lockfile name is hashed there too.
+ */
 export function economicsContext(repoPath: string): string {
   const scope = readRepositoryConfig(repoPath).vue;
   const paths = new Set(["diffci.json", "package.json", "tsconfig.json", "go.mod", "go.sum", "go.work", "go.work.sum", ...LOCKFILE_NAMES, ...["ts", "js", "mts", "mjs", "cts", "cjs"].map(ext => `vitest.config.${ext}`)]);
-  if (scope) for (const path of ["package.json", "tsconfig.json", scope.testConfig]) paths.add(`${scope.packageRoot}/${path}`);
+  if (scope) for (const path of ["package.json", "tsconfig.json", scope.testConfig, ...LOCKFILE_NAMES]) paths.add(`${scope.packageRoot}/${path}`);
   const hash = createHash("sha256").update(JSON.stringify([process.platform, process.arch, process.version]));
   for (const path of [...paths].sort()) {
     hash.update(JSON.stringify(path));
