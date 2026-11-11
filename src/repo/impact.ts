@@ -62,7 +62,7 @@ function isConfigFile(filePath: string): boolean {
   if (base.startsWith(".eslintrc")) return true;
   if (base.startsWith("vitest.config")) return true;
   if (base.startsWith("jest.config")) return true;
-  if (base.startsWith("babel.config")) return true;
+  if (base.startsWith("babel.config") || base.startsWith(".babelrc")) return true;
   if (base.startsWith("prettier.config")) return true;
   if (base.startsWith(".prettierrc")) return true;
   if (/^\.github\/(?:workflows|actions)\//.test(filePath)) return true;

@@ -5,8 +5,8 @@
  * no test may be skipped: the only safe plan is a full run.
  *
  * Before this fixture, a `.babelrc` change fell back as an unknown file, but `babel.config.js` (and the
- * `.cjs`, `.mjs` and `.ts` forms) is a code file that nothing imports, so it was classified as source
- * with no dependents and the plan was SELECTIVE with zero tests selected.
+ * `.cjs`, `.mjs` and `.ts` forms) and `.babelrc.js` / `.babelrc.cjs` are code files that nothing imports,
+ * so they were classified as source with no dependents and the plan was SELECTIVE with zero tests.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -55,6 +55,17 @@ async function planForChange(files: Record<string, string>, changedPath: string,
 const presetEnv = (node: string) => `module.exports = { presets: [['@babel/preset-env', { targets: { node: '${node}' } }]] };\n`;
 
 for (const babelFile of ["babel.config.js", "babel.config.cjs", "babel.config.mjs", "babel.config.ts"]) {
+  test(`a change to only ${babelFile} runs every Jest test`, async () => {
+    const plan = await planForChange(jestProject(babelFile, presetEnv("current")), babelFile, presetEnv("18"));
+    assert.equal(plan.mode, "FULL");
+    assert.equal(plan.safety.fallbackRequired, true);
+    assert.deepEqual([...plan.selectedTests].sort(), TESTS);
+    assert.deepEqual(plan.skippedTests, []);
+    assert.ok(plan.fallbackReasons.some((reason) => reason.includes(babelFile)), plan.fallbackReasons.join("; "));
+  });
+}
+
+for (const babelFile of [".babelrc.js", ".babelrc.cjs", ".babelrc.mjs", ".babelrc.json"]) {
   test(`a change to only ${babelFile} runs every Jest test`, async () => {
     const plan = await planForChange(jestProject(babelFile, presetEnv("current")), babelFile, presetEnv("18"));
     assert.equal(plan.mode, "FULL");
