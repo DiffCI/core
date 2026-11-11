@@ -299,4 +299,7 @@ export interface DependencyGraphResult {
    * checking, so an `import type` edge cannot change a test's outcome (2026-11-03). Absent or false
    * means type-only edges select tests too. */
   runtimeTestSelection?: boolean;
+  /** Globs of the files a type-test runner checks (tstyche's `testFileMatch`, tsd's `*.test-d.ts`). They keep
+   * their type-only dependents under runtime selection, and export-level selection never narrows them. */
+  typeTestGlobs?: string[];
 }

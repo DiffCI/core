@@ -411,8 +411,9 @@ Some cases stay at file level or broaden the selection:
 - A computed `import(name)` inside a function selects only the tests whose imports reach its module, since only
   those can call it. One that runs when its module loads (at the top level, or in a function invoked at once)
   selects every test that loads the module.
-- Type tests (`*.test-d.ts`, `*.tst.ts`) are never dropped. Where tests may be type-checked as they run (Jest,
-  tstyche, tsd, `--typecheck`), a type import counts as the whole module.
+- Type tests are never dropped: `*.test-d.ts`, `*.tst.ts`, and the files tstyche's `testFileMatch` names. Where
+  every test may be type-checked as it runs (Jest, ts-jest, `--typecheck`), a type import counts as the whole
+  module.
 
 The result's evidence says how many tests each changed file skipped this way.
 

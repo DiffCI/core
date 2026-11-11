@@ -287,6 +287,11 @@ export class ImpactAnalyzer {
   private testPhases = new Set<string>();
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
+  private typeTestGlobs: readonly string[] = [];
+  /** A file a type-test runner checks: its outcome depends on types, which runtime and export-level selection ignore. */
+  private isTypeTest(path: string): boolean {
+    return TYPE_TEST_FILE.test(path) || TYPE_CHECK_TEST_FILE.test(path) || this.typeTestGlobs.some((glob) => matchesTestGlob(path, glob));
+  }
   /** Export-level bindings (export-reach.ts) and each test's reach under them, per analysis. */
   private bindings: DependencyGraphResult["bindings"];
   private runtimeForward = new Map<string, string[]>();
@@ -473,7 +478,7 @@ export class ImpactAnalyzer {
   private testDependents(graph: DependencyGraph, path: string, dependents: readonly string[]): ReadonlySet<string> {
     if (!this.runtimeTestSelection || !graph.transitiveRuntimeDependentsOf) return new Set(dependents);
     const selected = new Set(graph.transitiveRuntimeDependentsOf(path));
-    for (const dependent of dependents) if (TYPE_TEST_FILE.test(dependent)) selected.add(dependent);
+    for (const dependent of dependents) if (this.isTypeTest(dependent)) selected.add(dependent);
     return selected;
   }
 
@@ -481,7 +486,7 @@ export class ImpactAnalyzer {
   private computedLoadRunners(importer: string, loaders: string[]): string[] {
     const bindings = this.bindings;
     if (!bindings || bindings[importer]?.computedAtLoad || !bindings[importer]) return loaders;
-    return loaders.filter((test) => test === importer || TYPE_TEST_FILE.test(test) || TYPE_CHECK_TEST_FILE.test(test) || this.reachOf(test, bindings).has(importer));
+    return loaders.filter((test) => test === importer || this.isTypeTest(test) || this.reachOf(test, bindings).has(importer));
   }
 
   private reachOf(test: string, bindings: NonNullable<DependencyGraphResult["bindings"]>): Set<string> {
@@ -503,7 +508,7 @@ export class ImpactAnalyzer {
     const droppedTests: string[] = [];
     let reaching = 0;
     for (const test of tests) {
-      if (!this.isTestFile(test) || TYPE_TEST_FILE.test(test) || TYPE_CHECK_TEST_FILE.test(test)) { kept.add(test); continue; }
+      if (!this.isTestFile(test) || this.isTypeTest(test)) { kept.add(test); continue; }
       if (this.reachOf(test, bindings).has(path)) { kept.add(test); reaching++; } else droppedTests.push(test);
     }
     if (!droppedTests.length) return kept;
@@ -540,6 +545,7 @@ export class ImpactAnalyzer {
     this.knownTests = undefined;
     this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
+    this.typeTestGlobs = graphResult.typeTestGlobs ?? [];
     this.bindings = graphResult.bindings;
     this.exportReach = new Map();
     this.runtimeForward = new Map();

@@ -973,11 +973,41 @@ describe("runtime test selection", () => {
     }
   });
 
+  // tsd and tstyche type-check only their own files (2026-11-10): the rest of a Vitest suite keeps runtime
+  // selection, and their files keep every type edge.
+  it("keeps runtime selection beside tsd, whose *.test-d.ts files still follow type edges", async () => {
+    const root = vitestRepo({ "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "tsd" } }) });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(selected.includes("tests/shape.test-d.ts"), JSON.stringify(selected));
+      assert.ok(!selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats the files tstyche's testFileMatch names as type tests", async () => {
+    const root = vitestRepo({
+      "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "vitest run", "test:types": "tstyche" }, devDependencies: { vitest: "^3.0.0", tstyche: "^4.0.0" } }),
+      "tstyche.json": JSON.stringify({ testFileMatch: ["tests/typed.test.ts"] }),
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      assert.deepEqual(result.typeTestGlobs, ["tests/typed.test.ts"]);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   for (const [name, extra] of Object.entries<FixtureFiles>({
     "a Jest config": { "packages/legacy/jest.config.js": "module.exports = {};" },
     "ts-jest in a workspace package": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", devDependencies: { "ts-jest": "^29.0.0" } }) },
     "Vitest typecheck mode": { "vitest.config.ts": "export default { test: { typecheck: { enabled: true } } };" },
-    "a tsd script": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "tsd" } }) },
   })) {
     it(`keeps type-only edges selecting tests when the repository has ${name}`, async () => {
       const root = vitestRepo(extra);

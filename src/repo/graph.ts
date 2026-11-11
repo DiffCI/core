@@ -1610,6 +1610,7 @@ export async function buildDependencyGraph(
     integrity,
     resolvedViaProjectReferences,
     runtimeTestSelection: runtimeTestSelectionEligible(repoPath, files, profile),
+    typeTestGlobs: typeTestGlobs(repoPath, files),
   };
 }
 
@@ -1781,10 +1782,10 @@ export function validateDependencyGraph(graph: DependencyGraph): GraphIntegrityR
 
 /**
  * Whether an `import type` edge can be ignored when selecting tests (2026-11-03). Vitest transpiles
- * without type checking, so a type-only change cannot alter a runtime test's outcome; ts-jest, tsd,
- * tstyche and Vitest's typecheck mode do check types. Any sign of them anywhere in the repository,
- * including workspace packages, keeps type-only edges selecting tests. Type tests (`*.test-d.ts`) are
- * selected through every edge either way (impact.ts).
+ * without type checking, so a type-only change cannot alter a runtime test's outcome; ts-jest and Vitest's
+ * typecheck mode check every test's types. Any sign of them anywhere in the repository, including
+ * workspace packages, keeps type-only edges selecting tests. tsd and tstyche check only their own files
+ * (typeTestGlobs), and those type tests are selected through every edge either way (impact.ts).
  */
 function runtimeTestSelectionEligible(repoPath: string, files: readonly string[], profile: RepositoryProfile): boolean {
   const configs = profile.testRunnerConfigs ?? [];
@@ -1801,11 +1802,45 @@ function runtimeTestSelectionEligible(repoPath: string, files: readonly string[]
       let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
       try { manifest = JSON.parse(read(file) ?? ""); } catch { return false; }
       const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
-      if (packages.some((name) => ["jest", "ts-jest", "tsd", "tstyche"].includes(name))) return false;
-      if (Object.values(manifest.scripts ?? {}).some((script) => typeof script !== "string" || /(?:^|[\s&;|(])(?:jest|tsd|tstyche)(?:\s|$)|--typecheck/.test(script))) return false;
+      // tsd and tstyche check types only in their own test files (typeTestGlobs), which keep type edges;
+      // Jest (ts-jest) and `--typecheck` type-check every test they run (2026-11-10: tstyche alone turned
+      // off runtime selection for all of payloadcms/payload's Vitest tests).
+      if (packages.some((name) => ["jest", "ts-jest"].includes(name))) return false;
+      if (Object.values(manifest.scripts ?? {}).some((script) => typeof script !== "string" || /(?:^|[\s&;|(])jest(?:\s|$)|--typecheck/.test(script))) return false;
     }
   }
   return true;
+}
+
+/** The files tstyche or tsd check, when either is installed: tstyche.json's `testFileMatch` or tstyche's
+ * defaults, and tsd's `*.test-d.ts`. */
+function typeTestGlobs(repoPath: string, files: readonly string[]): string[] {
+  const read = (path: string) => { try { return readFileSync(join(repoPath, path), "utf8"); } catch { return undefined; } };
+  let tstyche = false, tsd = false;
+  for (const file of files) {
+    if (file.split("/").includes("node_modules") || !file.endsWith("package.json")) continue;
+    let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
+    try { manifest = JSON.parse(read(file) ?? ""); } catch { continue; }
+    const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
+    const scripts = Object.values(manifest.scripts ?? {}).filter((script): script is string => typeof script === "string");
+    if (packages.includes("tstyche") || scripts.some((script) => /(?:^|[\s&;|(])tstyche(?:\s|$)/.test(script))) tstyche = true;
+    if (packages.includes("tsd") || scripts.some((script) => /(?:^|[\s&;|(])tsd(?:\s|$)/.test(script))) tsd = true;
+  }
+  const globs: string[] = [];
+  if (tstyche) {
+    let match: unknown;
+    for (const name of ["tstyche.config.json", "tstyche.json"]) {
+      const text = read(name);
+      if (text === undefined) continue;
+      const parsed = ts.parseConfigFileTextToJson(name, text);
+      match = (parsed.config as { testFileMatch?: unknown } | undefined)?.testFileMatch;
+      break;
+    }
+    globs.push(...(Array.isArray(match) && match.every((glob) => typeof glob === "string") ? match as string[]
+      : ["**/*.tst.*", "**/__typetests__/*.test.*", "**/typetests/*.test.*"]));
+  }
+  if (tsd) globs.push("**/*.test-d.ts", "**/*.test-d.tsx");
+  return globs;
 }
 
 function computeConfidence(

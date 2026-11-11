@@ -113,7 +113,7 @@ describe("export-level selection end to end", () => {
   });
   it("keeps a test that imports only a type when tests may be type-checked as they run", async () => {
     const typeOnly = {
-      "package.json": JSON.stringify({ name: "fixture", type: "module", scripts: { test: "vitest run" }, devDependencies: { vitest: "^3.0.0", tstyche: "^4.0.0" } }),
+      "package.json": JSON.stringify({ name: "fixture", type: "module", scripts: { test: "vitest run --typecheck" }, devDependencies: { vitest: "^3.0.0" } }),
       "packages/lib/src/d.ts": `export type D = { d: number };
 export const d = 4;
 `,
