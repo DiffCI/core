@@ -417,6 +417,23 @@ Some cases stay at file level or broaden the selection:
 
 The result's evidence says how many tests each changed file skipped this way.
 
+## Code loaded by a path string
+
+A string that names a code file by path, such as `test.suite('Posts', { config: './config.ts' })`, is a
+dependency: DiffCI follows it from the file that holds it, so a change to that config or anything it imports
+selects the test.
+
+A computed `import(name)` can load any file, so by default every test that runs it is selected for every code
+change. When a repository's computed loads only ever reach files named by such path strings, it can say so:
+
+```json
+{ "computedImports": "follow-path-literals" }
+```
+
+in `diffci.json`. Those loads then select nothing beyond the path-string dependencies. It is an assumption about
+your code, the same one `vitest --changed` makes for every computed import: a load whose path is built at run
+time from something else (a directory listing, an environment variable, the working directory) would be missed.
+
 ## Declare inputs the graph can't see
 
 Some files reach tests without an import: fixtures loaded by name, `.env.test`, a Prisma schema that generates the client, a migration a test applies. DiffCI looks for tests that name such a file and runs the full suite when it finds none. Declare the edge in `diffci.json` (or the `diffci` key in `package.json`) instead:
@@ -490,6 +507,7 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.css` while an unchanged `src/app.tsx` still imports it, or while a workflow step names it (renamed or deleted files whose importers all changed are narrowed) | Yes: declare it in `inputs` |
 | `Declared input … selects no tests; full validation required` | `inputs` names the changed file, but its `tests` globs match no test file | Fix: point `tests` at existing tests |
 | `Invalid inputs: each entry needs non-empty files and tests glob lists` | `"inputs": [{ "files": ["fixtures/**"] }]` | Fix: give every entry `files` and `tests` |
+| `Invalid computedImports: the only supported value is follow-path-literals` | `"computedImports": "trust"` | Fix: use `"follow-path-literals"` or remove the key |
 | `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json`. A `tsconfig.json` in a nested package that is not a workspace member, and whose stated paths stay inside it, decides only changes that reach that package, such as an E2E app whose config extends a generated `.nuxt/tsconfig.json` | No |
 | `Unsupported … …; root-relative test discovery requires full validation` | Set `root: "./src"` in `vitest.config.ts` or `rootDir` in `jest.config.js` | No |
 | `Multiple runner configurations require completely understood explicit test includes; full validation required` | Keep both `vitest.config.ts` and `jest.config.js` without explicit `include`/`testMatch` | No |

@@ -45,6 +45,11 @@ export interface DiffCiRepositoryConfig {
   vue?: { packageRoot: string; testConfig: string };
   /** Match the Maven lifecycle and profiles used by this repository's CI job. */
   maven?: { goal: "test" | "verify"; profiles?: string[] };
+  /** How a computed `import(name)` selects tests. Absent (the default): every test that runs the load. With
+   * "follow-path-literals" the repository states that its computed loads reach only files named by path
+   * strings in its code, which the graph already follows as `path-literal` edges, so the load selects
+   * nothing more (2026-11-10, payloadcms/payload's `dynamicImport` of test-named configs). */
+  computedImports?: "follow-path-literals";
   configurationError?: string;
 }
 
@@ -88,6 +93,8 @@ function parseConfig(raw: unknown): DiffCiRepositoryConfig {
       : inputs !== undefined && !validInputs ? { configurationError: "Invalid inputs: each entry needs non-empty files and tests glob lists" } : {}),
     ...(go?.scope === "root-module" ? { go: { scope: "root-module" as const } } : {}),
     ...(validVue ? { vue: { packageRoot: vue.packageRoot as string, testConfig: vue.testConfig as string } } : record.vue !== undefined ? { configurationError: "Invalid Vue package/suite scope" } : {}),
+    ...(record.computedImports === "follow-path-literals" ? { computedImports: "follow-path-literals" as const }
+      : record.computedImports !== undefined ? { configurationError: "Invalid computedImports: the only supported value is follow-path-literals" } : {}),
     ...(validMaven ? { maven: { goal: maven.goal as "test" | "verify", ...(maven.profiles ? { profiles: maven.profiles as string[] } : {}) } } : record.maven !== undefined ? { configurationError: "Invalid Maven lifecycle goal or profiles" } : {}),
   };
 }
@@ -100,7 +107,7 @@ export function readRepositoryConfig(repoPath: string, packageJson?: Record<stri
   const dedicated = readJsonFile(join(repoPath, "diffci.json"));
   if (dedicated) {
     const parsed = parseConfig(dedicated);
-    if (parsed.alwaysRunTests || parsed.inputs || parsed.go || parsed.vue || parsed.maven || parsed.configurationError) return parsed;
+    if (parsed.alwaysRunTests || parsed.inputs || parsed.go || parsed.vue || parsed.maven || parsed.computedImports || parsed.configurationError) return parsed;
   }
   const pkg = packageJson ?? readJsonFile(join(repoPath, "package.json"));
   return parseConfig(pkg?.diffci);

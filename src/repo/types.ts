@@ -143,7 +143,9 @@ export type DependencyEdgeKind =
   | "re-export"
   | "dynamic-import"
   | "require"
-  | "asset";
+  | "asset"
+  /** A string naming a code file by path (`'./config.ts'`), which code may load at run time. */
+  | "path-literal";
 
 export type DependencyResolution =
   | "internal-source"

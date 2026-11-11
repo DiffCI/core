@@ -214,6 +214,7 @@
     "tests/repo/file-references.test.ts",
     "tests/repo/go-runtime-inputs.test.ts",
     "tests/repo/export-reach.test.ts",
+    "tests/repo/path-literals.test.ts",
     "tests/repo/graph.project-references.test.ts",
     "tests/repo/graph.test.ts",
     "tests/repo/impact.test.ts",

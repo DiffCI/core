@@ -1563,6 +1563,10 @@ export class ImpactAnalyzer {
         if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
         continue;
       }
+      if (graphResult.profile.diffciConfig?.computedImports === "follow-path-literals") {
+        evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the repository declares (diffci.json computedImports: follow-path-literals) that such loads reach only files named by path strings, which are already dependencies`));
+        continue;
+      }
       const importerDependents = graph.transitiveDependentsOf(importer);
       const testDependents = this.testDependents(graph, importer, importerDependents);
       const loaders = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));

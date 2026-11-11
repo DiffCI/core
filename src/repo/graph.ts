@@ -1,13 +1,14 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createTestFileMatcher, DEFAULT_TEST_FILE_MATCHER, testFileMatcherForProfile, type TestFileMatcher } from "./test-discovery.js";
 import { isBuiltin } from "node:module";
-import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
 import { applyVueScope, inVuePackage } from "./vue-scope.js";
 import { declaredWorkspaceRoots } from "./workspaces.js";
+import { infrastructureRole } from "./file-references.js";
 import { WorkspaceSources } from "./workspace-sources.js";
 import type {
   DependencyEdge,
@@ -439,6 +440,37 @@ function exportedLocals(sourceFile: ts.SourceFile): { locals: string[]; opaque: 
   };
   visit(sourceFile);
   return { locals: [...locals].sort(), opaque };
+}
+
+/** A string that reads as a relative path to a code file: `./x`, `../x`, or a relative path ending in a code
+ * extension (`config.ts`, `jobs/handler.js`). */
+const PATH_LITERAL = /^(?:\.{1,2}\/[^\s:*?"<>|]+|(?:[\w@.-]+\/)*[\w@.-]+\.[cm]?[jt]sx?)$/;
+
+/**
+ * Strings that name a code file by path, outside import and require specifiers, which already are edges
+ * (2026-11-10). payloadcms/payload's integration tests pass `{ config: './config.ts' }` to a helper that
+ * `import()`s it; the string is the only trace of that dependency. Type positions are skipped.
+ */
+function extractPathLiterals(sourceFile: ts.SourceFile): string[] {
+  const found = new Set<string>();
+  const specifiers = new Set<ts.Node>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeNode(node)) return;
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) specifiers.add(node.moduleSpecifier);
+    if (ts.isExternalModuleReference(node)) specifiers.add(node.expression);
+    if (ts.isCallExpression(node) && node.arguments[0]) {
+      const e = node.expression;
+      const loads = e.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(e) && e.text === "require")
+        || (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && MOCK_MODULE_CALLS.has(`${e.expression.text}.${e.name.text}`));
+      if (loads) specifiers.add(node.arguments[0]);
+    }
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && !specifiers.has(node) && node.text.length < 300 && PATH_LITERAL.test(node.text)) {
+      found.add(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...found];
 }
 
 class DependencyGraphImpl implements DependencyGraph {
@@ -1267,6 +1299,19 @@ export async function buildDependencyGraph(
     return compilerOptions;
   }
 
+  /** The existing code file a path string names, relative to the file holding it. */
+  function pathLiteralTarget(importerRel: string, literal: string): string | undefined {
+    const base = posix.normalize(posix.join(posix.dirname(importerRel), literal));
+    if (base.startsWith("../") || base === "..") return undefined;
+    const stem = base.replace(/\.[cm]?jsx?$/, "");
+    const candidates = [base, ...[".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => stem + ext), ...["index.ts", "index.tsx", "index.js"].map((name) => `${base}/${name}`)];
+    for (const candidate of candidates) {
+      if (!isSourceFileName(candidate) || candidate.endsWith(".d.ts") || isExcludedPath(candidate, options.excludeDirs ?? [])) continue;
+      if (internalSourcePaths.has(candidate) || existsSync(join(repoPath, candidate))) return candidate;
+    }
+    return undefined;
+  }
+
   /** Parses an implementation file an import reaches outside the initial walk, rather than silently dropping
    * the edge or loading every TypeScript declaration library again; false, with a blocker, past the budget. */
   function followImplementation(absolute: string, rel: string): boolean {
@@ -1298,6 +1343,15 @@ export async function buildDependencyGraph(
     const own = bindingsOf(importerRel);
     own.locals = locals;
     if (opaque) own.opaque = true;
+    for (const literal of extractPathLiterals(sf)) {
+      const target = pathLiteralTarget(importerRel, literal);
+      if (!target || target === importerRel) continue;
+      // Infrastructure code outside the graph (ops/, a Worker entry) is resolved through the tests that read
+      // it, and stays global when a deployment definition runs it (ImpactAnalyzer, INFRASTRUCTURE_GLOBAL); a
+      // string naming it must not pull it into the graph and around that rule.
+      if (!internalSourcePaths.has(target) && infrastructureRole(target) === "code") continue;
+      if (followImplementation(join(repoPath, target), target)) addEdge(importerRel, target, "path-literal");
+    }
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
       // Expression text is not a module name. In particular, import(name) must
