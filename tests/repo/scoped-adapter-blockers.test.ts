@@ -278,6 +278,24 @@ describe("framework blockers confined to nested package directories", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("does not let a fixture only path strings name block every change to the package it imports", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // payloadcms/payload's codemod tests read `./basic.input.ts` as text; it imports a removed subpath on purpose.
+      write(root, "packages/node/test/codemod.test.ts", "import { it } from 'vitest'; import { readFileSync } from 'node:fs';\nit('migrates', () => readFileSync(new URL('./fixtures/basic.input.ts', import.meta.url), 'utf8'));\n");
+      write(root, "packages/node/test/fixtures/basic.input.ts", "import { old } from '@sdk/utils/removed';\nexport const x = old;\n");
+      // As in Payload, no tsconfig compiles the fixtures: only the path string reaches them.
+      write(root, "tsconfig.json", JSON.stringify({ compilerOptions: { module: "esnext", moduleResolution: "bundler", target: "es2022", strict: true }, include: ["packages", "dev-packages"], exclude: ["**/fixtures/**"] }));
+      const { graph, impact } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(graph.unresolved.some((u) => u.importer === "packages/node/test/fixtures/basic.input.ts"), JSON.stringify(graph.unresolved));
+      // A change to the fixture itself reaches its unmapped import and still falls back.
+      const own = await planFor(root, "packages/node/test/fixtures/basic.input.ts");
+      assert.ok(own.impact.fallbackRequired, JSON.stringify(own.impact.fallbackReasons));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("still falls back for a runtime import of a workspace subpath it cannot map", async () => {
     const root = sdkRepo({ consumer: true });
     try {

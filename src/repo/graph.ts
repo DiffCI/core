@@ -1559,7 +1559,20 @@ export async function buildDependencyGraph(
     const target = workspaceSources.packageFor(stripImportQuery(ref.specifier));
     return target !== undefined && !workspaceSources.names(target.pkg, target.subpath);
   };
-  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references.filter((ref) => inWorkspace(ref.importer) && !namesNothing(ref)), workspaceRoots));
+  // A file only path strings point at (payloadcms/payload's codemod fixtures `basic.input.ts`, read as text
+  // and full of deliberately stale imports) may never run. Its unmapped workspace imports are unresolved
+  // imports of that file, which matter to a change that reaches it (refineConfidenceForDelta), rather than a
+  // blocker on every change that reaches the imported package.
+  const testFiles = new Set(profile.testFilePaths);
+  const incomingKinds = new Map<string, Set<DependencyEdgeKind>>();
+  for (const edge of edges) (incomingKinds.get(edge.to) ?? incomingKinds.set(edge.to, new Set()).get(edge.to)!).add(edge.kind);
+  const pathLiteralOnly = new Set([...incomingKinds].filter(([file, kinds]) => !testFiles.has(file) && kinds.has("path-literal") && [...kinds].every((kind) => kind === "path-literal")).map(([file]) => file));
+  const workspaceRefs = references.filter((ref) => inWorkspace(ref.importer) && !namesNothing(ref));
+  for (const ref of workspaceRefs) {
+    if (!pathLiteralOnly.has(ref.importer) || ref.resolution !== "external-package" || !workspaceSources.packageFor(stripImportQuery(ref.specifier))) continue;
+    unresolved.push({ importer: ref.importer, specifier: ref.specifier, reason: "workspace import not mapped to source, in a file only path strings name", dynamic: ref.dynamic, typeOnly: ref.kind === "type-import" });
+  }
+  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, workspaceRefs.filter((ref) => !pathLiteralOnly.has(ref.importer)), workspaceRoots));
   profile.adapterBlockers = [...adapterBlockers];
   markPhase("importExtractionAndResolution");
 
