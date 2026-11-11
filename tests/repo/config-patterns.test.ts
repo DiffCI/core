@@ -3,7 +3,8 @@
  * Every `CONFIG_PATTERNS` entry matches a real configuration file name (issue #100).
  *
  * `/^eslint\.rc/` matched no file ESLint reads (the legacy files are `.eslintrc*`, which `/^\.eslint/`
- * covers), and nothing noticed. This table pairs each entry with one real file name, in order, so a
+ * covers), and nothing noticed. `/^(npm|pnpm|yarn)-lock\./` was the same: npm and Yarn write no
+ * `npm-lock.*` or `yarn-lock.*` file, and `pnpm-lock.yaml` has its own entry. This table pairs each entry with one real file name, in order, so a
  * pattern that no longer matches its example, or a new entry without one, fails here.
  */
 import assert from "node:assert/strict";
@@ -36,7 +37,6 @@ const EXAMPLES = [
   "yarn.lock",
   "pnpm-lock.yaml",
   "bun.lockb",
-  "npm-lock.json",
   "pyproject.toml",
   "setup.cfg",
   "pytest.ini",
@@ -58,6 +58,8 @@ CONFIG_PATTERNS.forEach((pattern, i) => {
   });
 });
 
-test("no entry matches the file name ESLint never reads", () => {
-  assert.ok(!CONFIG_PATTERNS.some((pattern) => pattern.test("eslint.rc")));
-});
+for (const name of ["eslint.rc", "npm-lock.json", "yarn-lock.yaml"]) {
+  test(`no entry matches ${name}, which no tool reads`, () => {
+    assert.ok(!CONFIG_PATTERNS.some((pattern) => pattern.test(name)));
+  });
+}

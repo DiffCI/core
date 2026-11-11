@@ -225,7 +225,6 @@ export const CONFIG_PATTERNS = [
   /^yarn\.lock$/,
   /^pnpm-lock\.yaml$/,
   /^bun\.lockb$/,
-  /^(npm|pnpm|yarn)-lock\./,
   // Python projects (2026-11-06): what pytest, the interpreter and the installed packages are.
   /^pyproject\.toml$/,
   /^setup\.(?:py|cfg)$/,
