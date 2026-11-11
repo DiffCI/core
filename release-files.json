@@ -234,6 +234,7 @@
     "tests/repo/test-fixture-ownership.test.ts",
     "tests/repo/test-framework.test.ts",
     "tests/repo/tsconfig-newer-options.test.ts",
+    "tests/repo/vite-config-change.test.ts",
     "tests/repo/vitest-config-fallback.test.ts",
     "tests/repo/vue-scope.test.ts",
     "tests/repo/workspaces.test.ts",
