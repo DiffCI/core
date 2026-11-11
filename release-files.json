@@ -196,6 +196,7 @@
     "tests/ci-inference/infer.test.ts",
     "tests/ci-inference/purpose.test.ts",
     "tests/ci-inference/receipt-integrity.test.ts",
+    "tests/ci-inference/lockfile-facts.test.ts",
     "tests/git/ci-config-paths.test.ts",
     "tests/git/git-diff.analysis.test.ts",
     "tests/git/git-diff.parsers.test.ts",
