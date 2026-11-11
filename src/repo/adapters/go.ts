@@ -77,7 +77,11 @@ export function analyzeGoMetadata(context: AdapterContext, output: string): Adap
     // Associate inactive files with their package conservatively. They are not runnable
     // tests, but edits (including build constraints) must still select that package and
     // its dependents. Unaccounted files remain a global blocker below.
-    const files = [...(pkg.GoFiles ?? []), ...(pkg.CgoFiles ?? []), ...(pkg.TestGoFiles ?? []), ...(pkg.XTestGoFiles ?? []), ...(pkg.IgnoredGoFiles ?? [])];
+    // A package of a locally replaced module is a dependency of the root build only: its tests belong to
+    // that module and cannot run from the root, so they are neither selectable tests nor modelled sources.
+    const replaced = Boolean(pkg.Module?.Replace?.Dir);
+    const testFiles = replaced ? [] : [...(pkg.TestGoFiles ?? []), ...(pkg.XTestGoFiles ?? [])];
+    const files = [...(pkg.GoFiles ?? []), ...(pkg.CgoFiles ?? []), ...testFiles, ...(pkg.IgnoredGoFiles ?? [])];
     const paths = files.map((file) => internalPath(context.repoPath, resolve(pkg.Dir, file)));
     if (paths.some((p) => p === undefined)) { result.blockers.push("Go package contains files outside the repository"); continue; }
     const sources = paths as string[];
@@ -92,12 +96,12 @@ export function analyzeGoMetadata(context: AdapterContext, output: string): Adap
       if (/^\s*\/\/go:(?:generate|linkname)\b/m.test(readFileSync(resolve(context.repoPath, file), "utf8"))) result.blockers.push(`Go ${file}: generated or linked dependencies require full validation`);
     }
     const dir = internalPath(context.repoPath, pkg.Dir)!;
-    for (const test of [...(pkg.TestGoFiles ?? []), ...(pkg.XTestGoFiles ?? [])]) {
+    for (const test of testFiles) {
       const path = internalPath(context.repoPath, resolve(pkg.Dir, test))!;
       result.testFiles.push(path);
       result.testPackages[path] = dir ? `./${dir}` : ".";
     }
-    for (const file of [...(pkg.EmbedFiles ?? []), ...(pkg.TestEmbedFiles ?? []), ...(pkg.XTestEmbedFiles ?? [])]) {
+    for (const file of [...(pkg.EmbedFiles ?? []), ...(replaced ? [] : [...(pkg.TestEmbedFiles ?? []), ...(pkg.XTestEmbedFiles ?? [])])]) {
       const asset = internalPath(context.repoPath, resolve(pkg.Dir, file));
       if (asset === undefined) { result.blockers.push("Go embedded file escapes repository"); continue; }
       result.assetPaths.push(asset);
@@ -111,7 +115,8 @@ export function analyzeGoMetadata(context: AdapterContext, output: string): Adap
     for (const file of members.get(pkg.ImportPath) ?? []) {
       if (file !== anchor) result.edges.push({ from: anchor, to: file, kind: "import" }, { from: file, to: anchor, kind: "import" });
     }
-    for (const imported of [...(pkg.Imports ?? []), ...(pkg.TestImports ?? []), ...(pkg.XTestImports ?? [])]) {
+    const replaced = Boolean(pkg.Module?.Replace?.Dir);
+    for (const imported of [...(pkg.Imports ?? []), ...(replaced ? [] : [...(pkg.TestImports ?? []), ...(pkg.XTestImports ?? [])])]) {
       const target = anchors.get(imported);
       if (target && target !== anchor) result.edges.push({ from: anchor, to: target, kind: "import" });
     }
@@ -156,9 +161,20 @@ export const goAdapter: RepositoryAdapter = {
       const scopedContext = scoped ? { ...context, files: context.files.filter(file => !excluded(file)) } : context;
       const result = analyzeGoMetadata(scopedContext, output);
       if (scoped) {
-        context.profile.goExcludedModuleRoots = nestedRoots;
-        // A local replacement can make an excluded module part of the root module's build.
-        if (parseGoList(output).some(pkg => pkg.Module?.Replace?.Dir)) result.blockers.push("Go root-module scope with local replacements requires full validation");
+        // A local replacement makes a nested module part of the root module's build. When it points at a
+        // nested module root inside the repository, go list already reports the packages the root build
+        // uses (with their Dir inside the checkout), so that module is modelled rather than excluded:
+        // changes to those packages select their importers, and its other files (its own tests, packages
+        // the root does not use, its go.mod) stay outside source metadata and fall back (#81).
+        const replaceDirs = new Set(parseGoList(output).flatMap(pkg => {
+          const dir = pkg.Module?.Replace?.Dir;
+          if (!dir) return [];
+          const internal = internalPath(context.repoPath, dir);
+          return [internal === undefined ? dir : `${internal}/`];
+        }));
+        const replacedRoots = nestedRoots.filter(root => replaceDirs.has(root));
+        context.profile.goExcludedModuleRoots = nestedRoots.filter(root => !replacedRoots.includes(root));
+        if (replaceDirs.size > replacedRoots.length) result.blockers.push("Go root-module scope with local replacements requires full validation");
       }
       result.executionEnv = { GOOS: buildEnv.GOOS, GOARCH: buildEnv.GOARCH, CGO_ENABLED: buildEnv.CGO_ENABLED, GOFLAGS: "" };
       return result;
