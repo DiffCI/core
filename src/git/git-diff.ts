@@ -527,6 +527,20 @@ function readRootPathsAtSha(sha: string, repoPath: string | undefined): Readonly
   return roots.size === paths.length ? roots : undefined;
 }
 
+/**
+ * Test-runner and transform configurations that apply to the tests of the directory that holds them, so
+ * a workspace package's copy configures that package's tests like a root one configures the root's
+ * (issue #117). `CONFIG_PATTERNS` is anchored at the repository root; without this a lone
+ * `packages/web/jest.config.js` or `packages/web/babel.config.js` change gave a SELECTIVE plan with no tests.
+ */
+const NESTED_TEST_CONFIG = /^(?:jest\.config\.|vitest\.config\.|babel\.config\.|\.babelrc)/;
+
+/** Exported for tests only: a test-runner or transform configuration below the repository root. */
+export function isNestedTestConfig(path: string): boolean {
+  const segments = path.split("/");
+  return segments.length > 1 && !segments.includes("node_modules") && NESTED_TEST_CONFIG.test(segments[segments.length - 1]!);
+}
+
 /** `isCiConfig` defaults to names alone; analyzeGitDelta also passes what GitLab `include` reaches. */
 export function computeAnalysis(files: ChangedFile[], isCiConfig: (path: string) => boolean = isConventionalCiConfigPath): GitDeltaAnalysis {
   const paths = files.flatMap((f) =>
@@ -535,7 +549,7 @@ export function computeAnalysis(files: ChangedFile[], isCiConfig: (path: string)
 
   const matching = (test: (p: string) => boolean) => [...new Set(paths.filter(test))].sort();
   const signalPaths: NonNullable<GitDeltaAnalysis["signalPaths"]> = {
-    config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p))),
+    config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p)) || isNestedTestConfig(p)),
     dependencyManifest: matching((p) => p === "package.json"),
     lockfile: matching((p) => LOCKFILE.test(p)),
     workflow: matching(isCiConfig),
