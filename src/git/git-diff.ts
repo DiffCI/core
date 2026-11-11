@@ -15,7 +15,7 @@ import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
 import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
-import { LOCKFILE } from "../repo/lockfiles.js";
+import { LOCKFILE, LOCKFILE_NAMES } from "../repo/lockfiles.js";
 import { ciConfigPredicate, gitlabLocalIncludes, isConventionalCiConfigPath } from "./ci-config-paths.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -345,7 +345,6 @@ export function testListEdit(oldBody: string, newBody: string): { added: string[
 }
 
 const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
-const PACKAGE_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
 
 /** Exact root requests for the supported Classic layout. Unlike scriptRecord, never discard an
  * invalid dependency value: an omitted root would make the lockfile attribution incomplete. */
@@ -843,7 +842,7 @@ export async function analyzeGitDelta(
       const lockfileGoverns = (path: string) => {
         for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
           const prefix = dir === "." ? "" : `${dir}/`;
-          if (PACKAGE_LOCKFILES.some((name) => [baseSha, headSha].some((sha) => readFileAtSha(sha, prefix + name, repoPath) !== undefined))) return true;
+          if (LOCKFILE_NAMES.some((name) => [baseSha, headSha].some((sha) => readFileAtSha(sha, prefix + name, repoPath) !== undefined))) return true;
           if (dir === ".") return false;
         }
       };
