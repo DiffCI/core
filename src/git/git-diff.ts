@@ -195,12 +195,12 @@ export function normalizeDirectories(paths: Iterable<string>): string[] {
   return dirs;
 }
 
-const CONFIG_PATTERNS = [
+/** Exported for tests only: each entry must match a real configuration file name. */
+export const CONFIG_PATTERNS = [
   /^next\.config\./,
   /^tsconfig\.json$/,
   /^jsconfig\.json$/,
   /^eslint\.config\./,
-  /^eslint\.rc/,
   /^\.eslint/,
   /^postcss\.config\./,
   /^tailwind\.config\./,
