@@ -8,6 +8,7 @@ import { buildDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer, directlyChangedExecutableTests } from "../../src/repo/impact.js";
 import type { DependencyGraph, DependencyGraphNode, DependencyGraphResult, RepositoryProfile } from "../../src/repo/types.js";
 import type { ChangedFile, GitDelta, GitDeltaSummary } from "../../src/git/types.js";
+import { LOCKFILE_NAMES } from "../../src/repo/lockfiles.js";
 
 function makeNodes(paths: string[]): DependencyGraphNode[] {
   return paths.map((p) => ({
@@ -638,4 +639,18 @@ describe("declared inputs (2026-11-05)", () => {
     assert.strictEqual(result.fallbackRequired, false, result.fallbackReasons.join("; "));
     assert.deepStrictEqual(selected(result), ["src/db/query.test.ts", "src/ui/button.test.ts"]);
   });
+});
+
+describe("lockfiles in impact analysis (issue #97)", () => {
+  for (const name of LOCKFILE_NAMES) {
+    for (const path of [name, `packages/web/${name}`]) {
+      it(`reports ${path} through the lockfile rule only`, () => {
+        const delta = makeDelta("base", "head", [{ path, changeType: "modified" }], { lockfileChanged: true, signalPaths: { lockfile: [path] } }, { modified: 1 });
+        const result = analyzer.analyze(delta, makeDependencyGraphResult(makeGraph([], [])), makeProfile());
+        assert.strictEqual(result.fallbackRequired, true);
+        assert.ok(result.riskSignals.some((s) => s.reason === "LOCKFILE_GLOBAL"), path);
+        assert.deepStrictEqual(result.riskSignals.filter((s) => s.reason === "UNKNOWN_FILE"), [], path);
+      });
+    }
+  }
 });

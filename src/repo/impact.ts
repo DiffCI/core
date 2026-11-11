@@ -14,13 +14,14 @@ import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
 import { isPlaywrightSpec, nextAppRoute, routeMatches, visitedRoutes } from "./route-visits.js";
 import { exportLevelReach } from "./export-reach.js";
+import { LOCKFILE } from "./lockfiles.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
 const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error","template","not-found","middleware","generatemetadata","generatestaticparams"]);
 
 // Lockfiles are reported by the lockfile rule; resolving their readers would only repeat it.
-function isLockfile(filePath: string): boolean { return /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(filePath); }
+function isLockfile(filePath: string): boolean { return LOCKFILE.test(posix.basename(filePath)); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isGoReaderFile(filePath: string): boolean { return filePath.endsWith(".go"); }
