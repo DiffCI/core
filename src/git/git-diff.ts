@@ -208,6 +208,9 @@ export const CONFIG_PATTERNS = [
   /^prettier\.config\./,
   /^vitest\.config\./,
   /^jest\.config\./,
+  // babel-jest transforms every test file with it; without this a .js/.ts babel.config was classified as
+  // source with no importers and selected no tests (2026-11-11, #99).
+  /^babel\.config\./,
   /^playwright\.config\./,
   /^webpack\.config\./,
   /^rollup\.config\./,

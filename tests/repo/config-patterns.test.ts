@@ -24,6 +24,7 @@ const EXAMPLES = [
   "prettier.config.js",
   "vitest.config.ts",
   "jest.config.js",
+  "babel.config.js",
   "playwright.config.ts",
   "webpack.config.js",
   "rollup.config.mjs",
