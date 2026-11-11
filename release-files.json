@@ -216,6 +216,7 @@
     "tests/repo/compiled-projects.test.ts",
     "tests/repo/config-patterns.test.ts",
     "tests/repo/file-references.test.ts",
+    "tests/repo/file-references-lockfiles.test.ts",
     "tests/repo/go-runtime-inputs.test.ts",
     "tests/repo/go-scope-local-replace.test.ts",
     "tests/repo/export-reach.test.ts",
