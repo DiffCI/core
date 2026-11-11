@@ -1,6 +1,6 @@
 ---
 name: diffci-verify
-description: Select and verify affected tests after editing code in a local Git repository, using DiffCI MCP tools or the DiffCI CLI before reporting the change ready.
+description: Verify an agent's change before reporting it ready: run the tests and checks it affects with DiffCI MCP tools or the DiffCI CLI, falling back to the full suite when unsure.
 ---
 
 Pass the absolute path of the edited repository as `repo` on every tool call.

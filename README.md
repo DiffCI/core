@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/DiffCI/core/badge)](https://scorecard.dev/viewer/?uri=github.com/DiffCI/core)
 
-**Affected checks before push, for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, so they run before the push instead of failing at the full CI gate afterwards. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
+**Verification for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, runs them before the push instead of letting them fail at the full CI gate afterwards, and leaves a receipt of what ran and what was skipped. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
 
 ```sh
 npx "@diffci.com/diffci@latest" check

@@ -3,7 +3,7 @@
   "name": "diffci",
   "displayName": "DiffCI",
   "version": "0.3.38",
-  "description": "Verify local code changes with conservative affected-test selection and full fallback.",
+  "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure.",
   "compat": {
     "source": "native",
     "manifestDir": ".muse-plugin"

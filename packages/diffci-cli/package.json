@@ -1,7 +1,7 @@
 {
   "name": "@diffci.com/diffci",
   "version": "0.3.38",
-  "description": "Fail-closed, change-aware verification for AI coding agents with conservative affected-test selection",
+  "description": "Verification for AI coding agents: runs the tests and checks a change affects, with full fallback and a receipt",
   "keywords": [
     "ci",
     "cicd",

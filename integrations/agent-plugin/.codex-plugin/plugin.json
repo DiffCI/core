@@ -1,7 +1,7 @@
 {
   "name": "diffci",
   "version": "0.3.38",
-  "description": "Verify coding changes with affected tests and conservative full fallback.",
+  "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure.",
   "author": {
     "name": "DiffCI",
     "email": "support@diffci.com",
@@ -21,8 +21,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "DiffCI",
-    "shortDescription": "Verify local code changes",
-    "longDescription": "Inspect local changes, select affected tests conservatively, and run repository verification with a full fallback when the selection is uncertain.",
+    "shortDescription": "Verify an agent's change before push",
+    "longDescription": "Verification for AI coding agents: find the tests and checks a local change affects, run them before the push with a full fallback when the selection is uncertain, and return a receipt.",
     "developerName": "DiffCI",
     "category": "Developer Tools",
     "capabilities": [

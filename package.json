@@ -1,7 +1,7 @@
 {
   "name": "@diffci.com/core",
   "version": "0.1.1",
-  "description": "Local dependency analysis, conservative CI planning and compute measurement",
+  "description": "Engine behind DiffCI, verification for AI coding agents: dependency analysis, affected tests and checks, conservative fallback",
   "license": "MIT",
   "private": true,
   "type": "module",

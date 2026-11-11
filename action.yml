@@ -1,5 +1,5 @@
 name: DiffCI change impact
-description: Shows which tests a change affects, and why, on every pull request, and can run them first as a fast check. Skips nothing.
+description: Verification for AI coding agents on every pull request. Shows which tests a change affects and why. Skips nothing.
 branding:
   icon: eye
   color: gray-dark
