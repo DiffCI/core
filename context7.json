@@ -3,10 +3,11 @@
   "url": "https://context7.com/diffci/core",
   "public_key": "pk_qV072rkTpd9ypttxpdmP2",
   "projectTitle": "DiffCI Core",
-  "description": "Open-source engine for dependency analysis and conservative CI planning. The published DiffCI CLI bundles this engine.",
+  "description": "Open-source engine that tells AI coding agents what their change breaks before they push: dependency analysis, affected tests and checks, and conservative full-suite fallback. The published DiffCI CLI bundles this engine.",
   "folders": ["docs"],
   "rules": [
-    "For an existing repository, start with npx @diffci.com/diffci@latest check or use observe --no-send for analysis without test execution.",
+    "Before reporting a change as done, committing or pushing, run npx \"@diffci.com/diffci@latest\" verify --changed --json and continue only when safe_to_continue is true.",
+    "Set up a repository once with npx \"@diffci.com/diffci@latest\" init (pre-push hook, MCP server, agent skill and stop hooks). Use observe --no-send for analysis without running tests.",
     "Keep required CI tests authoritative; a selected command or SKIP_CANDIDATE is advisory.",
     "Treat REFUSED, ERROR, incomplete evidence, and unsupported configuration as reasons to run the repository's normal full tests."
   ]
