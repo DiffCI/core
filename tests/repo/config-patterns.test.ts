@@ -24,6 +24,7 @@ const EXAMPLES = [
   "prettier.config.js",
   "vitest.config.ts",
   "jest.config.js",
+  "babel.config.js",
   "playwright.config.ts",
   "webpack.config.js",
   "rollup.config.mjs",
@@ -63,3 +64,10 @@ for (const name of ["eslint.rc", "npm-lock.json", "yarn-lock.yaml"]) {
     assert.ok(!CONFIG_PATTERNS.some((pattern) => pattern.test(name)));
   });
 }
+
+test("the Babel entry also matches every .babelrc form (#99)", () => {
+  const babel = CONFIG_PATTERNS[EXAMPLES.indexOf("babel.config.js")];
+  for (const name of ["babel.config.cjs", "babel.config.mjs", "babel.config.ts", ".babelrc", ".babelrc.json", ".babelrc.js", ".babelrc.cjs", ".babelrc.mjs"]) {
+    assert.match(name, babel as RegExp);
+  }
+});

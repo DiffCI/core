@@ -211,6 +211,7 @@
     "tests/planner/test-command.test.ts",
     "tests/planner/type-program.test.ts",
     "tests/release-surfaces.test.ts",
+    "tests/repo/babel-config-change.test.ts",
     "tests/repo/analyzer.test.ts",
     "tests/repo/compiled-projects.test.ts",
     "tests/repo/config-patterns.test.ts",
