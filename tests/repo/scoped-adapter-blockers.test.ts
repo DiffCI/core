@@ -154,6 +154,53 @@ describe("framework blockers confined to nested package directories", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  // Paperclip (2026-11-11): a TypeScript monorepo with one Go tool in tools/agent-shim and no root go.mod.
+  // The Go adapter failed for the whole repository, which also marked it mixed Go/JavaScript, so a
+  // three-file UI change planned FULL.
+  const GO_REASON = "Go modules without a root go.mod are not modelled; a change that reaches one requires full validation";
+  function withGoTool(root: string): void {
+    write(root, "tools/agent-shim/go.mod", "module example.com/agent-shim\n\ngo 1.22\n");
+    write(root, "tools/agent-shim/main.go", "package main\n\nfunc main() {}\n");
+    write(root, "tools/agent-shim/main_test.go", "package main\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n");
+  }
+
+  it("confines Go modules without a root go.mod to their directories", async () => {
+    const root = sdkRepo();
+    try {
+      withGoTool(root);
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      const global = graph.adapterBlockers ?? [];
+      assert.ok(!global.some((reason) => reason.startsWith("Go support requires") || reason.startsWith("Mixed Go/JavaScript") || reason === GO_REASON), JSON.stringify(global));
+      assert.deepEqual(graph.scopedAdapterBlockers?.find((b) => b.reason === GO_REASON)?.directories, ["tools/agent-shim"]);
+      assert.ok(!(graph.profile.adapters ?? []).some((adapter) => adapter.id === "go"), JSON.stringify(graph.profile.adapters));
+      assert.ok(!impact.fallbackReasons.some((reason) => reason.startsWith("Go ")), JSON.stringify(impact.fallbackReasons));
+      assert.equal(plan.mode, "SELECTIVE");
+      assert.ok(plan.selectedTests.includes("packages/utils/test/bedrock.test.ts"));
+      assert.ok(!plan.selectedTests.includes("packages/utils/test/other.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("falls back for a change inside a Go module without a root go.mod", async () => {
+    const root = sdkRepo();
+    try {
+      withGoTool(root);
+      const { impact, plan } = await planFor(root, "tools/agent-shim/main.go");
+      assert.ok(impact.fallbackReasons.includes(GO_REASON), JSON.stringify(impact.fallbackReasons));
+      assert.equal(plan.mode, "FULL");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps the Go blocker global when a Go file sits outside every nested module", async () => {
+    const root = sdkRepo();
+    try {
+      withGoTool(root);
+      write(root, "cmd/stray.go", "package main\n");
+      const { graph, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok((graph.adapterBlockers ?? []).includes("Go support requires one root go.mod; workspaces and nested modules require full validation"), JSON.stringify(graph.adapterBlockers));
+      assert.equal(plan.mode, "FULL");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("falls back when a changed workspace package is imported by name but not installed", async () => {
     const root = sdkRepo({ consumer: true });
     try {

@@ -521,7 +521,8 @@ _The runtime-input check (`Go runtime inputs outside source/embed metadata …`)
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
-| `Go support requires one root go.mod; workspaces and nested modules require full validation` | Add `tools/go.mod` | Yes: `"go": { "scope": "root-module" }` |
+| `Go support requires one root go.mod; workspaces and nested modules require full validation` | Add `tools/go.mod` beside a root `go.mod`, add a `go.work`, or add a `.go` file outside every nested module | Yes: `"go": { "scope": "root-module" }` |
+| `Go modules without a root go.mod are not modelled; a change that reaches one requires full validation` | A repository in another language with Go tools in nested modules and no root `go.mod` or `go.work`, such as `tools/agent-shim/go.mod`. Go isn't modelled there: a change that reaches a module's directory falls back, and other changes are planned as if the repository had no Go | No |
 | `Go root-module scope with local replacements requires full validation` | A local `replace` with `go.scope` set whose directory is not a nested module root in the repository. `replace example.com/x => ./x`, where `x/go.mod` exists, is modelled instead: changes to the `x/` packages the root build uses select their importers, and other `x/` files (its own tests, unused packages) fall back as runtime inputs. In-repository replace targets were contributed by [@sarankumar1325](https://github.com/sarankumar1325) in [#110](https://github.com/DiffCI/core/pull/110) | No |
 | `Changes in a Go module outside the declared root-module scope require full validation` | Edit `tools/main.go` with `go.scope` set | No |
 | `Go metadata unavailable: install Go and repository dependencies before analysis (go list must succeed offline)` | Run without Go installed or without downloaded modules | No |

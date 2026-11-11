@@ -136,6 +136,15 @@ export const goAdapter: RepositoryAdapter = {
     const failure = contribution(this);
     const nestedRoots = context.files.filter(f => f.endsWith("/go.mod")).map(f => f.slice(0, -"go.mod".length));
     const scoped = context.profile.diffciConfig?.go?.scope === "root-module";
+    // No root module and no workspace, and every Go file sits inside a nested module: those modules are
+    // tools beside a repository written in another language (Paperclip's tools/agent-shim, 2026-11-11).
+    // They are not modelled. A change that reaches one falls back; the rest of the repository is planned
+    // as if Go were absent, instead of every change falling back.
+    if (!context.files.includes("go.mod") && !context.files.includes("go.work") && nestedRoots.length
+      && context.files.filter(file => file.endsWith(".go")).every(file => nestedRoots.some(root => file.startsWith(root)))) {
+      const reason = "Go modules without a root go.mod are not modelled; a change that reaches one requires full validation";
+      return { ...failure, confinedOnly: true, directoryBlockers: nestedRoots.map(root => ({ directory: root.slice(0, -1), reason })) };
+    }
     if (!context.files.includes("go.mod") || context.files.includes("go.work") || (nestedRoots.length && !scoped)) {
       failure.blockers.push("Go support requires one root go.mod; workspaces and nested modules require full validation");
       return failure;

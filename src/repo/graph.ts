@@ -1001,10 +1001,13 @@ export async function buildDependencyGraph(
   markPhase("adapterInventory");
   const context = { repoPath, files, profile, vueAnalysisSession: {} };
   const cachedVue = options.vueAnalysisCache ? (await import("../cache/vue-analysis-cache.js")).analyzeVueCached : undefined;
-  const contributions = REPOSITORY_ADAPTERS.filter((adapter) => adapter.detect(context)).map((adapter) => adapter.id === "vue" && cachedVue && options.vueAnalysisCache
+  const adapterResults = REPOSITORY_ADAPTERS.filter((adapter) => adapter.detect(context)).map((adapter) => adapter.id === "vue" && cachedVue && options.vueAnalysisCache
     ? cachedVue(context, options.vueAnalysisCache.directory, options.vueAnalysisCache.version) : adapter.analyze(context));
   markPhase("adapters");
-  const adapterBlockers = [...scopeBlockers, ...contributions.flatMap((item) => item.blockers)];
+  // An adapter that only confines blockers to directories models nothing, so it is not an active adapter:
+  // it neither marks the repository as mixed-language nor adds that adapter's per-change checks.
+  const contributions = adapterResults.filter((item) => !item.confinedOnly);
+  const adapterBlockers = [...scopeBlockers, ...adapterResults.flatMap((item) => item.blockers)];
   // The directories each narrowable blocker is confined to ("" when one of its files is not confined).
   // Outside a declared Vue suite, a blocker confined to directories only is scoped to them below.
   const blockerScopes = new Map<string, Set<string>>();
@@ -1029,6 +1032,13 @@ export async function buildDependencyGraph(
     } catch { return undefined; }
   };
   for (const item of contributions) for (const { path, reason } of [...(item.fileBlockers ?? []), ...(item.subjectBlockers ?? [])]) addScope(reason, packageScope(path));
+  for (const item of adapterResults) {
+    for (const { directory, reason } of item.directoryBlockers ?? []) {
+      if (!adapterBlockers.includes(reason)) adapterBlockers.push(reason);
+      // Inside a declared Vue suite nothing is scoped, so the blocker stays global (fails closed).
+      addScope(reason, directory);
+    }
+  }
   if (profile.diffciConfig?.configurationError && !adapterBlockers.includes(profile.diffciConfig.configurationError)) adapterBlockers.push(profile.diffciConfig.configurationError);
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");

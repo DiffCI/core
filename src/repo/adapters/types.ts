@@ -28,6 +28,11 @@ export interface AdapterContribution {
   fileBlockers?: Array<{ path: string; reason: string }>;
   /** Blockers (also listed in `blockers`) whose missing edges start at `path`, for package-directory scoping. */
   subjectBlockers?: Array<{ path: string; reason: string }>;
+  /** Blockers confined to a directory the adapter cannot model (a nested module root): a change that
+   * reaches the directory falls back, and changes elsewhere are planned without the adapter. */
+  directoryBlockers?: Array<{ directory: string; reason: string }>;
+  /** The adapter models nothing and only reports `directoryBlockers`; it is not an active adapter. */
+  confinedOnly?: boolean;
   performance?: { phasesMs: Record<string, number>; counts: Record<string, number> };
 }
 
