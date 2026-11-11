@@ -10,6 +10,7 @@ import { analyzeGitDelta } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import { repositoryFileReader } from "../../src/repo/file-references.js";
+import { LOCKFILE_NAMES } from "../../src/repo/lockfiles.js";
 import type { ImpactResult } from "../../src/repo/impact-types.js";
 
 const manifest = (dependencies: Record<string, string>, scripts: Record<string, string> = { test: "vitest run" }) =>
@@ -64,6 +65,15 @@ describe("dependency requests without a lockfile", () => {
   it("keeps the full suite when a lockfile governs the manifest", async () => {
     const impact = await analyzeChange({ "packages/a/package.json": manifest({ "left-pad": "^1.3.0", "@x/b": "workspace:*" }) }, { ...base, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" });
     assert.equal(impact.fallbackRequired, true);
+  });
+
+  it("treats every shared lockfile name, at the root or beside the manifest, as governing it (issue #97)", async () => {
+    for (const name of LOCKFILE_NAMES) {
+      for (const path of [name, `packages/a/${name}`]) {
+        const impact = await analyzeChange({ "packages/a/package.json": manifest({ "left-pad": "^1.3.0", "@x/b": "workspace:*" }) }, { ...base, [path]: "lockfile\n" });
+        assert.equal(impact.fallbackRequired, true, path);
+      }
+    }
   });
 
   it("keeps the full suite for a local request or a scripts edit", async () => {
