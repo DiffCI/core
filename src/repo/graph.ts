@@ -1458,6 +1458,19 @@ export async function buildDependencyGraph(
               continue;
             }
           }
+          // Build output a fresh checkout does not have, inside a workspace package whose tsconfig maps it back:
+          // payloadcms/payload's packages/payload/bin.js does `import('./dist/cli/index.js')`, compiled from
+          // src/cli/index.ts. The import depends on that source, so follow it rather than leave it unresolved.
+          if (category === "relative") {
+            const built = posix.normalize(posix.join(posix.dirname(importerRel), resolvableSpecifier));
+            const pkg = workspaceSources.packageContaining(built);
+            const source = pkg ? workspaceSources.sourceForFile(pkg, built) : undefined;
+            if (source && source !== built && followImplementation(join(repoPath, source), source)) {
+              addEdge(importerRel, source, ref.kind, ref);
+              recordReference("internal-source", importerRel, ref);
+              continue;
+            }
+          }
           recordUnresolved(importerRel, ref, "unresolved internal module");
           recordReference("unresolved", importerRel, ref);
         } else {

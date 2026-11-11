@@ -57,6 +57,15 @@ export class WorkspaceSources {
     return this.packages.size;
   }
 
+  /** The workspace package whose directory holds a repository-relative path (the deepest one). */
+  packageContaining(path: string): WorkspacePackage | undefined {
+    let found: WorkspacePackage | undefined;
+    for (const pkg of this.packages.values()) {
+      if (path.startsWith(`${pkg.root}/`) && (!found || pkg.root.length > found.root.length)) found = pkg;
+    }
+    return found;
+  }
+
   /** The workspace package a bare specifier names, and the export subpath (`.` or `./x`). */
   packageFor(specifier: string): { pkg: WorkspacePackage; subpath: string } | undefined {
     const parts = specifier.split("/");

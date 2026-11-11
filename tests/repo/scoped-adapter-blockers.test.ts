@@ -278,6 +278,22 @@ describe("framework blockers confined to nested package directories", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("follows a relative import of build output to the source it is compiled from", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      // payloadcms/payload's packages/payload/bin.js: `await import('./dist/cli/index.js')`, outDir dist, rootDir src.
+      buildOutputManifest(root, "flat");
+      write(root, "packages/utils/tsconfig.build.json", JSON.stringify({ compilerOptions: { outDir: "dist", rootDir: "./src" } }));
+      write(root, "packages/utils/bin.js", "const { bedrock } = await import('./dist/bedrock.js');\nexport const run = () => bedrock();\n");
+      write(root, "packages/utils/test/bin.test.ts", "import { it } from 'vitest'; import { run } from '../bin.js'; it('runs', () => { run(); });");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(graph.graph.dependenciesOf("packages/utils/bin.js"), ["packages/utils/src/bedrock.ts"]);
+      assert.ok(!graph.unresolved.some((u) => u.importer === "packages/utils/bin.js"), JSON.stringify(graph.unresolved));
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(plan.selectedTests.includes("packages/utils/test/bin.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("does not let a fixture only path strings name block every change to the package it imports", async () => {
     const root = sdkRepo({ consumer: true });
     try {
