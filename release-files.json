@@ -210,6 +210,7 @@
     "tests/release-surfaces.test.ts",
     "tests/repo/analyzer.test.ts",
     "tests/repo/compiled-projects.test.ts",
+    "tests/repo/config-patterns.test.ts",
     "tests/repo/file-references.test.ts",
     "tests/repo/go-runtime-inputs.test.ts",
     "tests/repo/graph.project-references.test.ts",
