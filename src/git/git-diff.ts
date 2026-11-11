@@ -195,12 +195,12 @@ export function normalizeDirectories(paths: Iterable<string>): string[] {
   return dirs;
 }
 
-const CONFIG_PATTERNS = [
+/** Exported for tests only: each entry must match a real configuration file name. */
+export const CONFIG_PATTERNS = [
   /^next\.config\./,
   /^tsconfig\.json$/,
   /^jsconfig\.json$/,
   /^eslint\.config\./,
-  /^eslint\.rc/,
   /^\.eslint/,
   /^postcss\.config\./,
   /^tailwind\.config\./,
@@ -225,7 +225,6 @@ const CONFIG_PATTERNS = [
   /^yarn\.lock$/,
   /^pnpm-lock\.yaml$/,
   /^bun\.lockb$/,
-  /^(npm|pnpm|yarn)-lock\./,
   // Python projects (2026-11-06): what pytest, the interpreter and the installed packages are.
   /^pyproject\.toml$/,
   /^setup\.(?:py|cfg)$/,
