@@ -988,6 +988,24 @@ describe("runtime test selection", () => {
     }
   });
 
+  it("confines Jest in a sub-package to that package's tests", async () => {
+    // payloadcms/payload: .github/actions/triage has its own jest.config.js, packages/payload-cloud a `jest` script.
+    const root = vitestRepo({
+      ".github/actions/triage/jest.config.js": "module.exports = {};",
+      "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "jest" } }),
+      "packages/legacy/tests/legacy.test.ts": "import type { Shape } from '../../../src/types'; export const shape: Shape = { size: 1 };",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      assert.deepEqual(result.typeTestGlobs, [".github/actions/triage/**", "packages/legacy/**"]);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(!selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats the files tstyche's testFileMatch names as type tests", async () => {
     const root = vitestRepo({
       "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "vitest run", "test:types": "tstyche" }, devDependencies: { vitest: "^3.0.0", tstyche: "^4.0.0" } }),
@@ -1005,8 +1023,8 @@ describe("runtime test selection", () => {
   });
 
   for (const [name, extra] of Object.entries<FixtureFiles>({
-    "a Jest config": { "packages/legacy/jest.config.js": "module.exports = {};" },
-    "ts-jest in a workspace package": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", devDependencies: { "ts-jest": "^29.0.0" } }) },
+    "a root Jest config": { "jest.config.js": "module.exports = {};" },
+    "ts-jest at the root": { "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "vitest run" }, devDependencies: { vitest: "^3.0.0", "ts-jest": "^29.0.0" } }) },
     "Vitest typecheck mode": { "vitest.config.ts": "export default { test: { typecheck: { enabled: true } } };" },
   })) {
     it(`keeps type-only edges selecting tests when the repository has ${name}`, async () => {

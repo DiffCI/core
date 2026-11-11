@@ -1783,9 +1783,9 @@ export function validateDependencyGraph(graph: DependencyGraph): GraphIntegrityR
 /**
  * Whether an `import type` edge can be ignored when selecting tests (2026-11-03). Vitest transpiles
  * without type checking, so a type-only change cannot alter a runtime test's outcome; ts-jest and Vitest's
- * typecheck mode check every test's types. Any sign of them anywhere in the repository, including
- * workspace packages, keeps type-only edges selecting tests. tsd and tstyche check only their own files
- * (typeTestGlobs), and those type tests are selected through every edge either way (impact.ts).
+ * typecheck mode check every test's types. Vitest typecheck mode anywhere, or Jest at the repository root,
+ * keeps type-only edges selecting every test. Jest in a sub-package, tsd and tstyche check only their own
+ * files (typeTestGlobs), and those tests are selected through every edge either way (impact.ts).
  */
 function runtimeTestSelectionEligible(repoPath: string, files: readonly string[], profile: RepositoryProfile): boolean {
   const configs = profile.testRunnerConfigs ?? [];
@@ -1794,7 +1794,9 @@ function runtimeTestSelectionEligible(repoPath: string, files: readonly string[]
   for (const file of files) {
     if (file.split("/").includes("node_modules")) continue;
     const name = file.slice(file.lastIndexOf("/") + 1);
-    if (/^jest\.config\./.test(name)) return false;
+    // Jest inside a sub-package governs that package's tests only (typeCheckedPackageDirs, typeTestGlobs).
+    const atRoot = !file.includes("/");
+    if (/^jest\.config\./.test(name)) { if (atRoot) return false; continue; }
     if (/^vit(?:e|est)[\w.-]*\.(?:config|workspace|projects)\.[cm]?[jt]s$/.test(name)) {
       const text = read(file);
       if (text === undefined || /\btypecheck\b/.test(text)) return false;
@@ -1805,8 +1807,9 @@ function runtimeTestSelectionEligible(repoPath: string, files: readonly string[]
       // tsd and tstyche check types only in their own test files (typeTestGlobs), which keep type edges;
       // Jest (ts-jest) and `--typecheck` type-check every test they run (2026-11-10: tstyche alone turned
       // off runtime selection for all of payloadcms/payload's Vitest tests).
-      if (packages.some((name) => ["jest", "ts-jest"].includes(name))) return false;
-      if (Object.values(manifest.scripts ?? {}).some((script) => typeof script !== "string" || /(?:^|[\s&;|(])jest(?:\s|$)|--typecheck/.test(script))) return false;
+      const scripts = Object.values(manifest.scripts ?? {});
+      if (scripts.some((script) => typeof script !== "string" || /--typecheck/.test(script))) return false;
+      if (atRoot && (packages.some((name) => ["jest", "ts-jest"].includes(name)) || scripts.some((script) => /(?:^|[\s&;|(])jest(?:\s|$)/.test(String(script))))) return false;
     }
   }
   return true;
@@ -1840,7 +1843,32 @@ function typeTestGlobs(repoPath: string, files: readonly string[]): string[] {
       : ["**/*.tst.*", "**/__typetests__/*.test.*", "**/typetests/*.test.*"]));
   }
   if (tsd) globs.push("**/*.test-d.ts", "**/*.test-d.tsx");
+  for (const dir of typeCheckedPackageDirs(repoPath, files)) globs.push(`${dir}/**`);
   return globs;
+}
+
+/**
+ * Sub-package directories whose own tests Jest (or ts-jest) may type-check as they run: a jest.config there, or
+ * a package.json depending on jest/ts-jest or running `jest`. 2026-11-10: payloadcms/payload's
+ * `.github/actions/triage` (a GitHub Action with its own Jest setup) and `packages/payload-cloud` (a `jest`
+ * test script) had turned off runtime selection for the whole Vitest suite. A repository-root signal still
+ * turns it off everywhere (runtimeTestSelectionEligible).
+ */
+function typeCheckedPackageDirs(repoPath: string, files: readonly string[]): string[] {
+  const dirs = new Set<string>();
+  for (const file of files) {
+    if (file.split("/").includes("node_modules") || !file.includes("/")) continue;
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    const dir = file.slice(0, file.lastIndexOf("/"));
+    if (/^jest\.config\./.test(name)) dirs.add(dir);
+    else if (name === "package.json") {
+      let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
+      try { manifest = JSON.parse(readFileSync(join(repoPath, file), "utf8")); } catch { dirs.add(dir); continue; }
+      const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
+      if (packages.some((pkg) => pkg === "jest" || pkg === "ts-jest") || Object.values(manifest.scripts ?? {}).some((script) => /(?:^|[\s&;|(])jest(?:\s|$)/.test(String(script)))) dirs.add(dir);
+    }
+  }
+  return [...dirs].sort();
 }
 
 function computeConfidence(
