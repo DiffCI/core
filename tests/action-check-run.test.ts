@@ -68,6 +68,16 @@ test("the gate passes only when the affected tests passed, and fails only when t
   assert.equal(gateVerdict({ verifyEnabled: true, verifyStatus: "failed", report: report(), receipt }).conclusion, "failure");
 });
 
+test("the summary claims an uploaded record only when there is one", () => {
+  const none = gateVerdict({ verifyEnabled: true, verifyStatus: "skipped", report: report({ mode: "FULL" }) });
+  assert.doesNotMatch(none.summary, /uploaded/);
+  const reportOnly = gateVerdict({ verifyEnabled: true, verifyStatus: "skipped", report: report({ mode: "FULL" }), uploaded: true });
+  assert.match(reportOnly.summary, /The observation report is uploaded as an artifact\./);
+  assert.doesNotMatch(reportOnly.summary, /receipt/);
+  const both = gateVerdict({ verifyEnabled: true, verifyStatus: "passed", report: report(), receipt, uploaded: true });
+  assert.match(both.summary, /observation report and verification receipt are uploaded/);
+});
+
 test("anything DiffCI is unsure about is neutral, never red", () => {
   const skipped = gateVerdict({
     verifyEnabled: true,

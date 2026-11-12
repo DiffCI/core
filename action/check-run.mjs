@@ -86,7 +86,7 @@ function code(text) {
  * testable without GitHub: `verifyEnabled` is the `verify` input, `verifyStatus` the fast check's
  * status output ("" when it did not run), `receipt` the verification receipt and `report` the observation.
  */
-export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agents = [], runUrl }) {
+export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agents = [], runUrl, uploaded = false }) {
   const agent = agentLabel(agents);
   const result = report?.status === "OBSERVED" ? report.result : undefined;
   let conclusion;
@@ -142,9 +142,12 @@ export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agen
     for (const reason of reasons.slice(0, MAX_REASONS)) lines.push(`- ${prose(reason)}`);
     if (reasons.length > MAX_REASONS) lines.push(`- and ${reasons.length - MAX_REASONS} more`);
   }
+  // Say where the record is only when it exists: a skipped fast check writes no receipt, and
+  // upload-artifact: "false" keeps both files on the runner.
+  const kept = uploaded ? (receipt ? "The observation report and verification receipt are uploaded as an artifact. " : "The observation report is uploaded as an artifact. ") : "";
   lines.push(
     "",
-    `${runUrl ? `[Plan, verification output and receipt](${runUrl}) · ` : ""}The receipt is uploaded with the observation report. Via [DiffCI](https://github.com/DiffCI/core), open source (MIT).`,
+    `${runUrl ? `[Plan and verification output](${runUrl}) · ` : ""}${kept}Via [DiffCI](https://github.com/DiffCI/core), open source (MIT).`,
   );
 
   return {
@@ -238,6 +241,7 @@ export async function main(env = process.env) {
     receipt,
     agents,
     runUrl,
+    uploaded: env.DIFFCI_UPLOAD === "true" && Boolean(report),
   });
   try {
     writeOutputs({ "gate-conclusion": verdict.conclusion, agent: verdict.agent }, env.GITHUB_OUTPUT);

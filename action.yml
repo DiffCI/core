@@ -250,6 +250,7 @@ runs:
         DIFFCI_VERIFY_ENABLED: ${{ inputs.verify }}
         DIFFCI_VERIFY_STATUS: ${{ steps.verify.outputs.status }}
         DIFFCI_CHECK_NAME: ${{ inputs.check-run-name }}
+        DIFFCI_UPLOAD: ${{ inputs.upload-artifact }}
         DIFFCI_GITHUB_TOKEN: ${{ inputs.github-token }}
       run: node "$GITHUB_ACTION_PATH/action/check-run.mjs"
 
