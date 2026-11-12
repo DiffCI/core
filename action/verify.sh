@@ -65,6 +65,26 @@ args=(verify --repo "${DIFFCI_REPO:?}" --fail-fast "$checks" --no-send --no-log 
 if [ -n "${DIFFCI_BASE:-}" ]; then args+=(--base "$DIFFCI_BASE"); fi
 if [ -n "${DIFFCI_HEAD:-}" ]; then args+=(--head "$DIFFCI_HEAD"); fi
 
+# On a pull request, a default actions/checkout checks out GitHub's test merge commit, not the pull
+# request head the event names, and verify refuses to test a tree other than the commit it analyzed
+# (seen on DiffCI/core#123). When HEAD is that merge commit - its second parent is the pull request
+# head - verify the merge commit against its first parent, the base branch tip: the change exactly
+# as it would merge. The checkout is not touched. A checkout of the head itself keeps the event range.
+if [ -z "${DIFFCI_BASE:-}" ] && [ -z "${DIFFCI_HEAD:-}" ]; then
+  case "${GITHUB_EVENT_NAME:-}" in
+    pull_request | pull_request_target)
+      pr_head=$(node -e 'try { const e = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(String(e?.pull_request?.head?.sha ?? "")); } catch {}' "${GITHUB_EVENT_PATH:-}" 2>/dev/null || true)
+      second=$(git -C "$DIFFCI_REPO" rev-parse -q --verify "HEAD^2^{commit}" 2>/dev/null || true)
+      if [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]] && [ "$second" = "$pr_head" ]; then
+        first=$(git -C "$DIFFCI_REPO" rev-parse -q --verify "HEAD^1^{commit}")
+        merge=$(git -C "$DIFFCI_REPO" rev-parse -q --verify "HEAD^{commit}")
+        args+=(--base "$first" --head "$merge")
+        echo "DiffCI fast check: verifying GitHub's merge commit ${merge:0:12} against the base branch tip ${first:0:12}, the pull request as it would merge."
+      fi
+      ;;
+  esac
+fi
+
 # Installed in RUNNER_TEMP, as for the observation, so npm never touches the checkout. verify itself
 # runs the repository's own test and check commands in the checkout.
 (

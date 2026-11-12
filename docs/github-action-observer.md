@@ -114,6 +114,12 @@ jobs:
 - **Only real failures fail it.** Failing tests or checks fail the step. A
   DiffCI problem (it could not verify, timed out after
   `verify-timeout-minutes`, or did not start) only warns.
+- **It tests the change as it would merge.** On a pull request, a default
+  `actions/checkout` checks out GitHub's merge commit, so the fast check
+  verifies that commit against the base branch tip it was merged into. If you
+  check out the pull request head instead (`ref:
+  ${{ github.event.pull_request.head.sha }}`), it verifies the pull request's
+  own range. Neither changes the checkout.
 - **`verify-checks: "false"`** skips lint and typecheck when other jobs already
   run them first.
 - Nothing is sent anywhere and no outcome log is kept on the runner. The
