@@ -1396,6 +1396,19 @@ export async function buildDependencyGraph(
 
       const specifierCategory = classifySpecifier(ref.specifier);
       const resolvableSpecifier = specifierCategory === "relative" || specifierCategory === "absolute" || specifierCategory === "alias" ? stripImportQuery(ref.specifier) : ref.specifier;
+      // A relative path into an installed package (`../../ui/node_modules/vite/dist/node/index.js`) is a
+      // dependency import spelled as a path. A clean checkout has no such file, and an installed one resolves
+      // it into node_modules, which is outside the source inventory, so it was "unresolved" and every change
+      // reaching the importer fell back (Paperclip, 2026-11-11: 7 of its 14 unresolved imports). Record it
+      // under the package's own specifier so dependency changes still find the importer. A workspace package
+      // linked into node_modules is repository source and keeps the normal handling.
+      if (specifierCategory === "relative") {
+        const installed = installedPackageSpecifier(importerRel, resolvableSpecifier);
+        if (installed && !workspaceSources.packageFor(installed)) {
+          recordReference("external-package", importerRel, { ...ref, specifier: installed });
+          continue;
+        }
+      }
       // TypeScript may resolve a Vue import to a declaration shim. Preserve the actual SFC edge.
       if (resolvableSpecifier.endsWith(".vue")) {
         const compilerAliases = Object.entries(importerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
@@ -2093,6 +2106,22 @@ function refineUnscopedConfidence(result: DependencyGraphResult, changedFiles: s
   // confidence would have been without the unresolved-import trigger (still respecting the
   // project-references cap, exactly as computeConfidence()'s own final two branches do).
   return result.resolvedViaProjectReferences ? "PARTIAL" : "COMPLETE";
+}
+
+/** The package specifier a relative import into a node_modules directory inside the repository names
+ * (`vite/dist/node/index.js`, `@scope/pkg/dist/x.js`), or undefined when the path does not pass through
+ * node_modules, leaves the repository, or names no package. The last node_modules segment wins, as Node's
+ * resolution would land there. */
+export function installedPackageSpecifier(importerRel: string, specifier: string): string | undefined {
+  const target = posix.normalize(posix.join(posix.dirname(importerRel), specifier));
+  if (target === ".." || target.startsWith("../") || posix.isAbsolute(target)) return undefined;
+  const parts = target.split("/");
+  const index = parts.lastIndexOf("node_modules");
+  if (index < 0) return undefined;
+  const rest = parts.slice(index + 1);
+  if (!rest.length || rest[0] === "" || rest[0] === "." || rest[0] === ".bin") return undefined;
+  if (rest[0]!.startsWith("@") && (rest.length < 2 || !rest[1])) return undefined;
+  return rest.join("/");
 }
 
 /** Nearest directory holding a package.json, relative to the repository; "" is the repository root. */

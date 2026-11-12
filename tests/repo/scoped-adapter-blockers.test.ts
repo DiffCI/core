@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
-import { buildDependencyGraph, refineConfidenceForDelta } from "../../src/repo/graph.js";
+import { buildDependencyGraph, installedPackageSpecifier, refineConfidenceForDelta } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import { DefaultCIPlanner } from "../../src/planner/planner.js";
 import { createTaskRegistry } from "../../src/planner/task-registry.js";
@@ -198,6 +198,40 @@ describe("framework blockers confined to nested package directories", () => {
       const { graph, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
       assert.ok((graph.adapterBlockers ?? []).includes("Go support requires one root go.mod; workspaces and nested modules require full validation"), JSON.stringify(graph.adapterBlockers));
       assert.equal(plan.mode, "FULL");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Paperclip (2026-11-11): E2E specs import another package's installed dependency by relative path
+  // (`../../ui/node_modules/vite/dist/node/index.js`). A clean checkout has no such file, so it was an
+  // unresolved import and every server change that reached the spec planned FULL.
+  it("names the package of a relative import into node_modules", () => {
+    assert.equal(installedPackageSpecifier("tests/e2e/a.spec.ts", "../../ui/node_modules/vite/dist/node/index.js"), "vite/dist/node/index.js");
+    assert.equal(installedPackageSpecifier("tests/runner-e2e/x/y.ts", "../../../server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js"), "@modelcontextprotocol/sdk/dist/esm/client/index.js");
+    assert.equal(installedPackageSpecifier("a/b.ts", "../node_modules/x/node_modules/y/index.js"), "y/index.js");
+    assert.equal(installedPackageSpecifier("a/b.ts", "../src/x.js"), undefined);
+    assert.equal(installedPackageSpecifier("a/b.ts", "../../../node_modules/vite/index.js"), undefined, "outside the repository");
+    assert.equal(installedPackageSpecifier("a/b.ts", "../node_modules/@scope"), undefined);
+    assert.equal(installedPackageSpecifier("a/b.ts", "../node_modules/.bin/vite"), undefined);
+  });
+
+  it("records a relative import into an installed dependency as that external package", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      write(root, "packages/node/test/vite.test.ts", "import { it } from 'vitest'; import { createServer } from '../../utils/node_modules/vite/dist/node/index.js'; import { init } from '../src/index'; it('works', () => { init(); createServer; });");
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(!graph.unresolved.some((ref) => ref.specifier.includes("node_modules")), JSON.stringify(graph.unresolved));
+      const reference = graph.references.find((ref) => ref.importer === "packages/node/test/vite.test.ts" && ref.specifier.startsWith("vite/"));
+      assert.equal(reference?.resolution, "external-package");
+      assert.equal(reference?.specifier, "vite/dist/node/index.js");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps a relative import into a linked workspace package unresolved", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      write(root, "packages/node/test/linked.test.ts", "import { it } from 'vitest'; import { bedrock } from '../node_modules/@sdk/utils/src/bedrock'; it('works', () => { bedrock(); });");
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(graph.unresolved.some((ref) => ref.importer === "packages/node/test/linked.test.ts" && ref.specifier.includes("node_modules/@sdk/utils")), JSON.stringify(graph.unresolved));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
