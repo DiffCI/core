@@ -258,7 +258,8 @@ export async function main(env = process.env) {
       head_sha: headSha,
       status: "completed",
       conclusion: verdict.conclusion,
-      ...(runUrl ? { details_url: runUrl } : {}),
+      // No details_url: GitHub replaces it with the check run's own page for a check run created with
+      // the workflow's GITHUB_TOKEN (seen on DiffCI/core#122), so the run link lives in the summary.
       output: { title: verdict.title, summary: verdict.summary },
     });
     console.log(`DiffCI merge gate: ${verdict.conclusion} (agent: ${verdict.agent})${created?.html_url ? ` ${created.html_url}` : ""}`);

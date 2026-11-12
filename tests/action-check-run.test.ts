@@ -149,7 +149,8 @@ test("main posts one completed check run on the pull request head, and never thr
     assert.equal(body.head_sha, HEAD, "the pull request head, not the merge commit");
     assert.equal(body.status, "completed");
     assert.equal(body.conclusion, "success");
-    assert.equal(body.details_url, "https://github.com/acme/app/actions/runs/99");
+    assert.equal(body.details_url, undefined, "GitHub ignores it for GITHUB_TOKEN check runs");
+    assert.match(body.output.summary, /\(https:\/\/github\.com\/acme\/app\/actions\/runs\/99\)/, "the run link is in the summary");
     assert.equal(body.output.title, "Affected tests passed · agent: claude");
     assert.match(readFileSync(output, "utf8"), /gate-conclusion=success\nagent=claude\n/);
 

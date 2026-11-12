@@ -143,8 +143,9 @@ blocks a merge on its own uncertainty, and it never replaces your full test job:
 keep that required too.
 
 The check's summary lists the agent, how many test files ran out of how many,
-the checks that ran, the DiffCI version and a link to the run, whose artifact
-holds the observation report and the verification receipt. The agent comes
+the checks that ran, the DiffCI version and a link to the run. With
+`upload-artifact` on (the default), the run's artifact holds the observation
+report and, when the fast check ran, the verification receipt. The agent comes
 from the `Co-authored-by` trailers and "Generated with" lines of the pull
 request's commits and from an agent-prefixed head branch (`claude/`, `codex/`,
 `copilot/`, `cursor/`, `devin/`, `jules/`, `openhands/`). Only a fixed label
