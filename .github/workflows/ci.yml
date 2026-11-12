@@ -101,6 +101,52 @@ jobs:
           test "$(git rev-parse --is-shallow-repository)" = "false"
           test -z "$(git status --porcelain)"
 
+  # The merge gate on Core's own pull requests: the fast check runs the affected tests with the published
+  # CLI, and this checkout's Action posts the "DiffCI merge gate" check run on the head commit.
+  merge-gate:
+    name: Merge gate smoke
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      # Only to post the check run. Pull requests from forks get a read-only token and a warning instead.
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Resolve the published CLI release
+        id: published_cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(npm view @diffci.com/diffci@latest version)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: gate
+        uses: ./
+        with:
+          cli-version: ${{ steps.published_cli.outputs.version }}
+          node-version: "24"
+          upload-artifact: "false"
+          verify: "true"
+          check-run: "true"
+      - name: Assert the gate answered
+        if: ${{ always() }}
+        shell: bash
+        env:
+          DIFFCI_CONCLUSION: ${{ steps.gate.outputs.gate-conclusion }}
+          DIFFCI_AGENT: ${{ steps.gate.outputs.agent }}
+          DIFFCI_VERIFY: ${{ steps.gate.outputs.verify-status }}
+        run: |
+          set -euo pipefail
+          echo "verify=$DIFFCI_VERIFY gate=$DIFFCI_CONCLUSION agent=$DIFFCI_AGENT"
+          case "$DIFFCI_CONCLUSION" in success|failure|neutral) ;; *) echo "the gate gave no conclusion" >&2; exit 1 ;; esac
+          test -n "$DIFFCI_AGENT"
+
   cli-package:
     name: CLI package (${{ matrix.os }})
     strategy:
