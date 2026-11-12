@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "diffci",
   "displayName": "DiffCI",
-  "version": "0.3.39",
+  "version": "0.3.40",
   "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure.",
   "compat": {
     "source": "native",
