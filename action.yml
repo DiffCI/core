@@ -71,7 +71,7 @@ inputs:
     required: false
     default: "false"
   github-token:
-    description: Token used only to post the pull request comment when comment is true.
+    description: Token used only to post the pull request comment (comment) and the merge gate check run (check-run).
     required: false
     default: ${{ github.token }}
   verify:
@@ -93,6 +93,19 @@ inputs:
     description: With verify, stop the run after this many minutes and report it blocked, not failed.
     required: false
     default: "20"
+  check-run:
+    description: >-
+      Also post a "DiffCI merge gate" check run on the pull request's head commit, which branch protection
+      can require. It passes when the fast check's affected tests passed, fails when they failed, and is
+      neutral when DiffCI could not narrow or verify the change, so your full test job decides. It names the
+      AI coding agent that wrote the change, from co-author trailers and the head branch. Use it with
+      verify. Needs "permissions: checks: write". Never fails the step. Off by default.
+    required: false
+    default: "false"
+  check-run-name:
+    description: Name of the merge gate check run, as branch protection will list it.
+    required: false
+    default: DiffCI merge gate
 
 outputs:
   report-path:
@@ -125,6 +138,14 @@ outputs:
       With verify: passed, failed, blocked (DiffCI could not verify; the step only warns), or skipped (the
       change needs the full suite). Empty without verify.
     value: ${{ steps.verify.outputs.status }}
+  gate-conclusion:
+    description: With check-run, the merge gate's conclusion - success, failure or neutral. Empty without check-run.
+    value: ${{ steps.gate.outputs.gate-conclusion }}
+  agent:
+    description: >-
+      With check-run, the AI coding agents found in the change's co-author trailers and head branch (for
+      example "claude" or "claude+codex"), or "none detected". Empty without check-run.
+    value: ${{ steps.gate.outputs.agent }}
 
 runs:
   using: composite
@@ -213,6 +234,24 @@ runs:
         DIFFCI_VERIFY_CHECKS: ${{ inputs.verify-checks }}
         DIFFCI_VERIFY_TIMEOUT: ${{ inputs.verify-timeout-minutes }}
       run: bash "$GITHUB_ACTION_PATH/action/verify.sh"
+
+    # Opt-in merge gate. Runs after the fast check, including when it failed, and reads only what the
+    # earlier steps wrote plus the range's commit messages. The token reaches it through the environment.
+    - name: Post the merge gate check run
+      id: gate
+      if: ${{ always() && inputs.check-run == 'true' }}
+      shell: bash
+      env:
+        DIFFCI_REPO: ${{ inputs.repository-path }}
+        DIFFCI_BASE: ${{ inputs.base-sha }}
+        DIFFCI_HEAD: ${{ inputs.head-sha }}
+        DIFFCI_REPORT: ${{ steps.observe.outputs.report-path }}
+        DIFFCI_RECEIPT: ${{ steps.verify.outputs.receipt-path }}
+        DIFFCI_VERIFY_ENABLED: ${{ inputs.verify }}
+        DIFFCI_VERIFY_STATUS: ${{ steps.verify.outputs.status }}
+        DIFFCI_CHECK_NAME: ${{ inputs.check-run-name }}
+        DIFFCI_GITHUB_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/action/check-run.mjs"
 
     - name: Upload observation report
       if: ${{ always() && inputs.upload-artifact == 'true' && steps.observe.outputs.report-path != '' }}

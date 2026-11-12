@@ -125,6 +125,11 @@ first, and fails within minutes when one breaks. It adds a job and skips
 nothing, so your full test job stays as it is
 ([example](examples/github-actions-fast-check.yml)).
 
+Add `check-run: "true"` for a [merge gate](docs/github-action-observer.md#merge-gate):
+a "DiffCI merge gate" check run that branch protection can require. It passes
+when the affected tests passed, fails when they failed, stays neutral when
+DiffCI is unsure, and names the AI coding agent that wrote the change.
+
 The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
 remains publicly available at tagged Core commit `4c76be14` (`cli-v0.3.10-source`)
 while distribution migrates to the Core-native CLI package.
