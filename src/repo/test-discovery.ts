@@ -64,11 +64,115 @@ export interface TestRunnerConfig {
   authoritative: boolean;
 }
 
+const PATH_MODULES = new Set(["path", "node:path", "path/posix", "node:path/posix"]);
+const URL_MODULES = new Set(["url", "node:url"]);
+
+/** Recognises expressions that evaluate to the directory holding the config file, which discovery already
+ * treats as the root (configs are read from the directory their globs are relative to): `__dirname`,
+ * `import.meta.dirname`, `dirname(fileURLToPath(import.meta.url))`, `fileURLToPath(new URL(".", import.meta.url))`
+ * and `resolve(<one of these>)`, possibly through a top-level `const`. `dirname`, `resolve` and
+ * `fileURLToPath` count only when imported from node:path / node:url (named, default or namespace), so a
+ * local function of the same name stays unsupported. Paperclip's packages/tailscale-https-broker sets
+ * `root` this way (2026-11-11), and every change in the repository planned FULL. */
+function configDirectoryMatcher(ast: ts.SourceFile): (node: ts.Expression) => boolean {
+  const named = new Map<string, string>();   // local name -> "dirname" | "resolve" | "fileURLToPath"
+  const namespaces = new Map<string, "path" | "url">();
+  const constants = new Map<string, ts.Expression>();
+  const shadowed = new Set<string>();
+  for (const statement of ast.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && statement.importClause && !statement.importClause.isTypeOnly) {
+      const module = statement.moduleSpecifier.text;
+      const kind = PATH_MODULES.has(module) ? "path" : URL_MODULES.has(module) ? "url" : undefined;
+      if (!kind) continue;
+      const clause = statement.importClause;
+      if (clause.name) namespaces.set(clause.name.text, kind);
+      const bindings = clause.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) namespaces.set(bindings.name.text, kind);
+      if (bindings && ts.isNamedImports(bindings)) for (const element of bindings.elements) {
+        const imported = (element.propertyName ?? element.name).text;
+        if (kind === "path" && (imported === "dirname" || imported === "resolve") || kind === "url" && imported === "fileURLToPath") named.set(element.name.text, imported);
+      }
+    }
+    if (ts.isVariableStatement(statement) && statement.declarationList.flags & ts.NodeFlags.Const) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.initializer) constants.set(declaration.name.text, declaration.initializer);
+      }
+    }
+    if (ts.isFunctionDeclaration(statement) && statement.name) shadowed.add(statement.name.text);
+  }
+  // A name declared more than once (an inner variable, parameter or function shadowing the top-level
+  // binding or import) could mean something else where it is used, so it is not trusted.
+  const declarations = new Map<string, number>();
+  const count = (name: ts.Node) => { if (ts.isIdentifier(name)) declarations.set(name.text, (declarations.get(name.text) ?? 0) + 1); };
+  const collect = (node: ts.Node): void => {
+    if ((ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)
+      || ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isBindingElement(node)) && node.name) count(node.name);
+    if (ts.isImportClause(node) && node.name) count(node.name);
+    ts.forEachChild(node, collect);
+  };
+  collect(ast);
+  for (const [name, total] of declarations) if (total > 1) shadowed.add(name);
+  for (const name of shadowed) { named.delete(name); namespaces.delete(name); constants.delete(name); }
+  const unwrap = (node: ts.Expression): ts.Expression => {
+    while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)) node = node.expression;
+    return node;
+  };
+  const importMeta = (node: ts.Expression, property: string) => ts.isPropertyAccessExpression(node) && node.name.text === property
+    && ts.isMetaProperty(node.expression) && node.expression.keywordToken === ts.SyntaxKind.ImportKeyword && node.expression.name.text === "meta";
+  const callee = (node: ts.Expression): string | undefined => {
+    node = unwrap(node);
+    if (ts.isIdentifier(node)) return named.get(node.text);
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+      const kind = namespaces.get(node.expression.text);
+      const name = node.name.text;
+      if (kind === "path" && (name === "dirname" || name === "resolve") || kind === "url" && name === "fileURLToPath") return name;
+    }
+    return undefined;
+  };
+  const isFile = (node: ts.Expression, depth = 0): boolean => {
+    node = unwrap(node);
+    if (depth > 4) return false;
+    if (ts.isIdentifier(node)) {
+      if (node.text === "__filename" && !declarations.has("__filename")) return true;
+      const value = constants.get(node.text);
+      return value !== undefined && isFile(value, depth + 1);
+    }
+    if (importMeta(node, "filename")) return true;
+    return ts.isCallExpression(node) && callee(node.expression) === "fileURLToPath" && node.arguments.length === 1 && importMeta(unwrap(node.arguments[0]!), "url");
+  };
+  const isDirectory = (node: ts.Expression, depth = 0): boolean => {
+    node = unwrap(node);
+    if (depth > 4) return false;
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && [".", "./", "./."].includes(node.text)) return true;
+    if (ts.isIdentifier(node)) {
+      if (node.text === "__dirname" && !declarations.has("__dirname")) return true;
+      const value = constants.get(node.text);
+      return value !== undefined && isDirectory(value, depth + 1);
+    }
+    if (importMeta(node, "dirname")) return true;
+    if (!ts.isCallExpression(node)) return false;
+    const name = callee(node.expression);
+    const args = node.arguments;
+    if (name === "dirname") return args.length === 1 && isFile(args[0]!);
+    if (name === "resolve") return args.length >= 1 && isDirectory(args[0]!, depth + 1)
+      && args.slice(1).every(arg => { const a = unwrap(arg); return (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a)) && [".", "./"].includes(a.text); });
+    if (name === "fileURLToPath" && args.length === 1) {
+      const url = unwrap(args[0]!);
+      return ts.isNewExpression(url) && ts.isIdentifier(url.expression) && url.expression.text === "URL" && url.arguments?.length === 2
+        && ts.isStringLiteral(unwrap(url.arguments[0]!)) && [".", "./"].includes((unwrap(url.arguments[0]!) as ts.StringLiteral).text)
+        && importMeta(unwrap(url.arguments[1]!), "url");
+    }
+    return false;
+  };
+  return (node) => isDirectory(node);
+}
+
 /** Root-relative patterns cannot be interpreted as repository-relative patterns. Keep
  * default roots supported, but require full validation for roots we do not resolve. */
 function unsupportedRoot(source: string, runner: "vitest" | "jest"): string | undefined {
   const key = runner === "jest" ? "rootDir" : "root";
   const ast = ts.createSourceFile("config.ts", source, ts.ScriptTarget.Latest, true);
+  const isConfigDirectory = configDirectoryMatcher(ast);
   let unsupported = false;
   const visit = (node: ts.Node): void => {
     if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
@@ -78,9 +182,9 @@ function unsupportedRoot(source: string, runner: "vitest" | "jest"): string | un
     if ((ts.isPropertyAssignment(node) || ts.isShorthandPropertyAssignment(node))
       && ((ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === key
         || ts.isComputedPropertyName(node.name) && ts.isStringLiteral(node.name.expression) && node.name.expression.text === key)) {
-      const value = ts.isPropertyAssignment(node) ? node.initializer : undefined;
-      if (!value || !(ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value))
-        || ![".", "./", "./."].includes(value.text)) unsupported = true;
+      // `{ root }` shorthand names a binding of the same name.
+      const value = ts.isPropertyAssignment(node) ? node.initializer : node.name;
+      if (!ts.isExpression(value) || !isConfigDirectory(value)) unsupported = true;
     }
     ts.forEachChild(node, visit);
   };
