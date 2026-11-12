@@ -68,6 +68,20 @@ test("the gate passes only when the affected tests passed, and fails only when t
   assert.equal(gateVerdict({ verifyEnabled: true, verifyStatus: "failed", report: report(), receipt }).conclusion, "failure");
 });
 
+test("a blocked fast check says why, from its receipt", () => {
+  const blocked = gateVerdict({
+    verifyEnabled: true,
+    verifyStatus: "blocked",
+    report: report(),
+    receipt: { ...receipt, selection: "none", reason: "the analyzed head caab01d is not the checked-out HEAD 4ebdaa2" },
+  });
+  assert.equal(blocked.conclusion, "neutral");
+  assert.match(blocked.summary, /Why DiffCI could not verify:\n- the analyzed head caab01d is not the checked-out HEAD 4ebdaa2/);
+  assert.doesNotMatch(blocked.summary, /Why the full suite is needed/, "the change was narrowed; verification was the problem");
+  const noReceipt = gateVerdict({ verifyEnabled: true, verifyStatus: "blocked", report: report() });
+  assert.doesNotMatch(noReceipt.summary, /Why DiffCI could not verify/);
+});
+
 test("the summary claims an uploaded record only when there is one", () => {
   const none = gateVerdict({ verifyEnabled: true, verifyStatus: "skipped", report: report({ mode: "FULL" }) });
   assert.doesNotMatch(none.summary, /uploaded/);

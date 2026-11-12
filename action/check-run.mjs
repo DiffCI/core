@@ -136,8 +136,13 @@ export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agen
   const version = receipt?.diffci_version ?? report?.observer?.version;
   if (version) lines.push(`| DiffCI | ${prose(version)} |`);
 
+  // A blocked fast check says why only in its receipt and the job log; the gate repeats it here, since
+  // the check run is what a reviewer reads (on DiffCI/core#123 the summary said nothing about why).
+  if (verifyStatus === "blocked" && receipt?.reason) {
+    lines.push("", "Why DiffCI could not verify:", `- ${prose(receipt.reason)}`);
+  }
   const reasons = (result?.mode === "SELECTIVE" ? [] : result?.fallbackReasons) ?? (report?.reason ? [report.reason] : []);
-  if (conclusion === "neutral" && reasons.length > 0) {
+  if (conclusion === "neutral" && verifyStatus !== "blocked" && reasons.length > 0) {
     lines.push("", "Why the full suite is needed:");
     for (const reason of reasons.slice(0, MAX_REASONS)) lines.push(`- ${prose(reason)}`);
     if (reasons.length > MAX_REASONS) lines.push(`- and ${reasons.length - MAX_REASONS} more`);
