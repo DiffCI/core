@@ -865,6 +865,10 @@ describe("runtime module references", () => {
     "const binding": "const modulePath = './changed' + '.ts'; export const load = async () => import(modulePath);",
     "cache-busting query": "export const load = () => import('./changed?v=' + Date.now());",
     "template over a const": "const dir = '.'; export const load = () => import(`${dir}/changed`);",
+    // 2026-11-12 Paperclip: server/src/vendor/paperclip-runner/index.ts loads its source shim this way.
+    "module-relative URL through a const": "const sourceUrl = new URL('./changed.ts', import.meta.url); export const load = () => import(sourceUrl.href);",
+    "inline module-relative URL": "export const load = () => import(new URL('changed.ts', import.meta.url).href);",
+    "module-relative URL toString": "const url = new URL('./changed.ts?v=1', import.meta.url); export const load = () => import(url.toString());",
   })) {
     it(`resolves a ${name} import to its one target`, async () => {
       const root = createTempRepo({
@@ -885,6 +889,10 @@ describe("runtime module references", () => {
   for (const [name, source] of Object.entries({
     "const rebound in another scope": "const p = './changed'; export const load = (p: string) => import(p);",
     "numeric sum": "const a = 1; const b = 2; export const load = () => import(a + b);",
+    "URL against another base": "const base = 'file:///x/'; const u = new URL('./changed.ts', base); export const load = () => import(u.href);",
+    "absolute module URL": "export const load = () => import(new URL('/changed.ts', import.meta.url).href);",
+    "URL rebound in another scope": "const u = new URL('./changed.ts', import.meta.url); export const load = (u: URL) => import(u.href);",
+    "URL with an unknown head": "export const load = (name: string) => import(new URL(name, import.meta.url).href);",
   })) {
     it(`keeps a ${name} computed`, async () => {
       const root = createTempRepo({ "src/changed.ts": "export const value = 1;", "src/loader.ts": source });

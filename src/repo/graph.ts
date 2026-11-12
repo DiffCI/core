@@ -140,7 +140,40 @@ function specifierParts(expression: ts.Expression, consts: ReadonlyMap<string, t
     const initializer = consts.get(expression.text);
     if (initializer) return specifierParts(initializer, consts, depth + 1);
   }
+  // `url.href` or `url.toString()` of a URL resolved against the importer's own location names the same file
+  // as a relative specifier (Paperclip, 2026-11-12: server/src/vendor/paperclip-runner/index.ts does
+  // `const sourceUrl = new URL("../../../../packages/paperclip-runner/src/index.ts", import.meta.url);
+  // await import(sourceUrl.href)`, and about 1,900 tests were selected for every change through it).
+  const urlTarget = ts.isPropertyAccessExpression(expression) && expression.name.text === "href" ? expression.expression
+    : ts.isCallExpression(expression) && expression.arguments.length === 0 && ts.isPropertyAccessExpression(expression.expression)
+      && expression.expression.name.text === "toString" ? expression.expression.expression : undefined;
+  if (urlTarget) {
+    const relativeParts = moduleRelativeUrlParts(urlTarget, consts, depth + 1);
+    if (relativeParts) return join(relativeParts);
+  }
   return [undefined];
+}
+
+/** The specifier parts of `new URL(<parts>, import.meta.url)`, directly or through a single `const`, as a
+ * relative specifier ("x.ts" becomes "./x.ts"). Undefined for any other base, or a first argument that is
+ * absolute, has a scheme, starts with an unknown part or carries a fragment. */
+function moduleRelativeUrlParts(expression: ts.Expression, consts: ReadonlyMap<string, ts.Expression>, depth: number): SpecifierParts | undefined {
+  if (depth > 8) return undefined;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (ts.isIdentifier(expression)) {
+    const initializer = consts.get(expression.text);
+    return initializer ? moduleRelativeUrlParts(initializer, consts, depth + 1) : undefined;
+  }
+  if (!ts.isNewExpression(expression) || !ts.isIdentifier(expression.expression) || expression.expression.text !== "URL"
+    || expression.arguments?.length !== 2 || consts.has("URL")) return undefined;
+  const base = expression.arguments[1]!;
+  if (!(ts.isPropertyAccessExpression(base) && base.name.text === "url" && ts.isMetaProperty(base.expression)
+    && base.expression.keywordToken === ts.SyntaxKind.ImportKeyword)) return undefined;
+  const parts = specifierParts(expression.arguments[0]!, consts, depth + 1);
+  const head = parts[0];
+  if (typeof head !== "string" || head === "" || head.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(head)
+    || parts.some((part) => typeof part === "string" && part.includes("#"))) return undefined;
+  return head.startsWith("./") || head.startsWith("../") ? parts : [`./${head}`, ...parts.slice(1)];
 }
 
 /** A folded specifier: its literal text, or the patterns bounding it. A query (`?v=...`) selects no file
