@@ -424,3 +424,130 @@ jobs:
     }
   });
 });
+describe("Action gates and release jobs (2026-11-13)", () => {
+  const WF = join(".github", "workflows", "ci.yml");
+
+  it("treats the Action's fast check and merge gate as a gate, not a broken observer", () => {
+    const dir = repoWithWorkflow(`
+name: CI
+jobs:
+  merge-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm ci --ignore-scripts
+      - uses: ${PINNED}
+        with:
+          verify: "true"
+          check-run: true
+`);
+    try {
+      const result = auditWorkflows(dir);
+      assert.deepEqual(result.observerJobs, []);
+      assert.deepEqual(result.findings, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("warns, without blocking, when the Action is told to fail on error", () => {
+    const dir = repoWithWorkflow(`
+name: CI
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: observe
+        uses: ./
+        with:
+          fail-on-error: "true"
+      - run: test "\${{ steps.observe.outputs.status }}" = OBSERVED
+`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "action.yml"), "name: DiffCI change impact\nruns:\n  using: composite\n  steps: []\n");
+    try {
+      const result = auditWorkflows(dir);
+      assert.deepEqual(result.observerJobs, []);
+      assert.deepEqual(codes(dir), ["ACTION_FAILS_ON_ERROR"]);
+      assert.ok(isNonInterfering(result));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks an Action step whose gate inputs are off or not literal", () => {
+    const dir = repoWithWorkflow(`
+name: CI
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm test
+      - uses: ${PINNED}
+        with:
+          fail-on-error: "false"
+          verify: \${{ inputs.verify }}
+`);
+    try {
+      const found = codes(dir);
+      assert.ok(found.includes("JOB_NOT_CONTINUE_ON_ERROR"));
+      assert.ok(found.includes("JOB_NOT_DEDICATED"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat a release job's Git remotes, Git messages or npm view as running DiffCI", () => {
+    const dir = repoWithWorkflow(`
+name: Release
+jobs:
+  publish-catalog:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          version=$(npm view @diffci.com/diffci@latest version)
+          git clone --quiet --depth 1 git@gitlab.com:diffci/diffci.git "$RUNNER_TEMP/catalog"
+          remote=git@gitlab.com:diffci/diffci.git
+          git config user.name "DiffCI release"
+          git commit --quiet -m "DiffCI components $version" -m "From DiffCI/core@abc"
+          git tag -a "$version" -m "DiffCI components $version (DiffCI/core@abc)"
+          echo "The key can read but not write gitlab.com/diffci/diffci; enable its write access." >&2
+          gh api repos/o/r/git/tags -f message="Release DiffCI observer Action \${tag#action-}" -f type=commit
+`);
+    try {
+      const result = auditWorkflows(dir);
+      assert.deepEqual(result.observerJobs, []);
+      assert.deepEqual(result.findings, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still sees DiffCI run next to npm view or inside a Git line that runs a command", () => {
+    const dir = repoWithWorkflow(`
+name: CI
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npm view @diffci.com/diffci version && npx "@diffci.com/diffci@0.3.41" observe --no-send
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git log -1 && npx "@diffci.com/diffci@0.3.41" observe --no-send
+  c:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "starting; please wait" ; npx "@diffci.com/diffci@0.3.41" observe --no-send
+`);
+    try {
+      assert.deepEqual(auditWorkflows(dir).observerJobs.sort(), [`${WF}#a`, `${WF}#b`, `${WF}#c`]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

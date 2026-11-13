@@ -1031,7 +1031,10 @@ function runVerifyWorkflow(flags: Record<string, string | boolean>, env: NodeJS.
   }
   console.log(`Scanned ${result.workflowsScanned.length} workflow file(s).`);
   if (result.observerJobs.length === 0) {
-    console.log("No job runs the DiffCI action. Add one before starting the observation window.");
+    // Jobs that run DiffCI as a gate (verify, check-run, fail-on-error) are allowed to fail and are not
+    // observers, but their warnings still belong in front of the user rather than behind this return.
+    for (const finding of result.findings) console.log(formatFinding(finding));
+    console.log("No job runs DiffCI as an observer (jobs that run it as a gate, with verify, check-run or fail-on-error, are allowed to fail and are not checked here). Add an observer job before starting the observation window.");
     return 1;
   }
   console.log(`DiffCI runs in: ${result.observerJobs.join(", ")}`);

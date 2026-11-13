@@ -133,14 +133,31 @@ function runInvokesDiffCiVerification(run: string): boolean {
  * `./packages/diffci-cli/package.json`, and `check` reported both of those jobs as badly installed
  * observers. An echo line with a substitution, pipe or command separator is kept, because it can run
  * something.
+ *
+ * Three more (2026-11-13), all from Core's own release workflow, which `check` on Core reported as
+ * seven BLOCKING findings in jobs that publish DiffCI rather than run it:
+ *   - scp-style Git remotes (`git@gitlab.com:diffci/diffci.git`), which are addresses like URLs;
+ *   - plain `git` lines (`git commit -m "DiffCI components …"`, `git config user.name "DiffCI release"`),
+ *     whose arguments are names, messages and refs. As with echo, a line with a substitution, pipe or
+ *     command separator is kept;
+ *   - the package spec of `npm view`/`info`/`show`, which reads registry metadata and never runs the
+ *     package. `version=$(npm view @diffci.com/diffci@latest version)` resolves a version to pin.
  */
 function commandText(run: string): string {
   return run
     .split("\n")
-    .map((line) => line.replace(/(^|\s)#.*$/, "$1").replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, " "))
-    .map((line) => (/^\s*(?:echo|printf)\s/.test(line) && !/\$\(|`|\||&&|;/.test(line) ? "" : line))
     .map((line) => line
-      .replace(/(^|\s)(?:-[fF]|--(?:raw-)?field)\s+(?:"[^"]*"|'[^']*'|\S+)/g, "$1")
+      .replace(/(^|\s)#.*$/, "$1")
+      .replace(/[a-z][a-z0-9+.-]*:\/\/\S+/gi, " ")
+      .replace(/\b[\w.-]+@[\w-]+(?:\.[\w-]+)+:[^\s"']+/g, " ")
+      .replace(/\bnpm(?:\.cmd)?\s+(?:view|info|show)\s+["']?[^\s"')]+["']?/g, "npm view "))
+    // Separators inside quotes are message text ("…/diffci; enable its write access"), so only
+    // unquoted ones count. A substitution counts anywhere, because double quotes still run it.
+    .map((line) => (/^\s*(?:echo|printf|git)\s/.test(line) && !/\$\(|`/.test(line) &&
+      !/\||&&|;/.test(line.replace(/"[^"]*"|'[^']*'/g, "")) ? "" : line))
+    .map((line) => line
+      // A field value may be quoted from its middle: `-f message="Release DiffCI …"`.
+      .replace(/(^|\s)(?:-[fF]|--(?:raw-)?field)\s+(?:(?:[^\s"']*(?:"[^"]*"|'[^']*'))+[^\s"']*|\S+)/g, "$1")
       .replace(/(^|[\s"'])repos\/[^\s"']+/g, "$1")
       .replace(/\$?\{?\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b\}?/g, " ")
       .replace(/[^\s"'()]*\.json\b/g, " "))
@@ -183,6 +200,14 @@ function referencesDiffCi(uses: string, repoPath: string, actionPattern: RegExp)
   return false;
 }
 
+/** Action inputs that deliberately let the DiffCI step decide its own job's outcome. */
+const ACTION_GATE_INPUTS = ["verify", "check-run", "fail-on-error"] as const;
+
+function actionGateInputs(step: Record<string, unknown>): string[] {
+  const inputs = isRecord(step.with) ? step.with : {};
+  return ACTION_GATE_INPUTS.filter((name) => inputs[name] === true || String(inputs[name]).trim().toLowerCase() === "true");
+}
+
 function isPinnedToSha(uses: string): boolean {
   const at = uses.lastIndexOf("@");
   if (at === -1) return uses.startsWith("./") || uses.startsWith("docker://");
@@ -221,9 +246,24 @@ export function auditWorkflows(repoPath: string, options: WorkflowGuardOptions =
         (typeof step.uses === "string" && referencesDiffCi(step.uses, repoPath, actionPattern)) ||
         (typeof step.run === "string" && runReferencesDiffCi(step.run, actionPattern));
       const isVerificationStep = (step: Record<string, unknown>): boolean =>
-        typeof step.run === "string" && runInvokesDiffCiVerification(step.run);
+        (typeof step.run === "string" && runInvokesDiffCiVerification(step.run)) ||
+        (typeof step.uses === "string" && isDiffCiStep(step) && actionGateInputs(step).length > 0);
       // This guard proves that observation jobs are inert. A dedicated fail-closed verification job
       // is a different product surface: making its own status check fail is its intended contract.
+      // The Action reaches the same surface through inputs: `verify` (the fast check), `check-run`
+      // (the merge gate) and `fail-on-error`. Before 2026-11-13 only the `run:` form was recognised,
+      // so every repository that turned on the 0.3.41 merge gate was told its installation was broken.
+      for (const step of steps) {
+        if (typeof step.uses === "string" && isDiffCiStep(step) && actionGateInputs(step).includes("fail-on-error")) {
+          findings.push({
+            severity: "WARNING",
+            code: "ACTION_FAILS_ON_ERROR",
+            message: `job "${jobId}" sets fail-on-error: "true", so a DiffCI refusal or error fails this job. That is meant for debugging an installation or testing the Action; turn it off for observation.`,
+            workflow: relativePath,
+            job: jobId,
+          });
+        }
+      }
       const diffciSteps = steps.filter((step) => isDiffCiStep(step) && !isVerificationStep(step));
       if (diffciSteps.length === 0) continue;
 
