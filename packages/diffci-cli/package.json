@@ -1,6 +1,6 @@
 {
   "name": "@diffci.com/diffci",
-  "version": "0.3.40",
+  "version": "0.3.41",
   "description": "Verification for AI coding agents: runs the tests and checks a change affects, with full fallback and a receipt",
   "keywords": [
     "ci",

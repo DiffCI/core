@@ -1,6 +1,6 @@
 {
   "name": "diffci",
-  "version": "0.3.40",
+  "version": "0.3.41",
   "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure.",
   "author": {
     "name": "DiffCI",

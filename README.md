@@ -19,7 +19,7 @@ If DiffCI saves you CI time, a ⭐ helps others find it.
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: DiffCI/core@v0.3.40
+- uses: DiffCI/core@v0.3.41
 ```
 
 Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same answer appears on the pull request itself, updated in place on each push:
@@ -40,6 +40,12 @@ Coding agents pass the narrow check they picked and miss wider breakage, then re
 - **Agents chose their own test files 928 times and ran the full suite 282 times**, but asked a tool which tests were affected only 24 times.
 - **When DiffCI could narrow the run, it selected 2.2% of test files**, cutting test time by 93%. None of those commits had a failing test, so this shows speed, not regression catching.
 - **DiffCI still fell back to the full suite on 58% of commits**, mostly because a config file or `package.json` changed. Narrowing those safely is the main open problem, and [a good place to contribute](#contributing).
+
+**Check your own repository.** How many of its red pull request builds failed on checks the author could have run before pushing? This reads GitHub Actions history only, runs nothing, and needs a GitHub token ([method](docs/red-builds.md)):
+
+```sh
+npx "@diffci.com/diffci@latest" red-builds owner/repo
+```
 
 ## MCP server
 
