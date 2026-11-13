@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "diffci",
-  "version": "0.3.41",
+  "version": "0.3.42",
   "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure.",
   "author": {
     "name": "DiffCI",
