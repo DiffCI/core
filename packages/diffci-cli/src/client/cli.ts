@@ -9,6 +9,13 @@
  * the observer is exactly what Phase 02 shipped: a local analysis whose output never leaves the runner.
  *
  * Commands:
+ *   watch              verify changes after each save
+ *   agent-stop         verify changes when an AI agent finishes a turn
+ *   telemetry          configure anonymous usage reporting
+ *   pilot              run observation and verification savings
+ *   pilot-packet       generate a shareable compatibility packet
+ *   coverage           build a test coverage map
+ *   outcomes           summarize previous verification outcomes
  *   init               seed a repository with AI-agent instructions for using DiffCI
  *   mcp                run the stdio MCP server
  *   verify             fail-closed verification of a working-tree snapshot or commit range
@@ -1387,7 +1394,7 @@ Usage:
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
-  diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>]
+  diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>] [--check-jobs <regex>] [--ci-only-jobs <regex>]
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
   diffci pilot-packet [--repo <path>] [--out-dir <dir>] [--base <sha> --head <sha>]
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
