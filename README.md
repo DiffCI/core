@@ -15,7 +15,9 @@ Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/usin
 
 If DiffCI saves you CI time, a ⭐ helps others find it.
 
-**On every pull request**, add one job beside your existing CI. Its job summary shows which tests the change affects and why, or that the full suite is needed and why. It runs no tests and skips or changes nothing:
+**On every pull request, with no workflow file:** [install the DiffCI GitHub App](https://github.com/apps/diffci/installations/new). On each pull request of a public repository it posts one "DiffCI change impact" check listing the affected tests and why. The check is always neutral, so it never blocks a merge. The App reads code and Actions runs and its only write permission is that check run; it never skips tests or changes required checks. [Data handling](https://diffci.com/data-handling).
+
+**Or in your own workflow** (including private repositories), add one job beside your existing CI. Its job summary shows which tests the change affects and why, or that the full suite is needed and why. It runs no tests and skips or changes nothing:
 
 ```yaml
 - uses: actions/checkout@v7
