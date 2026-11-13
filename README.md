@@ -140,6 +140,19 @@ while distribution migrates to the Core-native CLI package.
 
 ![Recorded Cal.com sandbox comparison](docs/calcom-runtime-evidence.svg)
 
+### Case studies
+
+Each study is a replay on real repositories, with its method, raw data and limitations on the linked page. None is a forecast for your repository.
+
+| Study | Result |
+|---|---|
+| [Agent breakage replay](https://diffci.com/case-studies/agent-breakage-replay) | Every red CI commit in two agent-built repositories: 32 of 38 introduced breakages caught before push; about 70% of red commits only inherited a broken main |
+| [LobeHub vs a Vitest planner](https://diffci.com/case-studies/lobehub) | 40 commits against the maintainers' own affected-test planner: same share of tests, no planner-picked test missed, 15 of 18 introduced failures caught before push |
+| [Paperclip red builds](https://diffci.com/case-studies/paperclip) | 74 red PR builds classified job by job: 12 failed only on the PR's own pre-push checks (11 agent-written), about 15% of red runs |
+| [Cal.com](https://diffci.com/case-studies/calcom) | Six real merges, executed and timed: 86–91.6% test-stage reduction, 44.2% at job level |
+| [deepseek-harness](https://diffci.com/case-studies/deepseek-harness) | Five merges on a dirty baseline: 79.5–89.5% job-level reduction; one result withheld because the selection was not honored |
+| [DiffCI's own CI](https://diffci.com/case-studies/diffci-own-ci) | Cost per job on ephemeral containers, and the bug our own green CI was hiding |
+
 [Star Core](https://github.com/DiffCI/core) · [Volunteer a pilot repository](https://diffci.com/#pilot) · [Find a first contribution](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
 Watch → Custom → Releases and Discussions for benchmark results and support updates. [Public roadmap](docs/roadmap.md).
 
