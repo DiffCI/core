@@ -16,6 +16,7 @@
  *   check              analysis plus automatic paired runtime measurement
  *   plan               print Core's advisory JSON plan for a commit range (the input check-plan reads)
  *   check-plan         compare a saved test selection with one full-suite JUnit result
+ *   red-builds         count a repository's red PR builds a check before the push could have prevented
  *   observe            analyse the checkout and write an observation report
  *   verify-savings     run a paired full-versus-selected timing check
  *   validate-specs     block conflicting same-turn change specifications
@@ -63,6 +64,7 @@ import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import { checkPlan } from "./check-plan.js";
+import { runRedBuildsCommand } from "./red-builds.js";
 import { buildCoverageMap, formatCoverageRun } from "./coverage-map.js";
 import { confidenceCurve, formatConfidenceCurve } from "./test-ranking.js";
 import { parseShard, readTimings, timingsFromOutcomes, type TimingsFile } from "./test-shards.js";
@@ -1382,6 +1384,7 @@ Usage:
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
+  diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>]
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
   diffci pilot-packet [--repo <path>] [--out-dir <dir>] [--base <sha> --head <sha>]
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
@@ -1502,6 +1505,11 @@ async function main(): Promise<void> {
   }
   if (process.argv[2] === "plan") {
     process.exitCode = await runPlanCommand(process.argv.slice(3));
+    return;
+  }
+  // Stateless and read-only like check-plan: no shared flags, telemetry or feedback prompt.
+  if (process.argv[2] === "red-builds") {
+    process.exitCode = await runRedBuildsCommand(process.argv.slice(3));
     return;
   }
   const { command, flags } = parseArgs(process.argv);
