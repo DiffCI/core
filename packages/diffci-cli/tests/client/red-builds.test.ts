@@ -7,6 +7,7 @@ import {
   classify,
   collectRedBuilds,
   formatReport,
+  pickMainWorkflow,
   githubClient,
   runRedBuildsCommand,
   signatures,
@@ -230,4 +231,26 @@ describe("job naming edge cases from real repositories", () => {
     assert.equal(rows.find((r) => r.run === 1)!.verdict, "preventable");
     assert.equal(rows.find((r) => r.run === 2)!.verdict, "ci-only", "a gate failing alone is kept");
   });
+});
+
+describe("pickMainWorkflow", () => {
+  // Minutes per workflow from real 100-run samples (2026-11-13): plain "most minutes" chose the wrong one.
+  function sample(entries: Array<[number, string, string, number]>) {
+    return entries.map(([id, name, path, minutes]) => ({
+      workflow_id: id, name, path: `.github/workflows/${path}`,
+      run_started_at: "2026-11-13T10:00:00Z", updated_at: new Date(Date.parse("2026-11-13T10:00:00Z") + minutes * 60_000).toISOString(),
+    }));
+  }
+  const cases: Array<[string, Array<[number, string, string, number]>, string]> = [
+    ["formbricks", [[1, "SonarQube", "sonarqube.yml", 217], [2, "PR Update", "pr.yml", 139], [3, "Integration Tests", "integration-tests.yml", 114], [4, "Docker Build Validation", "docker-build-validation.yml", 82]], "PR Update"],
+    ["TanStack/router", [[1, "Benchmarks", "benchmarks.yml", 184], [2, "Compiler Platforms", "compiler-platforms.yml", 114], [3, "PR", "pr.yml", 102], [4, "Bundle Size", "bundle-size.yml", 36]], "PR"],
+    ["langfuse", [[1, "AWS preview build", "preview-build.yml", 13], [2, "CI/CD", "pipeline.yml", 10], [3, "CodeQL", "codeql.yml", 9], [4, "Security review", "claude-code-security-review.yml", 4]], "CI/CD"],
+    ["medusa", [[1, "Documentation Tests", "docs-test.yml", 205], [2, "Medusa Pipeline", "action.yml", 146], [3, "CLI Pipeline", "test-cli-with-database.yml", 55]], "Medusa Pipeline"],
+    ["lobehub", [[1, "Test CI", "test.yml", 156], [2, "E2E CI", "e2e.yml", 123], [3, "Desktop PR Build", "pr-build-desktop.yml", 49]], "Test CI"],
+  ];
+  for (const [repo, entries, expected] of cases) {
+    it(`picks the test CI for ${repo}`, () => {
+      assert.equal(pickMainWorkflow(sample(entries))?.name, expected);
+    });
+  }
 });

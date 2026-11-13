@@ -10,8 +10,9 @@ signed-in `gh` CLI), because unauthenticated access allows 60 calls an hour.
 
 ## What it reads
 
-1. The most recent pull request runs (`--runs`, default 200) of one workflow: by default the heaviest one run on
-   pull requests (most wall-clock time in a sample of 100 runs), which is the main CI in practice. Pass
+1. The most recent pull request runs (`--runs`, default 200) of one workflow: by default the one that looks like the main
+   pull request CI (most wall-clock time in a sample of 100 runs, favouring CI-like names and discounting scanners,
+   previews, benchmarks and bots). The report names it. Pass
    `--workflow <id or file name>` to choose another.
 2. The job list of the latest attempt of each red run.
 3. The failure annotations of each failing check job: the file and message your linter, type checker or test

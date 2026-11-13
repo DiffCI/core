@@ -332,9 +332,18 @@ export function githubClient(token: string, options: { minIntervalMs?: number; m
     const wait = last + interval - Date.now();
     if (wait > 0) await sleep(wait);
     last = Date.now();
-    const res = await fetchFn(`https://api.github.com/${path}`, {
+    const request = () => fetchFn(`https://api.github.com/${path}`, {
       headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "User-Agent": "diffci-red-builds", "X-GitHub-Api-Version": "2022-11-28" },
     });
+    let res: Response;
+    try {
+      res = await request();
+    } catch {
+      // A dropped connection ("fetch failed"), not a GitHub answer: one slow retry, then give up.
+      await sleep(10_000);
+      last = Date.now();
+      res = await request();
+    }
     if (res.headers.get("retry-after")) throw new StopCollection(`GitHub asked to slow down (Retry-After on ${path.split("?")[0]})`);
     const remaining = Number(res.headers.get("x-ratelimit-remaining") ?? "Infinity");
     const body = res.status === 204 ? undefined : await res.json().catch(() => undefined);
@@ -343,6 +352,34 @@ export function githubClient(token: string, options: { minIntervalMs?: number; m
     if (remaining < floor) throw new StopCollection(`fewer than ${floor} GitHub API calls left this hour`);
     return { status: res.status, body };
   };
+}
+
+/** Workflows that run on pull requests but are not the test CI: scanners, previews, benchmarks, bots. */
+const NOT_MAIN_WORKFLOW = /\b(preview|codeql|security|semgrep|sonar(qube|cloud)?|snyk|scorecard|bench(mark)?s?|size|label(er|s)?|stale|triage|greet(ings?)?|welcome|translations?|i18n|docs?|documentation|docker|image|deploy(ment)?|release|licen[cs]e|title|conventional|commits?|semantic|submodule|e2e|playwright|cypress|lighthouse|dependabot|renovate|cla|dco|changeset|storybook|chromatic)\b/i;
+/** Names and file names the main pull request CI usually has. */
+const MAIN_WORKFLOW = /\b(ci|cd|tests?|pipeline|pr|pull[-_ ]request|build|checks?|main|verify|validate|unit|lint|quality)\b/i;
+
+/**
+ * The main pull request CI among one sample page of runs: wall-clock minutes per workflow, doubled when
+ * its name or file looks like CI and cut to 5% when it looks like a scanner, preview, benchmark or bot.
+ * Plain "most minutes" picked SonarQube, Benchmarks and preview builds on real repositories.
+ */
+export function pickMainWorkflow(sample: any[]): { id: number; name: string; path: string } | undefined {
+  const weight = new Map<number, { name: string; path: string; minutes: number }>();
+  for (const r of sample) {
+    const span = (Date.parse(r.updated_at) - Date.parse(r.run_started_at ?? r.created_at)) / 60_000;
+    const path = String(r.path ?? "").replace(/^\.github\/workflows\//, "");
+    const entry = weight.get(r.workflow_id) ?? { name: String(r.name ?? r.workflow_id), path, minutes: 0 };
+    entry.minutes += Number.isFinite(span) && span > 0 ? span : 0;
+    weight.set(r.workflow_id, entry);
+  }
+  let best: { id: number; name: string; path: string; score: number } | undefined;
+  for (const [id, w] of weight) {
+    const text = `${w.name} ${w.path.replace(/\.ya?ml$/, "").replace(/[-_.]/g, " ")}`;
+    const score = (w.minutes + 0.01) * (NOT_MAIN_WORKFLOW.test(text) ? 0.05 : 1) * (MAIN_WORKFLOW.test(text) ? 2 : 1);
+    if (!best || score > best.score) best = { id, name: w.name, path: w.path, score };
+  }
+  return best && { id: best.id, name: best.name, path: best.path };
 }
 
 export interface CollectOptions {
@@ -373,18 +410,11 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
       const { status, body } = await get(`repos/${repository}/actions/runs?event=pull_request&per_page=100`);
       if (status === 404) throw new Error(`${repository} not found, or its Actions history is not visible to this token`);
       if (status !== 200) throw new Error(`listing workflow runs failed (HTTP ${status})`);
-      const weight = new Map<number, { name: string; minutes: number }>();
-      for (const r of (body as { workflow_runs?: any[] })?.workflow_runs ?? []) {
-        const span = (Date.parse(r.updated_at) - Date.parse(r.run_started_at ?? r.created_at)) / 60_000;
-        const entry = weight.get(r.workflow_id) ?? { name: String(r.name ?? r.workflow_id), minutes: 0 };
-        entry.minutes += Number.isFinite(span) && span > 0 ? span : 0;
-        weight.set(r.workflow_id, entry);
-      }
-      const heaviest = [...weight.entries()].sort((a, b) => b[1].minutes - a[1].minutes)[0];
-      if (!heaviest) return summarise(repository, [], [], null);
-      workflow = String(heaviest[0]);
-      workflowLabel = heaviest[1].name;
-      log(`Using the "${workflowLabel}" workflow, the heaviest one run on pull requests. Pass --workflow to choose another.`);
+      const chosen = pickMainWorkflow((body as { workflow_runs?: any[] })?.workflow_runs ?? []);
+      if (!chosen) return summarise(repository, [], [], null);
+      workflow = String(chosen.id);
+      workflowLabel = chosen.name;
+      log(`Using the "${workflowLabel}" workflow (${chosen.path}), which looks like the main pull request CI. Pass --workflow to choose another.`);
     }
     const base = `repos/${repository}/actions/workflows/${encodeURIComponent(workflow)}/runs`;
     for (let page = 1; runs.length < options.maxRuns; page++) {
