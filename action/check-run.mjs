@@ -86,7 +86,7 @@ function code(text) {
  * testable without GitHub: `verifyEnabled` is the `verify` input, `verifyStatus` the fast check's
  * status output ("" when it did not run), `receipt` the verification receipt and `report` the observation.
  */
-export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agents = [], runUrl, uploaded = false }) {
+export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agents = [], runUrl, uploaded = false, headSha }) {
   const agent = agentLabel(agents);
   const result = report?.status === "OBSERVED" ? report.result : undefined;
   let conclusion;
@@ -100,7 +100,13 @@ export function gateVerdict({ verifyEnabled, verifyStatus, report, receipt, agen
   } else if (verifyStatus === "passed") {
     conclusion = "success";
     headline = "Affected tests passed";
-    detail = "Every test this change affects passed on this commit. Your full test job still runs everything.";
+    // The check run sits on the pull request head, but a default checkout verifies GitHub's merge
+    // commit; say which one the tests ran on rather than "this commit".
+    const verified = receipt?.commit_range?.head_sha;
+    const onMerge = Boolean(verified && headSha && verified.toLowerCase() !== headSha.toLowerCase());
+    detail = onMerge
+      ? `Every test this change affects passed on GitHub's merge commit ${String(verified).slice(0, 7)}, the pull request as it would merge. Your full test job still runs everything.`
+      : "Every test this change affects passed on this commit. Your full test job still runs everything.";
   } else if (verifyStatus === "failed") {
     conclusion = "failure";
     headline = "Affected tests failed";
@@ -247,6 +253,7 @@ export async function main(env = process.env) {
     agents,
     runUrl,
     uploaded: env.DIFFCI_UPLOAD === "true" && Boolean(report),
+    headSha,
   });
   try {
     writeOutputs({ "gate-conclusion": verdict.conclusion, agent: verdict.agent }, env.GITHUB_OUTPUT);

@@ -140,7 +140,7 @@ wrote it and what ran.
 
 | Fast check | Check run conclusion |
 | --- | --- |
-| `passed` | `success`: every affected test (and lint/typecheck) passed on this commit |
+| `passed` | `success`: every affected test (and lint/typecheck) passed, on GitHub's merge commit with a default checkout |
 | `failed` | `failure` |
 | `skipped`, `blocked`, did not run, or `verify` off | `neutral`: DiffCI could not narrow or verify the change, so your full test job decides |
 

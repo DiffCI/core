@@ -68,6 +68,15 @@ test("the gate passes only when the affected tests passed, and fails only when t
   assert.equal(gateVerdict({ verifyEnabled: true, verifyStatus: "failed", report: report(), receipt }).conclusion, "failure");
 });
 
+test("a pass names the merge commit when that is what the fast check verified", () => {
+  const merge = "d".repeat(40);
+  const onMerge = gateVerdict({ verifyEnabled: true, verifyStatus: "passed", report: report(), receipt: { ...receipt, commit_range: { base_sha: "b".repeat(40), head_sha: merge } }, headSha: HEAD });
+  assert.match(onMerge.summary, /passed on GitHub's merge commit ddddddd, the pull request as it would merge/);
+  assert.doesNotMatch(onMerge.summary, /on this commit/);
+  const onHead = gateVerdict({ verifyEnabled: true, verifyStatus: "passed", report: report(), receipt: { ...receipt, commit_range: { base_sha: "b".repeat(40), head_sha: HEAD } }, headSha: HEAD });
+  assert.match(onHead.summary, /passed on this commit/);
+});
+
 test("a blocked fast check says why, from its receipt", () => {
   const blocked = gateVerdict({
     verifyEnabled: true,
