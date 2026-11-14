@@ -90,6 +90,8 @@ assert(/^sha256:[a-f0-9]{64}$/.test(museCatalogEntry?.integrity?.digest ?? ""), 
 
 const installationGuide = readText("docs/agent-installation.md");
 assert(installationGuide.includes(`@diffci.com/diffci@${version}`), "Agent installation guide must pin the CLI package version.");
+const stalePins = [...installationGuide.matchAll(/@diffci\.com\/diffci@(\d+\.\d+\.\d+)/g)].map((match) => match[1]).filter((pinned) => pinned !== version);
+assert(stalePins.length === 0, `Agent installation guide pins other CLI versions: ${[...new Set(stalePins)].join(", ")}.`);
 
 for (const relativePath of [
   "docs/agent-installation.md",
