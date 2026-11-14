@@ -352,6 +352,7 @@
     "packages/diffci-cli/src/client/red-builds.ts",
     "packages/diffci-cli/tests/client/check-plan-cli.test.ts",
     "packages/diffci-cli/tests/client/plan-cli.test.ts",
+    "packages/diffci-cli/tests/client/cli-help.test.ts",
     "packages/diffci-cli/tests/client/check-plan-review.test.ts",
     "packages/diffci-cli/tests/client/check-plan.test.ts",
     "packages/diffci-cli/tests/client/red-builds.test.ts",

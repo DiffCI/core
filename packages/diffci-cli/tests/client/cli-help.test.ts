@@ -1,4 +1,3 @@
-
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
@@ -38,7 +37,7 @@ describe("CLI help", () => {
     const build = spawnSync(
       process.execPath,
       [
-        join(ROOT, "..", "..", "node_modules", "typescript", "bin", "tsc"),
+        join(ROOT, "node_modules", "typescript", "bin", "tsc"),
         "-p",
         "tsconfig.client.json",
       ],

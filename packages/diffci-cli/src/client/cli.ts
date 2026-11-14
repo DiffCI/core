@@ -9,16 +9,12 @@
  * the observer is exactly what Phase 02 shipped: a local analysis whose output never leaves the runner.
  *
  * Commands:
- *   watch              verify changes after each save
- *   agent-stop         verify changes when an AI agent finishes a turn
- *   telemetry          configure anonymous usage reporting
- *   pilot              run observation and verification savings
- *   pilot-packet       generate a shareable compatibility packet
- *   coverage           build a test coverage map
- *   outcomes           summarize previous verification outcomes
  *   init               seed a repository with AI-agent instructions for using DiffCI
  *   mcp                run the stdio MCP server
  *   verify             fail-closed verification of a working-tree snapshot or commit range
+ *   watch              verify changes after each save
+ *   agent-stop         verify changes when an AI agent finishes a turn
+ *   telemetry          configure anonymous usage reporting
  *   gate               run a build's whole gate and record what DiffCI would have skipped (observe)
  *   check              analysis plus automatic paired runtime measurement
  *   plan               print Core's advisory JSON plan for a commit range (the input check-plan reads)
@@ -26,9 +22,13 @@
  *   red-builds         count a repository's red PR builds a check before the push could have prevented
  *   observe            analyse the checkout and write an observation report
  *   verify-savings     run a paired full-versus-selected timing check
+ *   pilot              run observation and verification savings
+ *   pilot-packet       generate a shareable compatibility packet
  *   validate-specs     block conflicting same-turn change specifications
  *   verify-workflow    check that a DiffCI job in this repository's workflows cannot affect other jobs
  *   enforce-misses     after a full run on main, find failures enforce mode would have skipped
+ *   coverage           build a test coverage map
+ *   outcomes           summarize previous verification outcomes
  *   version            print the observer version
  *
  * Exit codes: `observe` exits 0 even when it refuses or errors, because a broken observer must not
