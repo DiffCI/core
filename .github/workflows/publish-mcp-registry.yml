@@ -11,6 +11,10 @@ concurrency:
   group: mcp-registry-publish
   cancel-in-progress: false
 
+# DiffCI's own CI and release smoke runs are not usage; keep them out of the counts (docs/telemetry.md).
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   publish:
     # A manually dispatched repair must use main. The tagged CLI release invokes this reusable
