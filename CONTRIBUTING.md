@@ -20,15 +20,14 @@ Every merged contribution is credited by name: in the release notes of the versi
 
 ## Contributor tiers
 
-Contributors who keep coming back get more say in DiffCI, not just more credit. There are four tiers. Each one includes everything in the tiers below it.
+Contributors who keep coming back get more say in DiffCI, not just more credit. There are three tiers. Each one includes everything in the tiers below it.
 
 | Tier | How you get there | What it gives you |
 | --- | --- | --- |
 | **Contributor** | One merged pull request. | Credit in the release notes, the README and the docs, as described above. |
 | **Regular contributor** | Several merged pull requests over more than a few days, and an invitation from a maintainer. | Listed as a regular contributor in the README. First pick of new issues: you can ask for an issue to be assigned to you before it is labelled `good first issue`. Asked for input on design issues before work starts. A written reference or LinkedIn recommendation describing your DiffCI work, on request. |
-| **Area maintainer** | Sustained work on one area, such as an adapter or the lockfile signals, and an invitation from a maintainer. | Named as the maintainer of that area in the README and the area's docs. You are consulted on design decisions in your area and requested as a reviewer on pull requests that touch it. Triage access to label and assign issues. Co-authorship, under your own name, of the write-up or benchmark when your area ships. First in line for paid milestone bounties once [sponsorship](https://github.com/sponsors/DiffCI) funds them. |
-| **Core maintainer** | A period as an area maintainer, and agreement among the existing core maintainers. | Merge rights on Core and a vote on its direction. |
+| **Area maintainer** | Sustained work on one area, such as an adapter or the lockfile signals, and an invitation from a maintainer. | Named as the maintainer of that area in the README and the area's docs. You are consulted on design decisions in your area and requested as a reviewer on pull requests that touch it. Co-authorship, under your own name, of the write-up or benchmark when your area ships. First in line for paid milestone bounties once [sponsorship](https://github.com/sponsors/DiffCI) funds them. |
 
-Tiers are offered, not applied for. A maintainer will invite you when your work fits a tier, and you can decline or step back at any time without losing credit for what you did. Inactive maintainers move to an emeritus list and keep their credit.
+Tiers are offered, not applied for. A maintainer will invite you when your work fits a tier, and you can decline or step back at any time without losing credit for what you did. Inactive maintainers move to an emeritus list and keep their credit. No tier comes with merge or triage rights on the repository: those stay with the DiffCI maintainers.
 
 Every tier works under the same rules: the [stewardship commitments](STEWARDSHIP.md), the DCO sign-off and full-suite fallback on insufficient evidence.
