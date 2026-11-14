@@ -60,6 +60,8 @@ case "${DIFFCI_VERIFY_CHECKS:-true}" in
   *) echo "verify-checks must be \"true\" or \"false\"" >&2; exit 2 ;;
 esac
 
+# Counted as the GitHub Action rather than a plain CLI run (see docs/telemetry.md).
+export DIFFCI_SURFACE=github-action
 args=(verify --repo "${DIFFCI_REPO:?}" --fail-fast "$checks" --no-send --no-log --out "$receipt"
   --timeout-ms "$((DIFFCI_VERIFY_TIMEOUT * 60000))")
 if [ -n "${DIFFCI_BASE:-}" ]; then args+=(--base "$DIFFCI_BASE"); fi

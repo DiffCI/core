@@ -55,7 +55,7 @@ import { configureGraphCache } from "./shared-graph-cache.js";
 import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
 import { formatJobSummary } from "./job-summary.js";
-import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
+import { configureTelemetry, readTelemetryPreference, recordUsage, telemetryNotice } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, type VerificationReport } from "./verify.js";
@@ -138,10 +138,11 @@ function readCheckPlanInput(path: string): string {
   }
 }
 
-const PLAN_USAGE = "Usage: diffci plan --base <commit> [--head HEAD] [--repo <clean-checkout>]\nPrints Core's advisory JSON plan, the input check-plan reads. Accepts --flag=value. Does not run, skip or cancel tests.";
+const PLAN_USAGE = "Usage: diffci plan --base <commit> [--head HEAD] [--repo <clean-checkout>]\nPrints Core's advisory JSON plan, the input check-plan reads. Accepts --flag=value. Does not run, skip or cancel tests.\nCounts the run with the repository name (see diffci telemetry); DO_NOT_TRACK=1 stops counting.";
 
 /** Same output and exit codes as Core's own `plan` command, so saved plans stay interchangeable. */
 async function runPlanCommand(args: readonly string[]): Promise<number> {
+  let repoPath: string | undefined;
   try {
     if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
       console.log(PLAN_USAGE);
@@ -161,11 +162,14 @@ async function runPlanCommand(args: readonly string[]): Promise<number> {
     const base = values.get("--base");
     if (!base) throw new Error("Expected: diffci plan --base <commit> [--head HEAD] [--repo <path>]");
     const { analyzeCheckout } = await import("@diffci.com/core/analyze");
-    const plan = await analyzeCheckout({ repoPath: values.get("--repo") ?? process.cwd(), base, head: values.get("--head") ?? "HEAD" });
+    repoPath = values.get("--repo") ?? process.cwd();
+    const plan = await analyzeCheckout({ repoPath, base, head: values.get("--head") ?? "HEAD" });
     console.log(JSON.stringify(plan, null, 2));
+    await recordUsage("plan", plan.plan.mode === "SELECTIVE" ? "selective" : "full", observerIdentity().version, {}, process.env, repoPath);
     return 0;
   } catch (error: unknown) {
     console.error(JSON.stringify({ error: error instanceof Error ? error.message : String(error), recommendation: "RUN_FULL_CI" }));
+    if (repoPath !== undefined) await recordUsage("plan", "error", observerIdentity().version, {}, process.env, repoPath);
     return 1;
   }
 }
@@ -440,7 +444,7 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   if (!includeWorkflow) console.log("  skipped .github/workflows/diffci.yml (pass --workflow to add it)");
   if (!includeVerificationWorkflow) console.log("  skipped .github/workflows/diffci-verify.yml (pass --verification-workflow to add it)");
   console.log(`\nDefault agent command: ${agentCommand}`);
-  console.log("\nOptional telemetry is off unless you have opted in. Use diffci telemetry --mode anonymous for execution counts, or --mode installations to also share a random installation ID. No repository content is sent. Use --mode off to disable; --no-send always overrides consent.");
+  console.log("\nDiffCI counts plan, check, observe and verify runs with the repository name (host/owner/repo), never its content. diffci telemetry --mode count-only drops the name; DO_NOT_TRACK=1 stops counting.");
   return 0;
 }
 
@@ -613,7 +617,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
         headOverride: stringFlag(flags, "head"),
         policy,
       });
-  await recordUsage("verify", report.verification, identity.version, flags, env);
+  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath);
   if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   if (reportPath) {
     mkdirSync(dirname(reportPath), { recursive: true });
@@ -813,10 +817,10 @@ function summarise(report: ObservationReport, executionFollows = false): string 
 async function runCheck(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
   const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
   const reportPath = resolve(stringFlag(flags, "out") ?? defaultReportPath(env));
-  const observationCode = await runObserve({ ...flags, out: reportPath, quiet: true, "no-send": true }, env);
+  const observationCode = await runObserve({ ...flags, out: reportPath, quiet: true, "no-send": true, "skip-usage": true }, env);
   if (observationCode !== 0) return observationCode;
   const observation = JSON.parse(readFileSync(reportPath, "utf8")) as ObservationReport;
-  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env);
+  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env, repoPath);
   const print = (message: string): void => { if (flags.quiet !== true && flags.json !== true) console.log(message); };
   print(summarise(observation, true));
   print(`  observation report: ${reportPath}`);
@@ -956,7 +960,8 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
 
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env);
+  // check counts itself; its inner observation is not a second run.
+  if (flags["skip-usage"] !== true) await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env, repoPath);
 
   const summary = summarise(report);
   if (flags.json === true) {
@@ -1389,7 +1394,7 @@ Usage:
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
                 [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
                 [--shard <i/N> [--timings <file>]] [--no-coverage]
-  diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
+  diffci telemetry [--mode repo|count-only] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
@@ -1492,10 +1497,12 @@ either way. Plain http is refused; the token is never printed.
 directory outside the checkout. --shared-graph-cache (or DIFFCI_SHARED_GRAPH_CACHE=1) also shares them via
 DiffCI Cloud (Team/Business) using the api-url and api-token; DIFFCI_GRAPH_CACHE_SECRET encrypts them
 client-side. Graphs hold paths and import edges, never file contents; a cache failure only means a local build.
---share-usage (or DIFFCI_SHARE_USAGE=1) opts in to command, outcome, version, surface and activity reporting.
-diffci telemetry --mode anonymous saves consent; --mode installations also shares a random local installation ID.
---mode off disables saved consent and deletes the ID. --internal-usage labels tests/internal activity.
-No repository, commit, test, report, paths, or machine details are sent. --no-send or DIFFCI_NO_SEND=1 disables it.
+Usage counting is on: plan, check, observe and verify send command, outcome, version, surface, CI or local,
+activity, a random local installation ID and the repository name (host/owner/repo from GITHUB_REPOSITORY,
+GitLab CI or the origin remote). diffci telemetry --mode count-only drops the name and the ID; --mode repo
+restores them. --internal-usage labels tests/internal activity. No commit, path, test, report, content or
+machine details are sent. Only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or DIFFCI_SHARE_USAGE=0 stop counting;
+--no-send stops report uploads only.
 Interactive check and observe runs print feedback links to stderr at most weekly; they send nothing.
 CI, MCP, --json and --quiet never show them; DIFFCI_NO_FEEDBACK_PROMPT=1 hides them.
 `;
@@ -1536,7 +1543,7 @@ async function main(): Promise<void> {
       const mode = stringFlag(flags, "mode");
       const preference = mode ? configureTelemetry(mode, flags["internal-usage"] === true, env) : readTelemetryPreference(env);
       console.log(`DiffCI telemetry: ${preference.mode}; activity: ${preference.internal ? "internal" : "external"}.`);
-      console.log("Reporting includes command, outcome, version, surface and activity. Installation mode adds a random local ID; installations are not people. No repository content or machine details are sent. --no-send always overrides consent.");
+      console.log(telemetryNotice(preference.mode));
       process.exitCode = 0;
       return;
     }

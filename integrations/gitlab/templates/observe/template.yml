@@ -51,6 +51,7 @@ spec:
       work="$(mktemp -d)"
       report="$work/diffci-observation.json"
       summary="$work/diffci-summary.md"
+      export DIFFCI_SURFACE=gitlab-component
       args=(observe --no-send --repo "$CI_PROJECT_DIR" --out "$report" --summary-out "$summary")
       if [ "$DIFFCI_REDACT" = "true" ]; then args+=(--redact-paths); fi
       (

@@ -1,13 +1,16 @@
-/** Explicit, best-effort usage signal. Never includes repository or machine details. */
-export type UsageCommand = "check" | "observe" | "verify";
-export type UsageOutcome = "observed" | "refused" | "error" | "passed" | "failed" | "blocked";
+/** Best-effort usage signal. Carries a repository name only when given one; never content, paths or machine details. */
+export type UsageCommand = "check" | "observe" | "verify" | "plan";
+export type UsageOutcome = "observed" | "refused" | "error" | "passed" | "failed" | "blocked" | "selective" | "full";
+export type UsageSurface = "cli" | "local-mcp" | "github-action" | "gitlab-component";
 export interface UsageSignal {
   command: UsageCommand;
   outcome: UsageOutcome;
   version: string;
-  surface?: "cli" | "local-mcp";
+  surface?: UsageSurface;
   activity?: "internal" | "external";
+  ci?: boolean;
   installationId?: string;
+  repository?: string;
   endpoint?: string;
   fetchImpl?: typeof fetch;
 }
@@ -22,9 +25,11 @@ export async function deliverUsageSignal(input: UsageSignal): Promise<DeliveryRe
       body: JSON.stringify({ schema: "diffci.usage.v1", command: input.command, outcome: input.outcome, version: input.version,
         ...(input.surface ? { surface: input.surface } : {}),
         ...(input.activity ? { activity: input.activity } : {}),
+        ...(input.ci !== undefined ? { ci: input.ci } : {}),
         ...(input.installationId ? { installation_id: input.installationId } : {}),
+        ...(input.repository ? { repository: input.repository } : {}),
       }),
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(3000),
     });
     return { status: !response.ok ? "failed" : response.status === 202 ? "accepted" : "delivered", httpStatus: response.status };
   } catch (error) {

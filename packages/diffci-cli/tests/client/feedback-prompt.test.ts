@@ -24,8 +24,8 @@ test("feedback prompt is interactive-only, suppressible and at most weekly", () 
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-test("feedback prompt offers telemetry only while it is off", () => {
-  assert.match(formatFeedbackPrompt("off"), /diffci telemetry --mode anonymous/);
-  assert.doesNotMatch(formatFeedbackPrompt("anonymous"), /diffci telemetry/);
-  assert.match(formatFeedbackPrompt("anonymous"), /diffci\.com\/#pilot/);
+test("feedback prompt names the count-only choice only while repository names are sent", () => {
+  assert.match(formatFeedbackPrompt("repo"), /diffci telemetry --mode count-only/);
+  assert.doesNotMatch(formatFeedbackPrompt("count-only"), /diffci telemetry/);
+  assert.match(formatFeedbackPrompt("count-only"), /diffci\.com\/#pilot/);
 });
