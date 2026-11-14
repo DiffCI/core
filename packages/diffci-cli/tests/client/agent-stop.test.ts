@@ -25,8 +25,8 @@ function report(verification: VerificationReport["verification"], fields: Partia
 describe("agent stop decisions (2026-11-06)", () => {
   const failed = report("failed", { execution: { command: "", exitCode: 1, signal: null, timedOut: false, startedAt: "", finishedAt: "", wallMs: 1, stdoutTail: "", stderrTail: "", failingTests: ["a adds"] } });
 
-  it("asks Claude Code and Codex to continue with the failures, and Cursor through a follow-up", () => {
-    for (const agent of ["claude", "codex"] as const) {
+  it("asks Claude Code, Codex and Copilot to continue with the failures, and Cursor through a follow-up", () => {
+    for (const agent of ["claude", "codex", "copilot"] as const) {
       const decision = decideStop(agent, failed, 0, 3);
       const output = JSON.parse(decision.stdout);
       assert.equal(output.decision, "block");
@@ -42,6 +42,8 @@ describe("agent stop decisions (2026-11-06)", () => {
     assert.match(JSON.parse(blocked.stdout).systemMessage, /could not verify/);
     assert.equal(JSON.parse(blocked.stdout).decision, undefined);
     assert.deepEqual(JSON.parse(decideStop("cursor", undefined, 0, 3).stdout), {});
+    // Copilot documents only decision and reason for agentStop.
+    assert.deepEqual(JSON.parse(decideStop("copilot", report("blocked"), 1, 3).stdout), {});
   });
 
   it("hands back to the person after the maximum attempts", () => {
@@ -74,6 +76,20 @@ describe("agent stop hook files", () => {
       assert.deepEqual(JSON.parse(readFileSync(join(dir, ".cursor/hooks.json"), "utf8")), { version: 1, hooks: { stop: [{ command: "npx --no-install diffci agent-stop --agent cursor", loop_limit: 3 }] } });
       writeAgentStopHook(dir, "codex", "npx --no-install diffci");
       assert.equal(JSON.parse(readFileSync(join(dir, ".codex/hooks.json"), "utf8")).hooks.Stop[0].hooks[0].command, "npx --no-install diffci agent-stop --agent codex");
+
+      // Copilot: agentStop in .github/hooks/diffci.json, with bash and powershell commands; other hooks kept.
+      mkdirSync(join(dir, ".github/hooks"), { recursive: true });
+      writeFileSync(join(dir, ".github/hooks/diffci.json"), JSON.stringify({ version: 1, hooks: {
+        agentStop: [{ type: "command", bash: "./notify.sh" }, { type: "command", bash: "npx --yes \"@diffci.com/diffci@0.3.1\" agent-stop --agent copilot" }],
+        sessionStart: [{ type: "command", bash: "./start.sh" }],
+      } }));
+      assert.match(writeAgentStopHook(dir, "copilot", "npx --no-install diffci"), /updated \.github\/hooks\/diffci\.json \(DiffCI stop hook\)/);
+      const copilot = "npx --no-install diffci agent-stop --agent copilot";
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, ".github/hooks/diffci.json"), "utf8")), { version: 1, hooks: {
+        agentStop: [{ type: "command", bash: "./notify.sh" }, { type: "command", bash: copilot, powershell: copilot, timeoutSec: 1200 }],
+        sessionStart: [{ type: "command", bash: "./start.sh" }],
+      } });
+      assert.match(writeAgentStopHook(dir, "copilot", "npx --no-install diffci"), /kept .*current/);
 
       writeFileSync(join(dir, ".codex/hooks.json"), "{ broken");
       assert.match(writeAgentStopHook(dir, "codex", "npx --no-install diffci"), /kept .*not a JSON object/);
@@ -123,6 +139,7 @@ describe("diffci agent-stop", () => {
       assert.equal(stop(dir, "claude", payload, { DIFFCI_AGENT_HOOK_MAX: "2" }).stdout.trim(), "{}");
       assert.equal(stop(dir, "cursor", { conversation_id: "c1", workspace_roots: [dir], loop_count: 0 }, { DIFFCI_AGENT_HOOK_MAX: "2" }).stdout.trim(), "{}");
       assert.equal(stop(dir, "codex", payload, { DIFFCI_AGENT_HOOK: "0" }).stdout.trim(), "{}");
+      assert.equal(stop(dir, "copilot", { sessionId: "p1", cwd: dir, stopReason: "end_turn", stop_hook_active: false }).stdout.trim(), "{}");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

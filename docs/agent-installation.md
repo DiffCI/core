@@ -27,8 +27,10 @@ npx "@diffci.com/diffci@latest" init
 ```
 
 Besides the instruction files, it registers the DiffCI MCP server in `.mcp.json`
-(Claude Code) and `.cursor/mcp.json` (Cursor), keeping any other servers there,
-writes the `diffci-verify` skill to `.claude/skills/diffci-verify/SKILL.md`,
+(Claude Code, VS Code), `.cursor/mcp.json` (Cursor), `.kiro/settings/mcp.json`
+(Kiro) and `.agents/mcp_config.json` (Antigravity CLI), keeping any other servers
+there. It writes the `diffci-verify` skill to `.claude/skills` (Claude Code,
+Copilot), `.agents/skills` (Antigravity CLI, Codex) and `.kiro/skills` (Kiro),
 adds agent stop hooks, and installs the pre-push hook. Commit the config, hook and
 skill files so every agent session in the repository finds them. `--no-mcp`,
 `--no-skill`, `--no-agent-hooks` and `--no-hook` leave each part out. Four things
@@ -36,7 +38,8 @@ make DiffCI the default:
 
 1. **Verify when the agent finishes a turn.** `init` adds a stop hook that runs
    `diffci agent-stop` to `.claude/settings.json` (Claude Code), `.codex/hooks.json`
-   (Codex) and `.cursor/hooks.json` (Cursor), keeping every other hook there. When
+   (Codex), `.cursor/hooks.json` (Cursor) and `.github/hooks/diffci.json` (GitHub
+   Copilot's `agentStop`), keeping every other hook there. When
    the agent ends a turn, DiffCI verifies the uncommitted changes. If tests or
    checks fail, the agent is asked to keep working with the failures as the
    reason, at most `DIFFCI_AGENT_HOOK_MAX` times a session (default 3), after which
@@ -134,8 +137,8 @@ in a project `.cursor/mcp.json` or Cursor's global MCP settings.
 
 Copilot reads project skills from `.github/skills` and from `.claude/skills`, so
 the `diffci-verify` skill that `diffci init` writes already reaches Copilot's
-cloud agent, Copilot CLI and agent mode in VS Code. Paste the
-[short snippet](#short-snippet) into `.github/copilot-instructions.md`.
+cloud agent, Copilot CLI and agent mode in VS Code. `init` also writes the
+instructions to `.github/copilot-instructions.md`.
 
 **VS Code agent mode.** VS Code reads the workspace-root `.mcp.json` that `init`
 writes (the `mcpServers` format) when the `chat.mcp.workspaceRootConfig.enabled`
@@ -169,14 +172,20 @@ own tests, so install whatever those tests need in `copilot-setup-steps.yml`,
 as you would without DiffCI. The tool list above leaves out `diffci_init` and
 `diffci_check` so that the agent cannot rewrite the repository's DiffCI setup.
 
-Copilot has no DiffCI stop hook yet. The instructions and skill are what make
-the agent verify.
+**Stop hook.** `init` adds an `agentStop` hook to `.github/hooks/diffci.json`,
+which Copilot CLI, the cloud agent and VS Code read. When the agent ends a turn
+with failing tests or checks, the hook answers `{"decision": "block", "reason"}`
+and Copilot takes another turn with the failures as the prompt. In the cloud
+agent that turn counts against the job's timeout. VS Code also runs the Claude
+Code hook in `.claude/settings.json`; the second run on an unchanged tree reuses
+the first result, so it does not run the tests again.
 
 ## Kiro
 
 Kiro reads `AGENTS.md` at the workspace root as steering, so the instructions
-that `diffci init` writes already apply. Add the MCP server in
-`.kiro/settings/mcp.json`:
+that `diffci init` writes already apply. `init` also registers the MCP server in
+`.kiro/settings/mcp.json` and writes the skill to `.kiro/skills/diffci-verify`.
+To add the server by hand:
 
 ```json
 {
@@ -198,13 +207,6 @@ The auto-approved tools only read the checkout. Kiro still asks before
 `diffci_run_affected_tests` runs tests; add it to `autoApprove` if you are happy
 for the agent to run them unprompted.
 
-Copy the skill into Kiro's workspace skills folder:
-
-```sh
-mkdir -p .kiro/skills
-cp -r .claude/skills/diffci-verify .kiro/skills/
-```
-
 If the repository has no `AGENTS.md`, put the [short snippet](#short-snippet) in
 `.kiro/steering/diffci.md` instead, starting with:
 
@@ -216,7 +218,9 @@ inclusion: always
 
 Kiro's custom agents do not load steering on their own. Give them
 `"resources": ["file://.kiro/steering/**/*.md", "file://AGENTS.md", "skill://.kiro/skills/*/SKILL.md"]`.
-Kiro has Agent Stop hooks, but `diffci agent-stop` does not support Kiro yet.
+Kiro has Agent Stop hooks (`Stop` in `.kiro/hooks/*.json`), but Kiro documents
+them as unable to block, so a hook could not make the agent fix a failure.
+`init` adds none, and the instructions and skill are what make Kiro verify.
 
 ## Antigravity CLI and Gemini CLI
 
@@ -224,7 +228,8 @@ Antigravity CLI replaced Gemini CLI for free-tier and Google One accounts on
 18 June 2026. Gemini CLI still serves the remaining accounts.
 
 **Antigravity CLI** (and the Antigravity IDE) reads workspace MCP servers from
-`.agents/mcp_config.json`:
+`.agents/mcp_config.json`, and skills from `.agents/skills`, a folder Codex reads
+as well. `diffci init` writes both. To add the server by hand:
 
 ```json
 {
@@ -235,13 +240,6 @@ Antigravity CLI replaced Gemini CLI for free-tier and Google One accounts on
     }
   }
 }
-```
-
-It reads workspace skills from `.agents/skills`, a folder Codex reads as well:
-
-```sh
-mkdir -p .agents/skills
-cp -r .claude/skills/diffci-verify .agents/skills/
 ```
 
 The `AGENTS.md` instructions that `init` writes are read as they are. Restart

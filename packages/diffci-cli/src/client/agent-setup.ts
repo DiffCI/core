@@ -33,9 +33,22 @@ export function ignoredWrites(repoPath: string, results: readonly string[]): str
  * instruction. Growth depends on the agent finding DiffCI's tools in the repository without anyone
  * installing a plugin, so one `diffci init` now registers them. Each write keeps files and servers
  * DiffCI did not write.
+ *
+ * 2026-11-14: also the hyperscalers' coding agents. Kiro gets `.kiro/settings/mcp.json` (the read-only
+ * tools auto-approved; it still asks before tests run) and `.kiro/skills`; Antigravity CLI gets
+ * `.agents/mcp_config.json` and `.agents/skills`, which Codex reads too. GitHub Copilot needs no file of
+ * its own for these: VS Code reads the root `.mcp.json`, and Copilot reads `.claude/skills`.
  */
-export const MCP_CONFIG_PATHS = [".mcp.json", ".cursor/mcp.json"] as const;
+export const MCP_CONFIG_PATHS = [".mcp.json", ".cursor/mcp.json", ".kiro/settings/mcp.json", ".agents/mcp_config.json"] as const;
 export const SKILL_PATH = ".claude/skills/diffci-verify/SKILL.md";
+export const SKILL_PATHS = [SKILL_PATH, ".agents/skills/diffci-verify/SKILL.md", ".kiro/skills/diffci-verify/SKILL.md"] as const;
+const SKILL_AGENTS: Record<string, string> = {
+  [SKILL_PATH]: "Claude Code and Copilot skill",
+  ".agents/skills/diffci-verify/SKILL.md": "Antigravity CLI and Codex skill",
+  ".kiro/skills/diffci-verify/SKILL.md": "Kiro skill",
+};
+/** MCP tools that only read the checkout; Kiro runs them without asking. */
+export const KIRO_AUTO_APPROVE = ["diffci_changed_files", "diffci_select_tests", "diffci_explain_selection"] as const;
 
 /** Same launcher as the portable agent plugin: `npx` through cmd.exe on Windows, where agents cannot spawn `npx.cmd` directly. */
 export function mcpServerEntry(version: string): { command: string; args: string[] } {
@@ -55,7 +68,8 @@ function isDiffciEntry(entry: unknown): boolean {
 /** Adds or updates the `diffci` server and leaves every other server untouched. */
 export function writeMcpConfig(repoPath: string, relativePath: string, version: string, force: boolean): string {
   const absolutePath = join(repoPath, relativePath);
-  const entry = mcpServerEntry(version);
+  const entry: Record<string, unknown> = mcpServerEntry(version);
+  if (relativePath === ".kiro/settings/mcp.json") entry.autoApprove = [...KIRO_AUTO_APPROVE];
   let config: { mcpServers?: Record<string, unknown> } & Record<string, unknown> = {};
   let existing: string | undefined;
   if (existsSync(absolutePath)) {
@@ -123,11 +137,18 @@ project CI stays authoritative.
  * agent's project hook file. Claude Code and Codex share one shape (`Stop` > group > handlers); Cursor has
  * its own (`version: 1`, `stop` > handlers). A hook is DiffCI's when its command runs `agent-stop` from
  * the DiffCI package; those are replaced, every other hook is kept.
+ *
+ * GitHub Copilot (2026-11-14): `agentStop` in `.github/hooks/diffci.json` (`version: 1`, handlers with
+ * `bash` and `powershell` commands), read by Copilot CLI, the cloud agent and VS Code. Its documented
+ * `{"decision": "block", "reason"}` output forces another turn. Kiro has no hook here: its `Stop`
+ * trigger is documented as unable to block, so it could not make the agent fix a failure.
  */
-export const AGENT_HOOK_PATHS: Record<"claude" | "codex" | "cursor", string> = {
+export type SetupHookAgent = "claude" | "codex" | "cursor" | "copilot";
+export const AGENT_HOOK_PATHS: Record<SetupHookAgent, string> = {
   claude: ".claude/settings.json",
   codex: ".codex/hooks.json",
   cursor: ".cursor/hooks.json",
+  copilot: ".github/hooks/diffci.json",
 };
 /** Seconds the agent waits for the hook; verify's own timeout stays below it (cli.ts, agent-stop). */
 export const AGENT_HOOK_TIMEOUT_SECONDS = 1200;
@@ -136,7 +157,7 @@ function isDiffciHook(command: unknown): boolean {
   return typeof command === "string" && /\bagent-stop\b/.test(command) && /diffci/.test(command);
 }
 
-export function writeAgentStopHook(repoPath: string, agent: "claude" | "codex" | "cursor", launcher: string): string {
+export function writeAgentStopHook(repoPath: string, agent: SetupHookAgent, launcher: string): string {
   const relativePath = AGENT_HOOK_PATHS[agent];
   const absolutePath = join(repoPath, relativePath);
   const command = `${launcher} agent-stop --agent ${agent}`;
@@ -156,6 +177,14 @@ export function writeAgentStopHook(repoPath: string, agent: "claude" | "codex" |
   if (agent === "cursor") {
     const stop = Array.isArray(hooks.stop) ? hooks.stop.filter((entry) => !isDiffciHook((entry as { command?: unknown })?.command)) : [];
     config = { ...config, version: typeof config.version === "number" ? config.version : 1, hooks: { ...hooks, stop: [...stop, { command, loop_limit: 3 }] } };
+  } else if (agent === "copilot") {
+    const ours = (entry: unknown) => ["bash", "powershell", "command"].some((key) => isDiffciHook((entry as Record<string, unknown> | null)?.[key]));
+    const stop = Array.isArray(hooks.agentStop) ? hooks.agentStop.filter((entry) => !ours(entry)) : [];
+    config = {
+      ...config,
+      version: typeof config.version === "number" ? config.version : 1,
+      hooks: { ...hooks, agentStop: [...stop, { type: "command", bash: command, powershell: command, timeoutSec: AGENT_HOOK_TIMEOUT_SECONDS }] },
+    };
   } else {
     const groups = (Array.isArray(hooks.Stop) ? hooks.Stop : []).flatMap((group) => {
       const handlers = Array.isArray((group as { hooks?: unknown })?.hooks) ? (group as { hooks: unknown[] }).hooks : [];
@@ -172,18 +201,18 @@ export function writeAgentStopHook(repoPath: string, agent: "claude" | "codex" |
 }
 
 /** A skill file DiffCI wrote is recognised by its frontmatter name and updated; any other file is kept. */
-export function writeSkill(repoPath: string, force: boolean): string {
-  const absolutePath = join(repoPath, SKILL_PATH);
+export function writeSkill(repoPath: string, force: boolean, relativePath: string = SKILL_PATH): string {
+  const absolutePath = join(repoPath, relativePath);
   if (existsSync(absolutePath)) {
     const existing = readFileSync(absolutePath, "utf8");
-    if (existing.replace(/\r\n/g, "\n") === DIFFCI_VERIFY_SKILL) return `kept ${SKILL_PATH} (current)`;
+    if (existing.replace(/\r\n/g, "\n") === DIFFCI_VERIFY_SKILL) return `kept ${relativePath} (current)`;
     if (!/^---\r?\nname: diffci-verify\r?\n/.test(existing) && !force) {
-      return `kept ${SKILL_PATH} (existing file not written by DiffCI; pass --force to replace it)`;
+      return `kept ${relativePath} (existing file not written by DiffCI; pass --force to replace it)`;
     }
     writeFileSync(absolutePath, DIFFCI_VERIFY_SKILL, "utf8");
-    return `updated ${SKILL_PATH}`;
+    return `updated ${relativePath}`;
   }
   mkdirSync(dirname(absolutePath), { recursive: true });
   writeFileSync(absolutePath, DIFFCI_VERIFY_SKILL, "utf8");
-  return `wrote ${SKILL_PATH} (Claude Code skill)`;
+  return `wrote ${relativePath} (${SKILL_AGENTS[relativePath] ?? "skill"})`;
 }

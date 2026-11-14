@@ -12,13 +12,13 @@ import type { VerificationReport } from "./verify.js";
  * verify is advice an agent can skip; a hook on the end of its turn is not. The agent finds out what its
  * change broke before it tells anyone the work is done.
  *
- * WHAT. `diffci agent-stop --agent claude|codex|cursor` is the command the agent's stop hook runs
+ * WHAT. `diffci agent-stop --agent claude|codex|cursor|copilot` is the command the agent's stop hook runs
  * (Claude Code `Stop` in .claude/settings.json, Codex `Stop` in .codex/hooks.json, Cursor `stop` in
- * .cursor/hooks.json; `diffci init` installs them). It reads the hook's JSON from stdin, verifies the
+ * .cursor/hooks.json, GitHub Copilot `agentStop` in .github/hooks/diffci.json; `diffci init` installs them). It reads the hook's JSON from stdin, verifies the
  * uncommitted changes, and:
  *   - passes quietly when nothing changed or verification passed;
  *   - when tests or checks fail, asks the agent to continue with the failures as the reason (Claude Code
- *     and Codex: `{"decision": "block", "reason"}`; Cursor: `{"followup_message"}`);
+ *     Codex and Copilot: `{"decision": "block", "reason"}`; Cursor: `{"followup_message"}`);
  *   - never holds the agent when verification could not run (blocked analysis, no command): that is
  *     reported to the person, not turned into work for the agent;
  *   - hands back to the person after DIFFCI_AGENT_HOOK_MAX failed attempts in one session (default 3),
@@ -26,12 +26,14 @@ import type { VerificationReport } from "./verify.js";
  * DIFFCI_AGENT_HOOK=0 turns it off. Repeats on an unchanged tree are instant through result reuse.
  */
 
-export type HookAgent = "claude" | "codex" | "cursor";
-export const HOOK_AGENTS: readonly HookAgent[] = ["claude", "codex", "cursor"];
+export type HookAgent = "claude" | "codex" | "cursor" | "copilot";
+export const HOOK_AGENTS: readonly HookAgent[] = ["claude", "codex", "cursor", "copilot"];
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
 export interface StopPayload {
   session_id?: string;
+  /** GitHub Copilot's `agentStop` payload. */
+  sessionId?: string;
   conversation_id?: string;
   cwd?: string;
   workspace_roots?: string[];
@@ -60,7 +62,7 @@ export function stopRepoPath(payload: StopPayload, env: Record<string, string | 
 }
 
 function sessionKey(payload: StopPayload): string {
-  return payload.session_id ?? payload.conversation_id ?? "unknown";
+  return payload.session_id ?? payload.sessionId ?? payload.conversation_id ?? "unknown";
 }
 
 function attemptsPath(repoPath: string): string | undefined {
@@ -118,7 +120,8 @@ function failureReason(report: VerificationReport, attempt: number, max: number)
  */
 export function decideStop(agent: HookAgent, report: VerificationReport | undefined, failuresSoFar: number, max: number): StopDecision {
   const allow = (message?: string): StopDecision => ({
-    stdout: JSON.stringify(message && agent !== "cursor" ? { systemMessage: message } : {}),
+    // Cursor and Copilot document no field for a message to the person.
+    stdout: JSON.stringify(message && agent !== "cursor" && agent !== "copilot" ? { systemMessage: message } : {}),
     failures: 0,
   });
   if (!report) return allow("DiffCI could not verify this turn's changes.");
