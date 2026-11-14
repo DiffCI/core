@@ -283,7 +283,7 @@ Thank you to everyone who has improved DiffCI:
 - <a href="https://github.com/robertwmccarty-caelum"><img src="https://github.com/robertwmccarty-caelum.png?size=80" width="40" height="40" alt="@robertwmccarty-caelum"></a> **[@robertwmccarty-caelum](https://github.com/robertwmccarty-caelum)**: the Vitest reporter/timeout config fixture and its narrowing conditions ([#53](https://github.com/DiffCI/core/issues/53#issuecomment-6514436312), landed in [#65](https://github.com/DiffCI/core/pull/65)).
 - <a href="https://github.com/varshith84"><img src="https://github.com/varshith84.png?size=80" width="40" height="40" alt="@varshith84"></a> **[Varshith Sai Pasupuleti](https://github.com/varshith84)**: tests for transitive Vue selection and full fallback ([#16](https://github.com/DiffCI/core/pull/16)).
 
-Every merged contribution is credited in the release notes, here, and next to the feature in the docs.
+Every merged contribution is credited in the release notes, here, on [diffci.com/contributors](https://diffci.com/contributors), and next to the feature in the docs.
 
 ## License
 

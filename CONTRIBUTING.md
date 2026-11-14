@@ -16,7 +16,7 @@ Sign off every commit to certify the [Developer Certificate of Origin](https://d
 
 ## Credit
 
-Every merged contribution is credited by name: in the release notes of the version that ships it, in the [Contributors](README.md#contributors) list in the README, and next to the feature in the docs when it adds one. Tell us in your PR if you would like a different name or link used.
+Every merged contribution is credited by name: in the release notes of the version that ships it, in the [Contributors](README.md#contributors) list in the README, on [diffci.com/contributors](https://diffci.com/contributors), and next to the feature in the docs when it adds one. Tell us in your PR if you would like a different name or link used, or would rather not be listed on diffci.com.
 
 ## Contributor tiers
 
