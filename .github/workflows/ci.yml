@@ -117,7 +117,13 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            packages/diffci-cli/package-lock.json
       - run: npm ci --ignore-scripts
+      # The CLI's own tests compile it with the CLI package's TypeScript, and the gate can select them.
+      - working-directory: packages/diffci-cli
+        run: npm ci --ignore-scripts --no-audit --fund=false
       - name: Resolve the published CLI release
         id: published_cli
         shell: bash
