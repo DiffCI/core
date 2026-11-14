@@ -47,6 +47,10 @@ blurred. A failure seen on several PRs is **shared**: a broken base branch, or a
 | **Flaky** | The same head commit later passed in the same workflow |
 | **Infra** | Nothing but setup or cancellation |
 
+A run GitHub marks failed although no job started (zero jobs, or every job skipped) is not counted as red at
+all: the workflow failed to start, often on a fork's pull request, so nothing about the change was checked. The
+report counts these runs separately as never started.
+
 Job names decide the first table. If your repository names its jobs differently, override the lists with
 `--check-jobs '<regex>'` and `--ci-only-jobs '<regex>'` (case-insensitive, matched against the job name).
 

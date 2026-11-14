@@ -119,6 +119,12 @@ export function signatures(annotations: Annotation[]): Set<string> {
   return out;
 }
 
+/** A red run where no job started (zero jobs, or all skipped): a workflow that failed to start, typically a fork
+ * PR's run that GitHub rejected. Nothing was checked, so it is not a red build of the change. */
+export function nothingRan(jobs: JobSummary[]): boolean {
+  return jobs.every((job) => !job.startedAt || job.conclusion === "skipped");
+}
+
 function minutes(job: JobSummary): number {
   if (!job.startedAt || !job.completedAt) return 0;
   return Math.max(0, (Date.parse(job.completedAt) - Date.parse(job.startedAt)) / 60_000);
@@ -169,7 +175,7 @@ export function classify(input: ClassifyInput): RedRun[] {
   const rows: RedRun[] = [];
   for (const run of input.runs) {
     const jobs = input.jobs.get(run.id);
-    if (run.conclusion !== "failure" || !jobs) continue;
+    if (run.conclusion !== "failure" || !jobs || nothingRan(jobs)) continue;
     const allFailing = failingOf(jobs);
     // A gate job that only reports "something else failed" says nothing on its own.
     const failing = allFailing.some((j) => !isAggregateJob(j)) ? allFailing.filter((j) => !isAggregateJob(j)) : allFailing;
@@ -224,7 +230,10 @@ export interface RedBuildsReport {
   workflow: string | null;
   window: { from: string; to: string } | null;
   pullRequestRuns: number;
+  /** Red runs where at least one job ran. */
   redRuns: number;
+  /** Runs GitHub marked failed although no job started (workflow startup failures); left out of redRuns. */
+  neverStarted: number;
   analysed: number;
   unreadable: number;
   verdicts: Record<Verdict, { runs: number; runnerMinutes: number }>;
@@ -233,7 +242,7 @@ export interface RedBuildsReport {
   rows: RedRun[];
 }
 
-export function summarise(repository: string, runs: RunSummary[], rows: RedRun[], stoppedEarly: string | null): RedBuildsReport {
+export function summarise(repository: string, runs: RunSummary[], rows: RedRun[], stoppedEarly: string | null, neverStarted = 0): RedBuildsReport {
   const verdicts = Object.fromEntries(VERDICTS.map((v) => [v, { runs: 0, runnerMinutes: 0 }])) as RedBuildsReport["verdicts"];
   for (const row of rows) {
     verdicts[row.verdict].runs++;
@@ -241,7 +250,7 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
   }
   for (const v of VERDICTS) verdicts[v].runnerMinutes = Math.round(verdicts[v].runnerMinutes);
   const times = runs.map((r) => r.createdAt).sort();
-  const red = runs.filter((r) => r.conclusion === "failure").length;
+  const red = runs.filter((r) => r.conclusion === "failure").length - neverStarted;
   return {
     schemaVersion: RED_BUILDS_SCHEMA,
     repository,
@@ -249,6 +258,7 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
     window: times.length ? { from: times[0]!, to: times.at(-1)! } : null,
     pullRequestRuns: runs.length,
     redRuns: red,
+    neverStarted,
     analysed: rows.length,
     unreadable: red - rows.length,
     verdicts,
@@ -287,6 +297,7 @@ export function formatReport(report: RedBuildsReport): string {
   lines.push(
     `${report.window.from.slice(0, 16).replace("T", " ")} to ${report.window.to.slice(0, 16).replace("T", " ")} UTC · ${report.pullRequestRuns} pull request runs, ${report.redRuns} red (${pct(report.redRuns, report.pullRequestRuns)})`,
   );
+  if (report.neverStarted > 0) lines.push(`${report.neverStarted} more runs were marked failed although no job started (the workflow failed to start); they are not counted as red.`);
   if (report.unreadable > 0) lines.push(`${report.unreadable} red runs could not be read and are left out.`);
   if (report.analysed === 0) {
     lines.push("", "No red runs to analyse.");
@@ -482,7 +493,8 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
       stoppedEarly = error.message;
     }
   }
-  const report = summarise(repository, runs, rows, stoppedEarly);
+  const neverStarted = runs.filter((r) => r.conclusion === "failure" && jobs.has(r.id) && nothingRan(jobs.get(r.id)!)).length;
+  const report = summarise(repository, runs, rows, stoppedEarly, neverStarted);
   report.workflow = workflowLabel || runs[0]?.workflowName || null;
   return report;
 }

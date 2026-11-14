@@ -9,6 +9,7 @@ import {
   formatReport,
   pickMainWorkflow,
   githubClient,
+  nothingRan,
   runRedBuildsCommand,
   signatures,
   StopCollection,
@@ -106,6 +107,13 @@ describe("classify", () => {
   it("leaves out red runs whose jobs could not be read", () => {
     assert.deepEqual(classify({ repository: REPO, runs: [run(1)], jobs: new Map(), annotations: new Map() }), []);
   });
+
+  it("leaves out red runs where no job started", () => {
+    const skipped: JobSummary = { ...job(2, "lint", [], "skipped"), startedAt: "2026-11-10T10:00:00Z" };
+    const jobs = new Map([[1, [] as JobSummary[]], [2, [skipped]]]);
+    assert.ok(nothingRan([]) && nothingRan([skipped]));
+    assert.deepEqual(classify({ repository: REPO, runs: [run(1), run(2)], jobs, annotations: new Map() }), []);
+  });
 });
 
 describe("agentMarker", () => {
@@ -156,6 +164,22 @@ describe("collectRedBuilds", () => {
     assert.match(text, /Up to 1 of 1 red runs \(100%\)/);
     assert.match(text, /written by a coding agent\s+1/);
     assert.match(text, /upper bound/);
+  });
+
+  it("counts runs that failed before any job started apart from red runs", async () => {
+    const startup = { ...runsPage.workflow_runs[0], id: 3, run_attempt: 1, head_sha: "c".repeat(40), head_repository: { full_name: "fork/app" } };
+    const page = { workflow_runs: [...runsPage.workflow_runs, startup] };
+    const report = await collectRedBuilds({ repository: REPO, maxRuns: 200, get: fakeGitHub({
+      ...routes, [`repos/${REPO}/actions/runs?`]: page, [`repos/${REPO}/actions/workflows/9/runs?`]: page,
+      [`repos/${REPO}/actions/runs/3/attempts/1/jobs`]: { jobs: [] },
+    }, []) });
+    assert.equal(report.redRuns, 1);
+    assert.equal(report.neverStarted, 1);
+    assert.equal(report.unreadable, 0);
+    assert.equal(report.verdicts.infra.runs, 0);
+    const text = formatReport(report);
+    assert.match(text, /3 pull request runs, 1 red \(33%\)/);
+    assert.match(text, /1 more runs were marked failed although no job started/);
   });
 
   it("reports what it read when GitHub asks it to stop", async () => {
