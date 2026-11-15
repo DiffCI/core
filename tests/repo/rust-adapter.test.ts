@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -120,6 +120,37 @@ test("an excluded nested Cargo package cannot silently become part of its parent
     assert.ok(result.blockers.some(reason => reason.includes("Cargo manifests outside workspace membership") && reason.includes("excluded/Cargo.toml")));
     assert.ok(!result.sourcePaths.includes("excluded/src/lib.rs"));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Cargo maps a checkout reached through a symlinked directory", (t) => {
+  const files = {
+    "Cargo.toml": manifest("example"), "src/lib.rs": "#[cfg(test)] mod tests {}",
+    "tests/api.rs": "#[test] fn test_api() {}",
+  };
+  const root = fixture(files);
+  const links = mkdtempSync(join(tmpdir(), "diffci-rust-link-"));
+  const linked = join(links, "repo");
+  try {
+    try {
+      if (process.platform === "win32") symlinkSync(root, linked, "junction");
+      else symlinkSync(root, linked);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EACCES" || process.platform === "win32") {
+        t.diagnostic("symlink privilege unavailable; skipping symlinked-checkout coverage");
+        return;
+      }
+      throw error;
+    }
+    const physical = realpathSync(root);
+    const p = pkg(physical, "", "example", [target(physical, "src/lib.rs", "example"), target(physical, "tests/api.rs", "api", "test")]);
+    const result = analyzeRustMetadata({
+      repoPath: linked, files: Object.keys(files), profile: analyzeRepository({ repoPath: linked }),
+    }, metadata(physical, [p]));
+    assert.deepEqual(result.blockers, [foundationBlocker]);
+    assert.deepEqual(result.testPackages, { "src/lib.rs": "example", "tests/api.rs": "example" });
+    assert.deepEqual(result.testFiles, ["src/lib.rs", "tests/api.rs"]);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(links, { recursive: true, force: true }); }
 });
 
 test("Cargo rejects symlink escapes and duplicate target source identities", (t) => {
