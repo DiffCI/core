@@ -4,6 +4,8 @@ import { describe, it } from "node:test";
 import {
   agentMarker,
   bucketJob,
+  DEFAULT_PATTERNS,
+  isAggregateJob,
   classify,
   collectRedBuilds,
   formatReport,
@@ -13,6 +15,7 @@ import {
   runRedBuildsCommand,
   signatures,
   StopCollection,
+  suggestWorkflows,
   type Annotation,
   type GitHubGet,
   type JobSummary,
@@ -257,11 +260,26 @@ describe("job naming edge cases from real repositories", () => {
   });
 });
 
+describe("gate jobs and matrix-named jobs (continue, gutenberg)", () => {
+  it("treats status-check and require-all-checks gates as aggregate jobs", () => {
+    assert.ok(isAggregateJob(job(1, "Unit Tests - Status Check")));
+    assert.ok(isAggregateJob(job(1, "require-all-checks-to-pass")));
+    assert.ok(!isAggregateJob(job(1, "Status checker unit tests")));
+  });
+
+  it("lets a unit-test or lint workflow name a job named only by its matrix", () => {
+    assert.equal(bucketJob(job(1, "JavaScript (Node.js 24) 1/4"), DEFAULT_PATTERNS, "Unit Tests"), "check");
+    assert.equal(bucketJob(job(1, "JavaScript (Node.js 24) 1/4"), DEFAULT_PATTERNS, "CI"), "ci-only", "a generic workflow name says nothing");
+    assert.equal(bucketJob(job(1, "JavaScript (Node.js 24) 1/4"), DEFAULT_PATTERNS, "E2E unit tests"), "ci-only");
+    assert.equal(bucketJob(job(1, "release notes"), DEFAULT_PATTERNS, "Lint"), "ci-only", "a CI-side job name still wins");
+  });
+});
+
 describe("pickMainWorkflow", () => {
   // Minutes per workflow from real 100-run samples (2026-11-13): plain "most minutes" chose the wrong one.
-  function sample(entries: Array<[number, string, string, number]>) {
+  function sample(entries: Array<[number, string, string, number]>, conclusion = "success") {
     return entries.map(([id, name, path, minutes]) => ({
-      workflow_id: id, name, path: `.github/workflows/${path}`,
+      workflow_id: id, name, path: `.github/workflows/${path}`, conclusion,
       run_started_at: "2026-11-13T10:00:00Z", updated_at: new Date(Date.parse("2026-11-13T10:00:00Z") + minutes * 60_000).toISOString(),
     }));
   }
@@ -271,10 +289,46 @@ describe("pickMainWorkflow", () => {
     ["langfuse", [[1, "AWS preview build", "preview-build.yml", 13], [2, "CI/CD", "pipeline.yml", 10], [3, "CodeQL", "codeql.yml", 9], [4, "Security review", "claude-code-security-review.yml", 4]], "CI/CD"],
     ["medusa", [[1, "Documentation Tests", "docs-test.yml", 205], [2, "Medusa Pipeline", "action.yml", 146], [3, "CLI Pipeline", "test-cli-with-database.yml", 55]], "Medusa Pipeline"],
     ["lobehub", [[1, "Test CI", "test.yml", 156], [2, "E2E CI", "e2e.yml", 123], [3, "Desktop PR Build", "pr-build-desktop.yml", 49]], "Test CI"],
+    // Misses from the 37-repository sweep (samples of 2026-11-15).
+    ["continue", [[1, "CLI PR Checks", "cli-pr-checks.yml", 386], [2, "PR Build And Upload VSIX", "pr-build-upload-vsix.yaml", 301], [3, "PR Checks", "pr-checks.yaml", 301]], "PR Checks"],
+    ["OneKey", [[1, "02-unittest", "unittest.yml", 119], [2, "01-lint", "lint.yml", 118], [3, "Startup Graph Budget Check", "startup-graph-budget.yml", 103], [4, "Codacy Security Scan", "codacy.yml", 56]], "02-unittest"],
+    ["gutenberg", [[1, "End-to-End Tests", "end2end-test.yml", 167], [2, "Performance Tests", "performance.yml", 153], [3, "Storybook Build and Smoke Tests", "storybook-check.yml", 131], [4, "Static Analysis (Linting, License, Type checks...)", "static-checks.yml", 125], [5, "iOS Tests", "ios-tests.yml", 119], [6, "Unit Tests", "unit-test.yml", 71]], "Unit Tests"],
+    ["supabase", [[1, "Selfhosted Studio E2E Tests", "studio-e2e-test.yml", 16], [2, "Studio Unit Tests & Build Check", "studio-unit-tests.yml", 10], [3, "Check code with TypeScript & Lint", "typecheck.yml", 6], [4, "Check Code with Prettier", "prettier.yml", 5]], "Studio Unit Tests & Build Check"],
+    ["PostHog", [[1, "Semgrep Package Managers", "semgrep-package-managers.yml", 4], [2, "PR housekeeping", "pr-housekeeping.yml", 3], [3, "Proto CI", "ci-proto.yml", 2]], "Proto CI"],
   ];
   for (const [repo, entries, expected] of cases) {
     it(`picks the test CI for ${repo}`, () => {
       assert.equal(pickMainWorkflow(sample(entries))?.name, expected);
     });
   }
+
+  it("ignores time runs spent waiting for approval, and caps a run at 6 hours", () => {
+    const waiting = sample([[1, "CI", "ci.yml", 5000]], "action_required");
+    const real = sample([[2, "Tests", "tests.yml", 10]]);
+    assert.equal(pickMainWorkflow([...waiting, ...real])?.name, "Tests");
+    const stuck = sample([[3, "Build", "build.yml", 100_000]]);
+    const tests = sample([[4, "Test CI", "test.yml", 300], [4, "Test CI", "test.yml", 300]]);
+    assert.equal(pickMainWorkflow([...stuck, ...tests])?.name, "Test CI");
+  });
+
+  it("is not confident when only cleanups, scanners or bots ran (cal.com)", () => {
+    const picked = pickMainWorkflow(sample([[1, "cleanup caches by a branch", "cache-clean.yml", 9], [2, ".github/workflows/cleanup-report.yml", "cleanup-report.yml", 9]]));
+    assert.equal(picked?.confident, false);
+  });
+
+  it("suggests likely main workflows from the workflow list", () => {
+    const wf = (name: string, file: string, state = "active") => ({ name, path: `.github/workflows/${file}`, state });
+    const suggestions = suggestWorkflows([wf("cleanup caches by a branch", "cache-clean.yml"), wf("Unit", "unit-tests.yml"), wf("E2E", "e2e.yml"),
+      wf("Lint", "lint.yml"), wf("Old CI", "old-ci.yml", "disabled_manually"), wf("Copilot", "dynamic/copilot")]);
+    assert.deepEqual(suggestions, ['unit-tests.yml ("Unit")', 'lint.yml ("Lint")']);
+  });
+
+  it("refuses to guess and names candidates when no sampled workflow looks like CI", async () => {
+    const at = (m: number) => new Date(Date.parse("2026-11-13T10:00:00Z") + m * 60_000).toISOString();
+    const get = fakeGitHub({
+      [`repos/${REPO}/actions/runs?`]: { workflow_runs: [{ workflow_id: 1, name: "Cleanup", path: ".github/workflows/cleanup.yml", conclusion: "success", run_started_at: at(0), updated_at: at(5) }] },
+      [`repos/${REPO}/actions/workflows?`]: { workflows: [{ name: "Tests", path: ".github/workflows/tests.yml", state: "active" }] },
+    });
+    await assert.rejects(collectRedBuilds({ repository: REPO, get, maxRuns: 200 }), /looks like the main CI.*--workflow <file>; likely candidates: tests\.yml \("Tests"\)/);
+  });
 });

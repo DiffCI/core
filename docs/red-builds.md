@@ -11,9 +11,10 @@ signed-in `gh` CLI), because unauthenticated access allows 60 calls an hour.
 ## What it reads
 
 1. The most recent pull request runs (`--runs`, default 200) of one workflow: by default the one that looks like the main
-   pull request CI (most wall-clock time in a sample of 100 runs, favouring CI-like names and discounting scanners,
-   previews, benchmarks and bots). The report names it. Pass
-   `--workflow <id or file name>` to choose another.
+   pull request CI (most wall-clock time in a sample of 100 runs, favouring generic CI names like "PR Checks" or
+   "Unit Tests" and discounting scanners, previews, benchmarks, E2E, performance, cleanup and bot workflows; time a
+   run spent waiting for approval doesn't count). The report names it. If nothing in the sample looks like CI, it
+   stops and suggests likely workflows instead of guessing. Pass `--workflow <id or file name>` to choose another.
 2. The job list of the latest attempt of each red run.
 3. The failure annotations of each failing check job: the file and message your linter, type checker or test
    reporter attached.
@@ -51,7 +52,10 @@ A run GitHub marks failed although no job started (zero jobs, or every job skipp
 all: the workflow failed to start, often on a fork's pull request, so nothing about the change was checked. The
 report counts these runs separately as never started.
 
-Job names decide the first table. If your repository names its jobs differently, override the lists with
+Job names decide the first table. A job named only by its matrix ("JavaScript (Node.js 24) 1/4") takes its
+workflow's kind when the workflow is plainly a local check (unit tests, lint, typecheck, static analysis); in a
+workflow called "CI" it stays CI-only. Gate jobs that only report other jobs' results ("all checks passed",
+"Unit Tests - Status Check", "require-all-checks-to-pass") are ignored when another job failed. If your repository names its jobs differently, override the lists with
 `--check-jobs '<regex>'` and `--ci-only-jobs '<regex>'` (case-insensitive, matched against the job name).
 
 ## Reading the result

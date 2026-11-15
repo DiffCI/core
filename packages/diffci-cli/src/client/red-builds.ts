@@ -38,6 +38,11 @@ const CHECK_JOB = /\b(lint(ing)?|eslint|biome|prettier|format(ting)?|fmt|style|t
 /** Aggregate gate jobs ("all required jobs passed"): they fail because another job did, so they are ignored
  * whenever another job in the same run failed too. */
 const AGGREGATE_JOB = /^(verify|gate|ci|required|all[- ]?(required|checks|jobs|green)?([- ]?(passed|pass|green|ok))?|ci[- ]?(ok|success|passed|status|result)|status|summary|results?|conclusion|done|complete|finish(ed)?|success|alls-green|check[- ]results?)$/i;
+/** Gate jobs named after what they check: "Unit Tests - Status Check", "require-all-checks-to-pass". */
+const AGGREGATE_SUFFIX = /(^|\s-\s|\s)(status[- ]checks?|requires?d?[- ]all[- ]checks?([- ]to)?[- ](pass(ed)?|succeed(ed)?))$/i;
+/** Workflows whose every job is a local check, so a job named only by its matrix ("JavaScript (Node.js 24)
+ * 1/4") inherits the workflow's kind. Kept narrow: a workflow called "CI" or "Build and Test" says nothing. */
+const LOCAL_CHECK_WORKFLOW = /\b(unit[- ]?tests?|lint(ing)?|typecheck|type[- ]?checks?|static[- ]analysis)\b/i;
 const CI_ONLY_STEP = /lockfile|lock file|migration ordering/i;
 const GENERIC_ANNOTATION = /process completed with exit code|^command failed|elifecycle|exited with code/i;
 const TIMEOUT = /timed out|timeout/i;
@@ -83,7 +88,7 @@ export interface Patterns {
 
 export const DEFAULT_PATTERNS: Patterns = { checkJob: CHECK_JOB, ciOnlyJob: CI_ONLY_JOB };
 
-export function bucketJob(job: JobSummary, patterns: Patterns = DEFAULT_PATTERNS): JobBucket {
+export function bucketJob(job: JobSummary, patterns: Patterns = DEFAULT_PATTERNS, workflowName = ""): JobBucket {
   if (job.failedSteps.length === 0) return "infra"; // cancelled, timed out or runner lost: no step failed
   if (job.failedSteps.every((step) => INFRA_STEP.test(step))) return "infra";
   if (job.failedSteps.every((step) => CI_ONLY_STEP.test(step))) return "ci-only";
@@ -93,6 +98,7 @@ export function bucketJob(job: JobSummary, patterns: Patterns = DEFAULT_PATTERNS
   const ciOnlyFirst = patterns.ciOnlyJob === CI_ONLY_JOB ? CI_ONLY_STRONG : patterns.ciOnlyJob;
   if (ciOnlyFirst.test(name)) return "ci-only";
   if (patterns.checkJob.test(name)) return "check";
+  if (LOCAL_CHECK_WORKFLOW.test(workflowName) && !CI_ONLY_STRONG.test(workflowName) && !patterns.ciOnlyJob.test(name)) return "check";
   return "ci-only"; // a CI-side job by name, or one matching neither list: never inflates the preventable count
 }
 
@@ -102,7 +108,8 @@ function jobName(job: JobSummary): string {
 }
 
 export function isAggregateJob(job: JobSummary): boolean {
-  return AGGREGATE_JOB.test(jobName(job).replace(/[()]/g, "").trim());
+  const name = jobName(job).replace(/[()]/g, "").trim();
+  return AGGREGATE_JOB.test(name) || AGGREGATE_SUFFIX.test(name);
 }
 
 /** Failure signatures of one job: annotation path, title and first message line, with volatile parts blurred. */
@@ -164,7 +171,7 @@ export function classify(input: ClassifyInput): RedRun[] {
     const jobs = input.jobs.get(run.id);
     if (run.conclusion !== "failure" || !jobs) continue;
     for (const job of failingOf(jobs)) {
-      if (bucketJob(job, patterns) !== "check") continue;
+      if (bucketJob(job, patterns, run.workflowName) !== "check") continue;
       for (const sig of signatures(input.annotations.get(job.id) ?? [])) {
         if (!seen.has(sig)) seen.set(sig, new Set());
         seen.get(sig)!.add(prKey(run));
@@ -180,7 +187,7 @@ export function classify(input: ClassifyInput): RedRun[] {
     // A gate job that only reports "something else failed" says nothing on its own.
     const failing = allFailing.some((j) => !isAggregateJob(j)) ? allFailing.filter((j) => !isAggregateJob(j)) : allFailing;
     const detail = failing.map((job) => {
-      const bucket = bucketJob(job, patterns);
+      const bucket = bucketJob(job, patterns, run.workflowName);
       if (bucket !== "check") return { name: job.name, bucket };
       const annotations = input.annotations.get(job.id);
       const sigs = signatures(annotations ?? []);
@@ -366,31 +373,66 @@ export function githubClient(token: string, options: { minIntervalMs?: number; m
 }
 
 /** Workflows that run on pull requests but are not the test CI: scanners, previews, benchmarks, bots. */
-const NOT_MAIN_WORKFLOW = /\b(preview|codeql|security|semgrep|sonar(qube|cloud)?|snyk|scorecard|bench(mark)?s?|size|label(er|s)?|stale|triage|greet(ings?)?|welcome|translations?|i18n|docs?|documentation|docker|image|deploy(ment)?|release|licen[cs]e|title|conventional|commits?|semantic|submodule|e2e|playwright|cypress|lighthouse|dependabot|renovate|cla|dco|changeset|storybook|chromatic)\b/i;
+const NOT_MAIN_WORKFLOW = /\b(preview|codeql|security|semgrep|sonar(qube|cloud)?|snyk|scorecard|bench(mark)?s?|size|label(er|s)?|stale|triage|greet(ings?)?|welcome|translations?|i18n|docs?|documentation|docker|image|deploy(ment)?|release|licen[cs]e|title|conventional|commits?|semantic|submodule|e2e|end ?(to|2) ?end|playwright|cypress|lighthouse|dependabot|renovate|cla|dco|changeset|storybook|chromatic|clean(up)?|caches?|housekeeping|perf(ormance)?|ios|android)\b/i;
 /** Names and file names the main pull request CI usually has. */
-const MAIN_WORKFLOW = /\b(ci|cd|tests?|pipeline|pr|pull[-_ ]request|build|checks?|main|verify|validate|unit|lint|quality)\b/i;
+const MAIN_WORKFLOW = /\b(ci|cd|tests?|pipeline|pr|pull[-_ ]request|build|checks?|main|verify|validate|unit|unittests?|lint|quality)\b/i;
+/** Test words: a tie-breaker between two CI-looking workflows of about the same weight (unit tests over lint). */
+const TEST_WORKFLOW = /\b(tests?|unit|unittests?|ci)\b/i;
+/** Runs that waited for approval or never ran: their wall-clock time is waiting, not CI. */
+const IDLE_CONCLUSION = new Set(["action_required", "skipped", "startup_failure"]);
+/** No real pull request run takes longer; a longer span is a run left waiting or queued. */
+const MAX_RUN_MINUTES = 360;
+
+/** True when every word of the name is a generic CI word ("PR Checks", "Test CI", "02-unittest"), so it is
+ * the repository's main CI rather than one sub-project's ("CLI PR Checks"). */
+function genericName(name: string): boolean {
+  const words = name.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+  return words.length > 0 && words.every((word) => MAIN_WORKFLOW.test(word) || word === "and" || word === "run");
+}
+
+function workflowScore(name: string, path: string, minutes: number): { score: number; main: boolean } {
+  const text = `${name} ${path.replace(/\.ya?ml$/, "").replace(/[-_.]/g, " ")}`;
+  const notMain = NOT_MAIN_WORKFLOW.test(text);
+  const main = MAIN_WORKFLOW.test(text) && !notMain;
+  const score = (minutes + 0.01) * (notMain ? 0.05 : 1) * (MAIN_WORKFLOW.test(text) ? 2 : 1)
+    * (main && TEST_WORKFLOW.test(text) ? 1.05 : 1) * (main && genericName(name) ? 1.5 : 1);
+  return { score, main };
+}
 
 /**
  * The main pull request CI among one sample page of runs: wall-clock minutes per workflow, doubled when
  * its name or file looks like CI and cut to 5% when it looks like a scanner, preview, benchmark or bot.
  * Plain "most minutes" picked SonarQube, Benchmarks and preview builds on real repositories.
  */
-export function pickMainWorkflow(sample: any[]): { id: number; name: string; path: string } | undefined {
+export function pickMainWorkflow(sample: any[]): { id: number; name: string; path: string; confident: boolean } | undefined {
   const weight = new Map<number, { name: string; path: string; minutes: number }>();
   for (const r of sample) {
     const span = (Date.parse(r.updated_at) - Date.parse(r.run_started_at ?? r.created_at)) / 60_000;
     const path = String(r.path ?? "").replace(/^\.github\/workflows\//, "");
     const entry = weight.get(r.workflow_id) ?? { name: String(r.name ?? r.workflow_id), path, minutes: 0 };
-    entry.minutes += Number.isFinite(span) && span > 0 ? span : 0;
+    if (!IDLE_CONCLUSION.has(r.conclusion) && Number.isFinite(span) && span > 0) entry.minutes += Math.min(span, MAX_RUN_MINUTES);
     weight.set(r.workflow_id, entry);
   }
-  let best: { id: number; name: string; path: string; score: number } | undefined;
+  let best: { id: number; name: string; path: string; score: number; main: boolean } | undefined;
   for (const [id, w] of weight) {
-    const text = `${w.name} ${w.path.replace(/\.ya?ml$/, "").replace(/[-_.]/g, " ")}`;
-    const score = (w.minutes + 0.01) * (NOT_MAIN_WORKFLOW.test(text) ? 0.05 : 1) * (MAIN_WORKFLOW.test(text) ? 2 : 1);
-    if (!best || score > best.score) best = { id, name: w.name, path: w.path, score };
+    const { score, main } = workflowScore(w.name, w.path, w.minutes);
+    if (!best || score > best.score) best = { id, name: w.name, path: w.path, score, main };
   }
-  return best && { id: best.id, name: best.name, path: best.path };
+  return best && { id: best.id, name: best.name, path: best.path, confident: best.main };
+}
+
+/** Likely main CI workflows from the repository's workflow list, best first, for a --workflow suggestion. */
+export function suggestWorkflows(workflows: any[]): string[] {
+  return workflows
+    .filter((w) => w.state === "active" && String(w.path ?? "").startsWith(".github/workflows/"))
+    .map((w) => {
+      const file = String(w.path).replace(/^\.github\/workflows\//, "");
+      return { file, name: String(w.name ?? file), ...workflowScore(String(w.name ?? file), file, 1) };
+    })
+    .filter((w) => w.main)
+    .sort((a, b) => b.score - a.score || a.name.length - b.name.length)
+    .slice(0, 5)
+    .map((w) => `${w.file} ("${w.name}")`);
 }
 
 export interface CollectOptions {
@@ -423,6 +465,12 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
       if (status !== 200) throw new Error(`listing workflow runs failed (HTTP ${status})`);
       const chosen = pickMainWorkflow((body as { workflow_runs?: any[] })?.workflow_runs ?? []);
       if (!chosen) return summarise(repository, [], [], null);
+      if (!chosen.confident) {
+        // Only scanners, cleanups or bots ran in the sample: guessing would analyse the wrong workflow.
+        const list = await get(`repos/${repository}/actions/workflows?per_page=100`);
+        const suggestions = list.status === 200 ? suggestWorkflows((list.body as { workflows?: any[] })?.workflows ?? []) : [];
+        throw new Error(`no workflow among the latest pull request runs looks like the main CI (the busiest was "${chosen.name}", ${chosen.path}). Pass --workflow <file>${suggestions.length ? `; likely candidates: ${suggestions.join(", ")}` : ""}`);
+      }
       workflow = String(chosen.id);
       workflowLabel = chosen.name;
       log(`Using the "${workflowLabel}" workflow (${chosen.path}), which looks like the main pull request CI. Pass --workflow to choose another.`);
@@ -463,7 +511,7 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
       if (readable) jobs.set(run.id, list);
     }
 
-    const checkJobs = red.flatMap((run) => (jobs.get(run.id) ?? []).filter((j) => (j.conclusion === "failure" || j.conclusion === "timed_out") && bucketJob(j, patterns) === "check"));
+    const checkJobs = red.flatMap((run) => (jobs.get(run.id) ?? []).filter((j) => (j.conclusion === "failure" || j.conclusion === "timed_out") && bucketJob(j, patterns, run.workflowName) === "check"));
     log(`Reading failure annotations of ${checkJobs.length} failing check jobs...`);
     for (const job of checkJobs) {
       const { status, body } = await get(`repos/${repository}/check-runs/${job.id}/annotations?per_page=50`);
