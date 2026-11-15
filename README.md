@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/DiffCI/core/badge)](https://scorecard.dev/viewer/?uri=github.com/DiffCI/core)
 
-**Affected checks before push, for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, so they run before the push instead of failing at the full CI gate afterwards. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
+**Verification for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, runs them before the push instead of letting them fail at the full CI gate afterwards, and leaves a receipt of what ran and what was skipped. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
 
 ```sh
 npx "@diffci.com/diffci@latest" check
@@ -15,11 +15,13 @@ Run it in any Git checkout with Node.js 22.5+. [What the output means](docs/usin
 
 If DiffCI saves you CI time, a ⭐ helps others find it.
 
-**On every pull request**, add one job beside your existing CI. Its job summary shows which tests the change affects and why, or that the full suite is needed and why. It runs no tests and skips or changes nothing:
+**On every pull request, with no workflow file:** [install the DiffCI GitHub App](https://github.com/apps/diffci/installations/new). On each pull request of a public repository it posts one "DiffCI change impact" check listing the affected tests and why. The check is always neutral, so it never blocks a merge. The App reads code and Actions runs and its only write permission is that check run; it never skips tests or changes required checks. [Data handling](https://diffci.com/data-handling).
+
+**Or in your own workflow** (including private repositories), add one job beside your existing CI. Its job summary shows which tests the change affects and why, or that the full suite is needed and why. It runs no tests and skips or changes nothing:
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: DiffCI/core@v0.3.38
+- uses: DiffCI/core@v0.3.43
 ```
 
 Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same answer appears on the pull request itself, updated in place on each push:
@@ -40,6 +42,12 @@ Coding agents pass the narrow check they picked and miss wider breakage, then re
 - **Agents chose their own test files 928 times and ran the full suite 282 times**, but asked a tool which tests were affected only 24 times.
 - **When DiffCI could narrow the run, it selected 2.2% of test files**, cutting test time by 93%. None of those commits had a failing test, so this shows speed, not regression catching.
 - **DiffCI still fell back to the full suite on 58% of commits**, mostly because a config file or `package.json` changed. Narrowing those safely is the main open problem, and [a good place to contribute](#contributing).
+
+**Check your own repository.** How many of its red pull request builds failed on checks the author could have run before pushing? This reads GitHub Actions history only, runs nothing, and needs a GitHub token ([method](docs/red-builds.md)):
+
+```sh
+npx "@diffci.com/diffci@latest" red-builds owner/repo
+```
 
 ## MCP server
 
@@ -125,6 +133,11 @@ first, and fails within minutes when one breaks. It adds a job and skips
 nothing, so your full test job stays as it is
 ([example](examples/github-actions-fast-check.yml)).
 
+Add `check-run: "true"` for a [merge gate](docs/github-action-observer.md#merge-gate):
+a "DiffCI merge gate" check run that branch protection can require. It passes
+when the affected tests passed, fails when they failed, stays neutral when
+DiffCI is unsure, and names the AI coding agent that wrote the change.
+
 The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/4c76be14cec37d94eb7df93922f3c29d202f4e65/packages/diffci-cli)
 remains publicly available at tagged Core commit `4c76be14` (`cli-v0.3.10-source`)
 while distribution migrates to the Core-native CLI package.
@@ -134,6 +147,19 @@ while distribution migrates to the Core-native CLI package.
 **Measured example:** one controlled Cal.com sandbox replay measured **44.2% net reduction** in install + pretest + test runtime including analysis overhead. This is a job-equivalent comparison, not production savings or a forecast for your repository. [Method and limitations](https://diffci.com/case-studies/calcom).
 
 ![Recorded Cal.com sandbox comparison](docs/calcom-runtime-evidence.svg)
+
+### Case studies
+
+Each study is a replay on real repositories, with its method, raw data and limitations on the linked page. None is a forecast for your repository.
+
+| Study | Result |
+|---|---|
+| [Agent breakage replay](https://diffci.com/case-studies/agent-breakage-replay) | Every red CI commit in two agent-built repositories: 32 of 38 introduced breakages caught before push; about 70% of red commits only inherited a broken main |
+| [LobeHub vs a Vitest planner](https://diffci.com/case-studies/lobehub) | 40 commits against the maintainers' own affected-test planner: same share of tests, no planner-picked test missed, 15 of 18 introduced failures caught before push |
+| [Paperclip red builds](https://diffci.com/case-studies/paperclip) | 74 red PR builds classified job by job: 12 failed only on the PR's own pre-push checks (11 agent-written), about 15% of red runs |
+| [Cal.com](https://diffci.com/case-studies/calcom) | Six real merges, executed and timed: 86–91.6% test-stage reduction, 44.2% at job level |
+| [deepseek-harness](https://diffci.com/case-studies/deepseek-harness) | Five merges on a dirty baseline: 79.5–89.5% job-level reduction; one result withheld because the selection was not honored |
+| [DiffCI's own CI](https://diffci.com/case-studies/diffci-own-ci) | Cost per job on ephemeral containers, and the bug our own green CI was hiding |
 
 [Star Core](https://github.com/DiffCI/core) · [Volunteer a pilot repository](https://diffci.com/#pilot) · [Find a first contribution](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
 Watch → Custom → Releases and Discussions for benchmark results and support updates. [Public roadmap](docs/roadmap.md).
@@ -156,6 +182,8 @@ node dist/cli.js plan --repo /path/to/clean-checkout --base HEAD~1 --head HEAD
 ```
 
 The target must be a clean Git repository root checked out at `--head`. Fetch the base commit beforehand if using a shallow clone. JSON goes to stdout; analysis errors exit nonzero and recommend full CI. Core does not execute repository scripts, contact a DiffCI backend or send telemetry. Installation requires the npm registry.
+
+The `diffci` CLI, the GitHub Action and the MCP server count runs with the repository name (host/owner/repo), never its content. `diffci telemetry --mode count-only` drops the name; `DO_NOT_TRACK=1` stops counting. Details: [usage counting](docs/telemetry.md).
 
 To evaluate the same command on pull requests without changing required jobs, copy the [advisory GitHub Actions example](examples/README.md).
 
@@ -251,10 +279,12 @@ Thank you to everyone who has improved DiffCI:
 - <a href="https://github.com/FredApps"><img src="https://github.com/FredApps.png?size=80" width="40" height="40" alt="@FredApps"></a> **[@FredApps](https://github.com/FredApps)**: five safety fixes for runtime module dependencies, Maven module resources, runner suites, deleted assets and Go runtime inputs ([#32](https://github.com/DiffCI/core/pull/32)–[#36](https://github.com/DiffCI/core/pull/36)).
 - <a href="https://github.com/shounakjoshi88-a11y"><img src="https://github.com/shounakjoshi88-a11y.png?size=80" width="40" height="40" alt="@shounakjoshi88-a11y"></a> **[Shounak Joshi](https://github.com/shounakjoshi88-a11y)**: Go package-owned `testdata` selection, so a golden-file edit runs the owning package's tests instead of the full suite ([#85](https://github.com/DiffCI/core/pull/85)).
 - <a href="https://github.com/bfs2021"><img src="https://github.com/bfs2021.png?size=80" width="40" height="40" alt="@bfs2021"></a> **[@bfs2021](https://github.com/bfs2021)**: `bun.lock` and `npm-shrinkwrap.json` recognition in the lockfile signal ([#64](https://github.com/DiffCI/core/pull/64)).
+- <a href="https://github.com/sarankumar1325"><img src="https://github.com/sarankumar1325.png?size=80" width="40" height="40" alt="@sarankumar1325"></a> **[@sarankumar1325](https://github.com/sarankumar1325)**: `bun.lock` detection in CI inference ([#105](https://github.com/DiffCI/core/pull/105)), removal of dead config-file patterns with a test for every entry ([#106](https://github.com/DiffCI/core/pull/106)), a shared lockfile list so every lockfile invalidates the Vue analysis cache ([#107](https://github.com/DiffCI/core/pull/107)), a regression test for `vite.config`-only changes in Vitest projects ([#109](https://github.com/DiffCI/core/pull/109)), Go `replace` targets inside the repository modelled under root-module scope instead of forcing the full suite ([#110](https://github.com/DiffCI/core/pull/110)), a full run when only `babel.config.*` or `.babelrc*` changes, where these files used to select no tests ([#108](https://github.com/DiffCI/core/pull/108)), and the shared lockfile names in reference resolution, impact analysis and the lockfile-free dependency check, replacing three hand-written copies ([#118](https://github.com/DiffCI/core/pull/118)–[#120](https://github.com/DiffCI/core/pull/120)), and a full-suite fallback when a package's Jest, Vitest or Babel config changes ([#121](https://github.com/DiffCI/core/pull/121)).
 - <a href="https://github.com/robertwmccarty-caelum"><img src="https://github.com/robertwmccarty-caelum.png?size=80" width="40" height="40" alt="@robertwmccarty-caelum"></a> **[@robertwmccarty-caelum](https://github.com/robertwmccarty-caelum)**: the Vitest reporter/timeout config fixture and its narrowing conditions ([#53](https://github.com/DiffCI/core/issues/53#issuecomment-6514436312), landed in [#65](https://github.com/DiffCI/core/pull/65)).
 - <a href="https://github.com/varshith84"><img src="https://github.com/varshith84.png?size=80" width="40" height="40" alt="@varshith84"></a> **[Varshith Sai Pasupuleti](https://github.com/varshith84)**: tests for transitive Vue selection and full fallback ([#16](https://github.com/DiffCI/core/pull/16)).
+- <a href="https://github.com/aniKet0753"><img src="https://github.com/aniKet0753.png?size=80" width="40" height="40" alt="@aniKet0753"></a> **[@aniKet0753](https://github.com/aniKet0753)**: a `diffci help` command list and `USAGE` text that match the commands the CLI runs, with a test that fails when a command is missing ([#130](https://github.com/DiffCI/core/pull/130)).
 
-Every merged contribution is credited in the release notes, here, and next to the feature in the docs.
+Every merged contribution is credited in the release notes, here, on [diffci.com/contributors](https://diffci.com/contributors), and next to the feature in the docs. The README and website entries are added automatically when a pull request merges.
 
 ## License
 

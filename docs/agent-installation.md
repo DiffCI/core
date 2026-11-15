@@ -27,8 +27,10 @@ npx "@diffci.com/diffci@latest" init
 ```
 
 Besides the instruction files, it registers the DiffCI MCP server in `.mcp.json`
-(Claude Code) and `.cursor/mcp.json` (Cursor), keeping any other servers there,
-writes the `diffci-verify` skill to `.claude/skills/diffci-verify/SKILL.md`,
+(Claude Code, VS Code), `.cursor/mcp.json` (Cursor), `.kiro/settings/mcp.json`
+(Kiro) and `.agents/mcp_config.json` (Antigravity CLI), keeping any other servers
+there. It writes the `diffci-verify` skill to `.claude/skills` (Claude Code,
+Copilot), `.agents/skills` (Antigravity CLI, Codex) and `.kiro/skills` (Kiro),
 adds agent stop hooks, and installs the pre-push hook. Commit the config, hook and
 skill files so every agent session in the repository finds them. `--no-mcp`,
 `--no-skill`, `--no-agent-hooks` and `--no-hook` leave each part out. Four things
@@ -36,7 +38,8 @@ make DiffCI the default:
 
 1. **Verify when the agent finishes a turn.** `init` adds a stop hook that runs
    `diffci agent-stop` to `.claude/settings.json` (Claude Code), `.codex/hooks.json`
-   (Codex) and `.cursor/hooks.json` (Cursor), keeping every other hook there. When
+   (Codex), `.cursor/hooks.json` (Cursor) and `.github/hooks/diffci.json` (GitHub
+   Copilot's `agentStop`), keeping every other hook there. When
    the agent ends a turn, DiffCI verifies the uncommitted changes. If tests or
    checks fail, the agent is asked to keep working with the failures as the
    reason, at most `DIFFCI_AGENT_HOOK_MAX` times a session (default 3), after which
@@ -96,6 +99,9 @@ Where it goes for each agent:
 - **Codex:** `AGENTS.md` at the repository root.
 - **Cursor:** `AGENTS.md`, or a project rule at `.cursor/rules/diffci.mdc` that starts with
   `---`, `description: Run DiffCI before pushing`, `alwaysApply: true`, `---`.
+- **GitHub Copilot:** `.github/copilot-instructions.md`.
+- **Kiro:** `AGENTS.md` at the repository root, or a steering file (see [Kiro](#kiro)).
+- **Antigravity CLI:** `AGENTS.md` at the repository root. **Gemini CLI:** `GEMINI.md`.
 
 ## Codex
 
@@ -127,6 +133,126 @@ the Cursor listing is under review, use the local server definition from
 [`integrations/agent-plugin/mcp.json`](../integrations/agent-plugin/mcp.json)
 in a project `.cursor/mcp.json` or Cursor's global MCP settings.
 
+## GitHub Copilot
+
+Copilot reads project skills from `.github/skills` and from `.claude/skills`, so
+the `diffci-verify` skill that `diffci init` writes already reaches Copilot's
+cloud agent, Copilot CLI and agent mode in VS Code. `init` also writes the
+instructions to `.github/copilot-instructions.md`.
+
+**VS Code agent mode.** VS Code reads the workspace-root `.mcp.json` that `init`
+writes (the `mcpServers` format) when the `chat.mcp.workspaceRootConfig.enabled`
+setting is on. Without that setting, add the same server through
+**MCP: Add Server**. `.vscode/mcp.json` is the older editor-managed format.
+
+**Copilot cloud agent.** The cloud agent takes its MCP servers from the repository
+settings, not from a file. In **Settings > Copilot > MCP servers**, save:
+
+```json
+{
+  "mcpServers": {
+    "diffci": {
+      "type": "local",
+      "command": "npx",
+      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.43", "diffci-mcp"],
+      "tools": [
+        "diffci_changed_files",
+        "diffci_select_tests",
+        "diffci_explain_selection",
+        "diffci_run_affected_tests",
+        "diffci_verify"
+      ]
+    }
+  }
+}
+```
+
+The agent's runner already has Node.js and `npx`. DiffCI runs the repository's
+own tests, so install whatever those tests need in `copilot-setup-steps.yml`,
+as you would without DiffCI. The tool list above leaves out `diffci_init` and
+`diffci_check` so that the agent cannot rewrite the repository's DiffCI setup.
+
+**Stop hook.** `init` adds an `agentStop` hook to `.github/hooks/diffci.json`,
+which Copilot CLI, the cloud agent and VS Code read. When the agent ends a turn
+with failing tests or checks, the hook answers `{"decision": "block", "reason"}`
+and Copilot takes another turn with the failures as the prompt. In the cloud
+agent that turn counts against the job's timeout. VS Code also runs the Claude
+Code hook in `.claude/settings.json`; the second run on an unchanged tree reuses
+the first result, so it does not run the tests again.
+
+## Kiro
+
+Kiro reads `AGENTS.md` at the workspace root as steering, so the instructions
+that `diffci init` writes already apply. `init` also registers the MCP server in
+`.kiro/settings/mcp.json` and writes the skill to `.kiro/skills/diffci-verify`.
+To add the server by hand:
+
+```json
+{
+  "mcpServers": {
+    "diffci": {
+      "command": "npx",
+      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.43", "diffci-mcp"],
+      "autoApprove": [
+        "diffci_changed_files",
+        "diffci_select_tests",
+        "diffci_explain_selection"
+      ]
+    }
+  }
+}
+```
+
+The auto-approved tools only read the checkout. Kiro still asks before
+`diffci_run_affected_tests` runs tests; add it to `autoApprove` if you are happy
+for the agent to run them unprompted.
+
+If the repository has no `AGENTS.md`, put the [short snippet](#short-snippet) in
+`.kiro/steering/diffci.md` instead, starting with:
+
+```md
+---
+inclusion: always
+---
+```
+
+Kiro's custom agents do not load steering on their own. Give them
+`"resources": ["file://.kiro/steering/**/*.md", "file://AGENTS.md", "skill://.kiro/skills/*/SKILL.md"]`.
+Kiro has Agent Stop hooks (`Stop` in `.kiro/hooks/*.json`), but Kiro documents
+them as unable to block, so a hook could not make the agent fix a failure.
+`init` adds none, and the instructions and skill are what make Kiro verify.
+
+## Antigravity CLI and Gemini CLI
+
+Antigravity CLI replaced Gemini CLI for free-tier and Google One accounts on
+18 June 2026. Gemini CLI still serves the remaining accounts.
+
+**Antigravity CLI** (and the Antigravity IDE) reads workspace MCP servers from
+`.agents/mcp_config.json`, and skills from `.agents/skills`, a folder Codex reads
+as well. `diffci init` writes both. To add the server by hand:
+
+```json
+{
+  "mcpServers": {
+    "diffci": {
+      "command": "npx",
+      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.43", "diffci-mcp"]
+    }
+  }
+}
+```
+
+The `AGENTS.md` instructions that `init` writes are read as they are. Restart
+the session after you change `mcp_config.json` or a skill.
+
+**Gemini CLI** reads project MCP servers from `.gemini/settings.json`. Use the
+same `mcpServers` entry as above, and put the [short snippet](#short-snippet) in
+`GEMINI.md`.
+
+On Windows, if a host cannot start `npx` directly, use the launcher from
+[`integrations/agent-plugin/mcp.json`](../integrations/agent-plugin/mcp.json)
+as the `command` and `args`.
+
 ## Grok Build and Grok Connectors
 
 Grok Build reads Claude Code marketplaces, plugins, skills, and MCP
@@ -134,7 +260,7 @@ configuration, so the Claude Code installation above is the preferred local
 path. A direct local MCP setup is also available:
 
 ```sh
-grok mcp add diffci -- npx --yes --package @diffci.com/diffci@0.3.38 diffci-mcp
+grok mcp add diffci -- npx --yes --package @diffci.com/diffci@0.3.43 diffci-mcp
 ```
 
 For Grok's cloud connector, add `https://diffci.com/mcp/v1` as a custom HTTP
@@ -165,7 +291,7 @@ launcher in `integrations/agent-plugin/mcp.json`):
 
 ```text
 command: npx
-args: ["--yes", "--package", "@diffci.com/diffci@0.3.38", "diffci-mcp"]
+args: ["--yes", "--package", "@diffci.com/diffci@0.3.43", "diffci-mcp"]
 ```
 
 For a remote-only client, configure a Streamable HTTP MCP server at

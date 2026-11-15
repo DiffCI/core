@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+# DiffCI's own CI and release smoke runs are not usage; keep them out of the counts (docs/telemetry.md).
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   verify-muse-plugin-integrity:
     name: Verify Muse marketplace package integrity

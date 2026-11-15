@@ -1,16 +1,18 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { createTestFileMatcher, DEFAULT_TEST_FILE_MATCHER, testFileMatcherForProfile, type TestFileMatcher } from "./test-discovery.js";
 import { isBuiltin } from "node:module";
-import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
 import { applyVueScope, inVuePackage } from "./vue-scope.js";
 import { declaredWorkspaceRoots } from "./workspaces.js";
+import { infrastructureRole } from "./file-references.js";
 import { WorkspaceSources } from "./workspace-sources.js";
 import type {
   DependencyEdge,
+  ModuleBindings,
   DependencyEdgeKind,
   DependencyGraph,
   DependencyGraphNode,
@@ -41,6 +43,15 @@ interface ImportRef {
   /** A `vi.mock("./x")` / `jest.mock("./x")` target. Vitest counts these as dependencies of the test;
    * an unresolvable one (a virtual or aliased module) is dropped rather than made unsafe. */
   mock?: boolean;
+  /** Runtime names an `import` statement binds (`default` for a default import); absent means the whole
+   * module (namespace and side-effect imports, dynamic imports, require, mocks). */
+  names?: string[];
+  /** For `export ... from`: the names it forwards as [exported, imported] pairs, `star` for `export *`,
+   * or `namespace` for `export * as ns`. */
+  reexport?: { pairs?: [string, string][]; star?: boolean; namespace?: string };
+  /** A computed load outside any function body (or in an immediately invoked one): it runs when the
+   * module loads, so a test that merely loads the module may run it. */
+  atLoad?: boolean;
 }
 
 /** Test-runner calls whose literal first argument names a module the test depends on. */
@@ -129,7 +140,40 @@ function specifierParts(expression: ts.Expression, consts: ReadonlyMap<string, t
     const initializer = consts.get(expression.text);
     if (initializer) return specifierParts(initializer, consts, depth + 1);
   }
+  // `url.href` or `url.toString()` of a URL resolved against the importer's own location names the same file
+  // as a relative specifier (Paperclip, 2026-11-12: server/src/vendor/paperclip-runner/index.ts does
+  // `const sourceUrl = new URL("../../../../packages/paperclip-runner/src/index.ts", import.meta.url);
+  // await import(sourceUrl.href)`, and about 1,900 tests were selected for every change through it).
+  const urlTarget = ts.isPropertyAccessExpression(expression) && expression.name.text === "href" ? expression.expression
+    : ts.isCallExpression(expression) && expression.arguments.length === 0 && ts.isPropertyAccessExpression(expression.expression)
+      && expression.expression.name.text === "toString" ? expression.expression.expression : undefined;
+  if (urlTarget) {
+    const relativeParts = moduleRelativeUrlParts(urlTarget, consts, depth + 1);
+    if (relativeParts) return join(relativeParts);
+  }
   return [undefined];
+}
+
+/** The specifier parts of `new URL(<parts>, import.meta.url)`, directly or through a single `const`, as a
+ * relative specifier ("x.ts" becomes "./x.ts"). Undefined for any other base, or a first argument that is
+ * absolute, has a scheme, starts with an unknown part or carries a fragment. */
+function moduleRelativeUrlParts(expression: ts.Expression, consts: ReadonlyMap<string, ts.Expression>, depth: number): SpecifierParts | undefined {
+  if (depth > 8) return undefined;
+  while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+  if (ts.isIdentifier(expression)) {
+    const initializer = consts.get(expression.text);
+    return initializer ? moduleRelativeUrlParts(initializer, consts, depth + 1) : undefined;
+  }
+  if (!ts.isNewExpression(expression) || !ts.isIdentifier(expression.expression) || expression.expression.text !== "URL"
+    || expression.arguments?.length !== 2 || consts.has("URL")) return undefined;
+  const base = expression.arguments[1]!;
+  if (!(ts.isPropertyAccessExpression(base) && base.name.text === "url" && ts.isMetaProperty(base.expression)
+    && base.expression.keywordToken === ts.SyntaxKind.ImportKeyword)) return undefined;
+  const parts = specifierParts(expression.arguments[0]!, consts, depth + 1);
+  const head = parts[0];
+  if (typeof head !== "string" || head === "" || head.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(head)
+    || parts.some((part) => typeof part === "string" && part.includes("#"))) return undefined;
+  return head.startsWith("./") || head.startsWith("../") ? parts : [`./${head}`, ...parts.slice(1)];
 }
 
 /** A folded specifier: its literal text, or the patterns bounding it. A query (`?v=...`) selects no file
@@ -275,9 +319,20 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
   let shadowDepth = 0;
   let consts: Map<string, ts.Expression> | undefined;
 
+  // A function body runs when called, not when the module loads; an immediately invoked one runs at load.
+  // Program source files have no parent pointers, so a call marks the function it invokes on the way down.
+  let functionDepth = 0;
+  const invokedAtOnce = new Set<ts.Node>();
   function visit(node: ts.Node) {
     const shadows = scopeShadowsRequire(node);
     if (shadows) shadowDepth++;
+    if (ts.isCallExpression(node)) {
+      let callee: ts.Expression = node.expression;
+      while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+      if (ts.isFunctionLike(callee)) invokedAtOnce.add(callee);
+    }
+    const body = ts.isFunctionLike(node) && !invokedAtOnce.has(node);
+    if (body) functionDepth++;
     if (ts.isImportDeclaration(node)) {
       const specifier = node.moduleSpecifier;
       if (ts.isStringLiteral(specifier)) {
@@ -286,7 +341,11 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
         const kind: DependencyEdgeKind = isTypeOnly ? "type-import" : "import";
         const inlineTypeOnly = !isTypeOnly && !!clause && !clause.name && !!clause.namedBindings
           && ts.isNamedImports(clause.namedBindings) && allInlineType(clause.namedBindings.elements);
-        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}) });
+        const bindings = clause && !(clause.namedBindings && ts.isNamespaceImport(clause.namedBindings))
+          ? [...(clause.name ? ["default"] : []), ...(clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+            ? clause.namedBindings.elements.filter((el) => !el.isTypeOnly).map((el) => (el.propertyName ?? el.name).text) : [])]
+          : undefined;
+        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}), ...(bindings ? { names: bindings } : {}) });
       }
     } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       const specifier = node.moduleReference.expression;
@@ -298,7 +357,11 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
       if (ts.isStringLiteral(specifier)) {
         const kind: DependencyEdgeKind = node.isTypeOnly ? "type-import" : "re-export";
         const inlineTypeOnly = !node.isTypeOnly && !!node.exportClause && ts.isNamedExports(node.exportClause) && allInlineType(node.exportClause.elements);
-        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}) });
+        const clause = node.exportClause;
+        const reexport = !clause ? { star: true }
+          : ts.isNamespaceExport(clause) ? { namespace: clause.name.text }
+          : { pairs: clause.elements.filter((el) => !el.isTypeOnly).map((el): [string, string] => [el.name.text, (el.propertyName ?? el.name).text]) };
+        refs.push({ specifier: specifier.text, kind, dynamic: false, ...(inlineTypeOnly ? { inlineTypeOnly } : {}), reexport });
       }
     } else if (ts.isCallExpression(node)) {
       const firstArg = node.arguments[0];
@@ -315,6 +378,7 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
           dynamic: isImport || !syntaxLiteral,
           computed: !literal,
           ...(patterns ? { patterns } : {}),
+          ...(!literal && functionDepth === 0 ? { atLoad: true } : {}),
         });
       } else if (firstArg && ts.isPropertyAccessExpression(node.expression) && ts.isIdentifier(node.expression.expression)
         && MOCK_MODULE_CALLS.has(`${node.expression.expression.text}.${node.expression.name.text}`)
@@ -331,16 +395,115 @@ function extractImportRefs(sourceFile: ts.SourceFile): ImportRef[] {
           dynamic: true,
           computed: true,
           ...(patterns.length && patterns.every(Boolean) ? { patterns: patterns as NonNullable<ImportRef["patterns"]> } : {}),
+          ...(functionDepth === 0 ? { atLoad: true } : {}),
         });
       }
     }
 
     ts.forEachChild(node, visit);
+    if (body) functionDepth--;
     if (shadows) shadowDepth--;
   }
 
   visit(sourceFile);
   return refs;
+}
+
+/**
+ * Whether the nearest package.json at or above `path` (inside the repository) declares its JavaScript free of
+ * side effects: `"sideEffects": false`, or a list naming only stylesheets. This is the contract bundlers
+ * rely on to drop unused re-exports; without it a module's evaluation may matter, so imports stay whole.
+ */
+function sideEffectFreePackage(repoPath: string, path: string, cache: Map<string, boolean | undefined>): boolean {
+  let dir = dirname(path);
+  while (true) {
+    let declared = cache.get(dir);
+    if (!cache.has(dir)) {
+      declared = undefined;
+      try {
+        const pkg = JSON.parse(readFileSync(join(repoPath, dir, "package.json"), "utf8")) as { sideEffects?: unknown };
+        const se = pkg.sideEffects;
+        declared = se === false || (Array.isArray(se) && se.length > 0 && se.every((glob) => typeof glob === "string" && /\.(s?css|sass|less|styl)$/.test(glob)));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") declared = false;
+      }
+      cache.set(dir, declared);
+    }
+    if (declared !== undefined) return declared;
+    if (dir === "." || dir === "" || dirname(dir) === dir) return false;
+    dir = dirname(dir);
+  }
+}
+
+/**
+ * Runtime names a module defines itself, for export-level selection. `opaque` when they cannot be listed
+ * (CommonJS `module.exports`/`exports.x`, `export =`, destructured `export const { a } = ...`): an import of
+ * such a module always counts as the whole module.
+ */
+function exportedLocals(sourceFile: ts.SourceFile): { locals: string[]; opaque: boolean } {
+  const locals = new Set<string>();
+  let opaque = false;
+  const has = (node: ts.Node, kind: ts.SyntaxKind) => ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((m) => m.kind === kind);
+  for (const st of sourceFile.statements) {
+    if (ts.isExportDeclaration(st)) {
+      if (!st.moduleSpecifier && !st.isTypeOnly && st.exportClause && ts.isNamedExports(st.exportClause)) {
+        for (const el of st.exportClause.elements) if (!el.isTypeOnly) locals.add(el.name.text);
+      }
+    } else if (ts.isExportAssignment(st)) {
+      locals.add("default");
+      if (st.isExportEquals) opaque = true;
+    } else if (has(st, ts.SyntaxKind.ExportKeyword)) {
+      if (ts.isInterfaceDeclaration(st) || ts.isTypeAliasDeclaration(st)) continue;
+      if (has(st, ts.SyntaxKind.DefaultKeyword)) locals.add("default");
+      else if (ts.isVariableStatement(st)) {
+        for (const d of st.declarationList.declarations) {
+          if (ts.isIdentifier(d.name)) locals.add(d.name.text);
+          else opaque = true;
+        }
+      } else if ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st) || ts.isEnumDeclaration(st) || ts.isModuleDeclaration(st)) && st.name && ts.isIdentifier(st.name)) {
+        locals.add(st.name.text);
+      } else opaque = true;
+    }
+  }
+  const visit = (node: ts.Node): void => {
+    if (opaque) return;
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)
+      && (node.expression.text === "exports" || (node.expression.text === "module" && node.name.text === "exports"))) opaque = true;
+    else ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { locals: [...locals].sort(), opaque };
+}
+
+/** A string that reads as a relative path to a code file: `./x`, `../x`, or a relative path ending in a code
+ * extension (`config.ts`, `jobs/handler.js`). */
+const PATH_LITERAL = /^(?:\.{1,2}\/[^\s:*?"<>|]+|(?:[\w@.-]+\/)*[\w@.-]+\.[cm]?[jt]sx?)$/;
+
+/**
+ * Strings that name a code file by path, outside import and require specifiers, which already are edges
+ * (2026-11-10). payloadcms/payload's integration tests pass `{ config: './config.ts' }` to a helper that
+ * `import()`s it; the string is the only trace of that dependency. Type positions are skipped.
+ */
+function extractPathLiterals(sourceFile: ts.SourceFile): string[] {
+  const found = new Set<string>();
+  const specifiers = new Set<ts.Node>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isTypeNode(node)) return;
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) specifiers.add(node.moduleSpecifier);
+    if (ts.isExternalModuleReference(node)) specifiers.add(node.expression);
+    if (ts.isCallExpression(node) && node.arguments[0]) {
+      const e = node.expression;
+      const loads = e.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(e) && e.text === "require")
+        || (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && MOCK_MODULE_CALLS.has(`${e.expression.text}.${e.name.text}`));
+      if (loads) specifiers.add(node.arguments[0]);
+    }
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && !specifiers.has(node) && node.text.length < 300 && PATH_LITERAL.test(node.text)) {
+      found.add(node.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return [...found];
 }
 
 class DependencyGraphImpl implements DependencyGraph {
@@ -871,10 +1034,13 @@ export async function buildDependencyGraph(
   markPhase("adapterInventory");
   const context = { repoPath, files, profile, vueAnalysisSession: {} };
   const cachedVue = options.vueAnalysisCache ? (await import("../cache/vue-analysis-cache.js")).analyzeVueCached : undefined;
-  const contributions = REPOSITORY_ADAPTERS.filter((adapter) => adapter.detect(context)).map((adapter) => adapter.id === "vue" && cachedVue && options.vueAnalysisCache
+  const adapterResults = REPOSITORY_ADAPTERS.filter((adapter) => adapter.detect(context)).map((adapter) => adapter.id === "vue" && cachedVue && options.vueAnalysisCache
     ? cachedVue(context, options.vueAnalysisCache.directory, options.vueAnalysisCache.version) : adapter.analyze(context));
   markPhase("adapters");
-  const adapterBlockers = [...scopeBlockers, ...contributions.flatMap((item) => item.blockers)];
+  // An adapter that only confines blockers to directories models nothing, so it is not an active adapter:
+  // it neither marks the repository as mixed-language nor adds that adapter's per-change checks.
+  const contributions = adapterResults.filter((item) => !item.confinedOnly);
+  const adapterBlockers = [...scopeBlockers, ...adapterResults.flatMap((item) => item.blockers)];
   // The directories each narrowable blocker is confined to ("" when one of its files is not confined).
   // Outside a declared Vue suite, a blocker confined to directories only is scoped to them below.
   const blockerScopes = new Map<string, Set<string>>();
@@ -899,6 +1065,13 @@ export async function buildDependencyGraph(
     } catch { return undefined; }
   };
   for (const item of contributions) for (const { path, reason } of [...(item.fileBlockers ?? []), ...(item.subjectBlockers ?? [])]) addScope(reason, packageScope(path));
+  for (const item of adapterResults) {
+    for (const { directory, reason } of item.directoryBlockers ?? []) {
+      if (!adapterBlockers.includes(reason)) adapterBlockers.push(reason);
+      // Inside a declared Vue suite nothing is scoped, so the blocker stays global (fails closed).
+      addScope(reason, directory);
+    }
+  }
   if (profile.diffciConfig?.configurationError && !adapterBlockers.includes(profile.diffciConfig.configurationError)) adapterBlockers.push(profile.diffciConfig.configurationError);
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
@@ -973,8 +1146,31 @@ export async function buildDependencyGraph(
   const assetPaths = new Set<string>(contributions.flatMap((item) => item.assetPaths));
   for (const item of contributions) for (const path of item.sourcePaths) internalSourcePaths.add(path);
   const edgeKeys = new Set<string>(edges.map((edge) => `${edge.from}|${edge.to}|${edge.kind}`));
+  const bindings: Record<string, ModuleBindings> = {};
+  const bindingsOf = (path: string): ModuleBindings => (bindings[path] ??= { locals: [], imports: {}, reexports: {} });
 
-  function addEdge(from: string, to: string, kind: DependencyEdgeKind): void {
+  /** Records what a runtime edge binds; an edge without a parsed statement binds the whole module. */
+  function recordBinding(from: string, to: string, kind: DependencyEdgeKind, ref?: ImportRef): void {
+    if (kind === "asset") return;
+    const b = bindingsOf(from);
+    if (kind === "type-import") {
+      if (!(b.typeImports ??= []).includes(to)) b.typeImports.push(to);
+      return;
+    }
+    if (ref?.reexport) {
+      const r = (b.reexports[to] ??= { pairs: [], star: false, namespaces: [] });
+      if (ref.reexport.star) r.star = true;
+      if (ref.reexport.namespace) r.namespaces.push(ref.reexport.namespace);
+      for (const pair of ref.reexport.pairs ?? []) r.pairs.push(pair);
+      return;
+    }
+    const current = b.imports[to];
+    if (!ref?.names || current === "*") b.imports[to] = "*";
+    else b.imports[to] = [...new Set([...(current ?? []), ...ref.names])];
+  }
+
+  function addEdge(from: string, to: string, kind: DependencyEdgeKind, ref?: ImportRef): void {
+    recordBinding(from, to, kind, ref);
     const key = `${from}|${to}|${kind}`;
     if (edgeKeys.has(key)) return;
     edgeKeys.add(key);
@@ -1146,6 +1342,37 @@ export async function buildDependencyGraph(
     return compilerOptions;
   }
 
+  /** The existing code file a path string names, relative to the file holding it. */
+  function pathLiteralTarget(importerRel: string, literal: string): string | undefined {
+    const base = posix.normalize(posix.join(posix.dirname(importerRel), literal));
+    if (base.startsWith("../") || base === "..") return undefined;
+    const stem = base.replace(/\.[cm]?jsx?$/, "");
+    const candidates = [base, ...[".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"].map((ext) => stem + ext), ...["index.ts", "index.tsx", "index.js"].map((name) => `${base}/${name}`)];
+    for (const candidate of candidates) {
+      if (!isSourceFileName(candidate) || candidate.endsWith(".d.ts") || isExcludedPath(candidate, options.excludeDirs ?? [])) continue;
+      if (internalSourcePaths.has(candidate) || existsSync(join(repoPath, candidate))) return candidate;
+    }
+    return undefined;
+  }
+
+  /** Parses an implementation file an import reaches outside the initial walk, rather than silently dropping
+   * the edge or loading every TypeScript declaration library again; false, with a blocker, past the budget. */
+  function followImplementation(absolute: string, rel: string): boolean {
+    if (internalSourcePaths.has(rel)) return true;
+    try {
+      if (isExcludedPath(rel, options.excludeDirs ?? []) || followedImplementationFiles >= followBudget || statSync(absolute).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
+      const followed = ts.createSourceFile(absolute, readFileSync(absolute, "utf8"), ts.ScriptTarget.Latest, true);
+      if ((followed as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length) throw new Error("invalid implementation syntax");
+      sourceFiles.push(followed);
+      followedImplementationFiles++;
+    } catch {
+      adapterBlockers.push(`Resolved implementation cannot be included in the scoped source inventory: ${rel}`);
+      return false;
+    }
+    internalSourcePaths.add(rel);
+    return true;
+  }
+
   for (const sf of sourceFiles) {
     const importerRel = toRelativeInternal(repoPath, sf.fileName);
     if (!importerRel || !isSourceFileName(sf.fileName)) continue;
@@ -1155,15 +1382,29 @@ export async function buildDependencyGraph(
 
     const keepsTypeImports = keepsTypeOnlyImports(importerOptions);
     const refs = extractImportRefs(sf).map((ref) => ref.inlineTypeOnly && !keepsTypeImports ? { ...ref, kind: "type-import" as const } : ref);
+    const { locals, opaque } = exportedLocals(sf);
+    const own = bindingsOf(importerRel);
+    own.locals = locals;
+    if (opaque) own.opaque = true;
+    for (const literal of extractPathLiterals(sf)) {
+      const target = pathLiteralTarget(importerRel, literal);
+      if (!target || target === importerRel) continue;
+      // Infrastructure code outside the graph (ops/, a Worker entry) is resolved through the tests that read
+      // it, and stays global when a deployment definition runs it (ImpactAnalyzer, INFRASTRUCTURE_GLOBAL); a
+      // string naming it must not pull it into the graph and around that rule.
+      if (!internalSourcePaths.has(target) && infrastructureRole(target) === "code") continue;
+      if (followImplementation(join(repoPath, target), target)) addEdge(importerRel, target, "path-literal");
+    }
     if (scope && sf.referencedFiles.length) adapterBlockers.push(`Triple-slash file references in the scoped suite require full validation: ${importerRel}`);
     for (const ref of refs) {
       // Expression text is not a module name. In particular, import(name) must
       // not be classified as an external package called "name".
+      if (ref.computed && ref.atLoad) bindingsOf(importerRel).computedAtLoad = true;
       if (ref.computed && ref.patterns) {
         const targets = resolvePatternTargets(sf.fileName, ref.patterns, importerOptions);
         if (targets) {
           for (const target of targets) {
-            if (internalSourcePaths.has(target)) addEdge(importerRel, target, ref.kind);
+            if (internalSourcePaths.has(target)) addEdge(importerRel, target, ref.kind, ref);
             else recordAssetEdge(importerRel, target);
           }
           recordReference(targets.some((target) => internalSourcePaths.has(target)) ? "internal-source" : "internal-asset", importerRel, ref);
@@ -1188,13 +1429,26 @@ export async function buildDependencyGraph(
 
       const specifierCategory = classifySpecifier(ref.specifier);
       const resolvableSpecifier = specifierCategory === "relative" || specifierCategory === "absolute" || specifierCategory === "alias" ? stripImportQuery(ref.specifier) : ref.specifier;
+      // A relative path into an installed package (`../../ui/node_modules/vite/dist/node/index.js`) is a
+      // dependency import spelled as a path. A clean checkout has no such file, and an installed one resolves
+      // it into node_modules, which is outside the source inventory, so it was "unresolved" and every change
+      // reaching the importer fell back (Paperclip, 2026-11-11: 7 of its 14 unresolved imports). Record it
+      // under the package's own specifier so dependency changes still find the importer. A workspace package
+      // linked into node_modules is repository source and keeps the normal handling.
+      if (specifierCategory === "relative") {
+        const installed = installedPackageSpecifier(importerRel, resolvableSpecifier);
+        if (installed && !workspaceSources.packageFor(installed)) {
+          recordReference("external-package", importerRel, { ...ref, specifier: installed });
+          continue;
+        }
+      }
       // TypeScript may resolve a Vue import to a declaration shim. Preserve the actual SFC edge.
       if (resolvableSpecifier.endsWith(".vue")) {
         const compilerAliases = Object.entries(importerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
         const candidate = findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases.length ? compilerAliases : profile.pathAliases, importerOptions.baseUrl ?? dirname(sf.fileName));
         const target = candidate && toRelativeInternal(repoPath, candidate);
         if (target && internalSourcePaths.has(target)) {
-          addEdge(importerRel, target, ref.kind);
+          addEdge(importerRel, target, ref.kind, ref);
           recordReference("internal-source", importerRel, ref);
           continue;
         }
@@ -1225,8 +1479,16 @@ export async function buildDependencyGraph(
         const insidePackage = resolvedRel !== undefined && resolvedRel.startsWith(`${pkg.root}/`);
         if (!resolvedFile || (insidePackage && (/\.d\.[mc]?ts$/.test(resolvedRel!) || !internalSourcePaths.has(resolvedRel!)))) {
           const source = (insidePackage ? workspaceSources.sourceForFile(pkg, resolvedRel!) : undefined) ?? workspaceSources.sourceForSubpath(pkg, subpath);
-          if (source && internalSourcePaths.has(source)) {
-            addEdge(importerRel, source, ref.kind);
+          const asset = source ? undefined : workspaceSources.assetForSubpath(pkg, subpath);
+          if (asset) {
+            recordAssetEdge(importerRel, asset);
+            recordReference("internal-asset", importerRel, ref);
+            continue;
+          }
+          // The package's source may sit outside the tsconfig inventory (payloadcms/payload's solution tsconfig
+          // references only some packages): parse it like any other followed implementation.
+          if (source && (internalSourcePaths.has(source) || (!/\.d\.[mc]?ts$/.test(source) && followImplementation(join(repoPath, source), source)))) {
+            addEdge(importerRel, source, ref.kind, ref);
             recordReference("internal-source", importerRel, ref);
           } else {
             recordReference("external-package", importerRel, ref);
@@ -1249,6 +1511,19 @@ export async function buildDependencyGraph(
             if (assetRel) {
               recordAssetEdge(importerRel, assetRel);
               recordReference("internal-asset", importerRel, ref);
+              continue;
+            }
+          }
+          // Build output a fresh checkout does not have, inside a workspace package whose tsconfig maps it back:
+          // payloadcms/payload's packages/payload/bin.js does `import('./dist/cli/index.js')`, compiled from
+          // src/cli/index.ts. The import depends on that source, so follow it rather than leave it unresolved.
+          if (category === "relative") {
+            const built = posix.normalize(posix.join(posix.dirname(importerRel), resolvableSpecifier));
+            const pkg = workspaceSources.packageContaining(built);
+            const source = pkg ? workspaceSources.sourceForFile(pkg, built) : undefined;
+            if (source && source !== built && followImplementation(join(repoPath, source), source)) {
+              addEdge(importerRel, source, ref.kind, ref);
+              recordReference("internal-source", importerRel, ref);
               continue;
             }
           }
@@ -1275,23 +1550,9 @@ export async function buildDependencyGraph(
       }
 
       if (targetRel && isSourceFileName(resolved)) {
-        if (!resolved.endsWith(".d.ts") && !internalSourcePaths.has(targetRel)) {
-          // A real import can reach generated implementation excluded from the
-          // initial walk. Parse it (and its imports) rather than silently dropping
-          // the edge or loading every TypeScript declaration library again.
-          try {
-            if (isExcludedPath(targetRel, options.excludeDirs ?? []) || followedImplementationFiles >= followBudget || statSync(resolved).size > 5 * 1024 * 1024) throw new Error("excluded or exceeds parse budget");
-            const followed = ts.createSourceFile(resolved, readFileSync(resolved, "utf8"), ts.ScriptTarget.Latest, true);
-            if ((followed as unknown as { parseDiagnostics?: unknown[] }).parseDiagnostics?.length) throw new Error("invalid implementation syntax");
-            sourceFiles.push(followed);
-            followedImplementationFiles++;
-          } catch {
-            adapterBlockers.push(`Resolved implementation cannot be included in the scoped source inventory: ${targetRel}`);
-            continue;
-          }
-        }
+        if (!resolved.endsWith(".d.ts") && !followImplementation(resolved, targetRel)) continue;
         internalSourcePaths.add(targetRel);
-        addEdge(importerRel, targetRel, ref.kind);
+        addEdge(importerRel, targetRel, ref.kind, ref);
         recordReference("internal-source", importerRel, ref);
         continue;
       }
@@ -1360,7 +1621,27 @@ export async function buildDependencyGraph(
   if (scope && unresolved.length) adapterBlockers.push("Unresolved dependencies in the declared Vue suite require full validation");
   if (scope && edges.some(edge => outsideScope(edge.from) || outsideScope(edge.to))) adapterBlockers.push("Vue asset or macro dependency crosses the declared package boundary");
   const scopedAdapterBlockers = scopeAdapterBlockers(adapterBlockers, blockerScopes);
-  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, references.filter((ref) => inWorkspace(ref.importer)), workspaceRoots));
+  // A type-only import of a subpath the package neither exports nor contains resolves nowhere, installed or not
+  // (payloadcms/payload's stale `import type { ... } from 'payload/types'`): it hides no edge a change can reach.
+  const namesNothing = (ref: ResolutionReference) => {
+    if (ref.kind !== "type-import") return false;
+    const target = workspaceSources.packageFor(stripImportQuery(ref.specifier));
+    return target !== undefined && !workspaceSources.names(target.pkg, target.subpath);
+  };
+  // A file only path strings point at (payloadcms/payload's codemod fixtures `basic.input.ts`, read as text
+  // and full of deliberately stale imports) may never run. Its unmapped workspace imports are unresolved
+  // imports of that file, which matter to a change that reaches it (refineConfidenceForDelta), rather than a
+  // blocker on every change that reaches the imported package.
+  const testFiles = new Set(profile.testFilePaths);
+  const incomingKinds = new Map<string, Set<DependencyEdgeKind>>();
+  for (const edge of edges) (incomingKinds.get(edge.to) ?? incomingKinds.set(edge.to, new Set()).get(edge.to)!).add(edge.kind);
+  const pathLiteralOnly = new Set([...incomingKinds].filter(([file, kinds]) => !testFiles.has(file) && kinds.has("path-literal") && [...kinds].every((kind) => kind === "path-literal")).map(([file]) => file));
+  const workspaceRefs = references.filter((ref) => inWorkspace(ref.importer) && !namesNothing(ref));
+  for (const ref of workspaceRefs) {
+    if (!pathLiteralOnly.has(ref.importer) || ref.resolution !== "external-package" || !workspaceSources.packageFor(stripImportQuery(ref.specifier))) continue;
+    unresolved.push({ importer: ref.importer, specifier: ref.specifier, reason: "workspace import not mapped to source, in a file only path strings name", dynamic: ref.dynamic, typeOnly: ref.kind === "type-import" });
+  }
+  scopedAdapterBlockers.push(...uninstalledWorkspaceBlockers(repoPath, workspaceRefs.filter((ref) => !pathLiteralOnly.has(ref.importer)), workspaceRoots));
   profile.adapterBlockers = [...adapterBlockers];
   markPhase("importExtractionAndResolution");
 
@@ -1445,8 +1726,12 @@ export async function buildDependencyGraph(
     filesParsed: filesParsed,
   };
 
+  const sideEffectsByDir = new Map<string, boolean | undefined>();
+  for (const [path, b] of Object.entries(bindings)) if (sideEffectFreePackage(repoPath, path, sideEffectsByDir)) b.sideEffectFree = true;
+
   return {
     graph,
+    bindings,
     adapterBlockers,
     ...(scopedAdapterBlockers.length ? { scopedAdapterBlockers, confidenceWithoutScopedBlockers } : {}),
     profile,
@@ -1461,6 +1746,7 @@ export async function buildDependencyGraph(
     integrity,
     resolvedViaProjectReferences,
     runtimeTestSelection: runtimeTestSelectionEligible(repoPath, files, profile),
+    typeTestGlobs: typeTestGlobs(repoPath, files),
   };
 }
 
@@ -1632,10 +1918,10 @@ export function validateDependencyGraph(graph: DependencyGraph): GraphIntegrityR
 
 /**
  * Whether an `import type` edge can be ignored when selecting tests (2026-11-03). Vitest transpiles
- * without type checking, so a type-only change cannot alter a runtime test's outcome; ts-jest, tsd,
- * tstyche and Vitest's typecheck mode do check types. Any sign of them anywhere in the repository,
- * including workspace packages, keeps type-only edges selecting tests. Type tests (`*.test-d.ts`) are
- * selected through every edge either way (impact.ts).
+ * without type checking, so a type-only change cannot alter a runtime test's outcome; ts-jest and Vitest's
+ * typecheck mode check every test's types. Vitest typecheck mode anywhere, or Jest at the repository root,
+ * keeps type-only edges selecting every test. Jest in a sub-package, tsd and tstyche check only their own
+ * files (typeTestGlobs), and those tests are selected through every edge either way (impact.ts).
  */
 function runtimeTestSelectionEligible(repoPath: string, files: readonly string[], profile: RepositoryProfile): boolean {
   const configs = profile.testRunnerConfigs ?? [];
@@ -1644,7 +1930,9 @@ function runtimeTestSelectionEligible(repoPath: string, files: readonly string[]
   for (const file of files) {
     if (file.split("/").includes("node_modules")) continue;
     const name = file.slice(file.lastIndexOf("/") + 1);
-    if (/^jest\.config\./.test(name)) return false;
+    // Jest inside a sub-package governs that package's tests only (typeCheckedPackageDirs, typeTestGlobs).
+    const atRoot = !file.includes("/");
+    if (/^jest\.config\./.test(name)) { if (atRoot) return false; continue; }
     if (/^vit(?:e|est)[\w.-]*\.(?:config|workspace|projects)\.[cm]?[jt]s$/.test(name)) {
       const text = read(file);
       if (text === undefined || /\btypecheck\b/.test(text)) return false;
@@ -1652,11 +1940,71 @@ function runtimeTestSelectionEligible(repoPath: string, files: readonly string[]
       let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
       try { manifest = JSON.parse(read(file) ?? ""); } catch { return false; }
       const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
-      if (packages.some((name) => ["jest", "ts-jest", "tsd", "tstyche"].includes(name))) return false;
-      if (Object.values(manifest.scripts ?? {}).some((script) => typeof script !== "string" || /(?:^|[\s&;|(])(?:jest|tsd|tstyche)(?:\s|$)|--typecheck/.test(script))) return false;
+      // tsd and tstyche check types only in their own test files (typeTestGlobs), which keep type edges;
+      // Jest (ts-jest) and `--typecheck` type-check every test they run (2026-11-10: tstyche alone turned
+      // off runtime selection for all of payloadcms/payload's Vitest tests).
+      const scripts = Object.values(manifest.scripts ?? {});
+      if (scripts.some((script) => typeof script !== "string" || /--typecheck/.test(script))) return false;
+      if (atRoot && (packages.some((name) => ["jest", "ts-jest"].includes(name)) || scripts.some((script) => /(?:^|[\s&;|(])jest(?:\s|$)/.test(String(script))))) return false;
     }
   }
   return true;
+}
+
+/** The files tstyche or tsd check, when either is installed: tstyche.json's `testFileMatch` or tstyche's
+ * defaults, and tsd's `*.test-d.ts`. */
+function typeTestGlobs(repoPath: string, files: readonly string[]): string[] {
+  const read = (path: string) => { try { return readFileSync(join(repoPath, path), "utf8"); } catch { return undefined; } };
+  let tstyche = false, tsd = false;
+  for (const file of files) {
+    if (file.split("/").includes("node_modules") || !file.endsWith("package.json")) continue;
+    let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
+    try { manifest = JSON.parse(read(file) ?? ""); } catch { continue; }
+    const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
+    const scripts = Object.values(manifest.scripts ?? {}).filter((script): script is string => typeof script === "string");
+    if (packages.includes("tstyche") || scripts.some((script) => /(?:^|[\s&;|(])tstyche(?:\s|$)/.test(script))) tstyche = true;
+    if (packages.includes("tsd") || scripts.some((script) => /(?:^|[\s&;|(])tsd(?:\s|$)/.test(script))) tsd = true;
+  }
+  const globs: string[] = [];
+  if (tstyche) {
+    let match: unknown;
+    for (const name of ["tstyche.config.json", "tstyche.json"]) {
+      const text = read(name);
+      if (text === undefined) continue;
+      const parsed = ts.parseConfigFileTextToJson(name, text);
+      match = (parsed.config as { testFileMatch?: unknown } | undefined)?.testFileMatch;
+      break;
+    }
+    globs.push(...(Array.isArray(match) && match.every((glob) => typeof glob === "string") ? match as string[]
+      : ["**/*.tst.*", "**/__typetests__/*.test.*", "**/typetests/*.test.*"]));
+  }
+  if (tsd) globs.push("**/*.test-d.ts", "**/*.test-d.tsx");
+  for (const dir of typeCheckedPackageDirs(repoPath, files)) globs.push(`${dir}/**`);
+  return globs;
+}
+
+/**
+ * Sub-package directories whose own tests Jest (or ts-jest) may type-check as they run: a jest.config there, or
+ * a package.json depending on jest/ts-jest or running `jest`. 2026-11-10: payloadcms/payload's
+ * `.github/actions/triage` (a GitHub Action with its own Jest setup) and `packages/payload-cloud` (a `jest`
+ * test script) had turned off runtime selection for the whole Vitest suite. A repository-root signal still
+ * turns it off everywhere (runtimeTestSelectionEligible).
+ */
+function typeCheckedPackageDirs(repoPath: string, files: readonly string[]): string[] {
+  const dirs = new Set<string>();
+  for (const file of files) {
+    if (file.split("/").includes("node_modules") || !file.includes("/")) continue;
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    const dir = file.slice(0, file.lastIndexOf("/"));
+    if (/^jest\.config\./.test(name)) dirs.add(dir);
+    else if (name === "package.json") {
+      let manifest: { scripts?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object };
+      try { manifest = JSON.parse(readFileSync(join(repoPath, file), "utf8")); } catch { dirs.add(dir); continue; }
+      const packages = [manifest.dependencies, manifest.devDependencies, manifest.peerDependencies, manifest.optionalDependencies].flatMap((group) => Object.keys(group ?? {}));
+      if (packages.some((pkg) => pkg === "jest" || pkg === "ts-jest") || Object.values(manifest.scripts ?? {}).some((script) => /(?:^|[\s&;|(])jest(?:\s|$)/.test(String(script)))) dirs.add(dir);
+    }
+  }
+  return [...dirs].sort();
 }
 
 function computeConfidence(
@@ -1791,6 +2139,22 @@ function refineUnscopedConfidence(result: DependencyGraphResult, changedFiles: s
   // confidence would have been without the unresolved-import trigger (still respecting the
   // project-references cap, exactly as computeConfidence()'s own final two branches do).
   return result.resolvedViaProjectReferences ? "PARTIAL" : "COMPLETE";
+}
+
+/** The package specifier a relative import into a node_modules directory inside the repository names
+ * (`vite/dist/node/index.js`, `@scope/pkg/dist/x.js`), or undefined when the path does not pass through
+ * node_modules, leaves the repository, or names no package. The last node_modules segment wins, as Node's
+ * resolution would land there. */
+export function installedPackageSpecifier(importerRel: string, specifier: string): string | undefined {
+  const target = posix.normalize(posix.join(posix.dirname(importerRel), specifier));
+  if (target === ".." || target.startsWith("../") || posix.isAbsolute(target)) return undefined;
+  const parts = target.split("/");
+  const index = parts.lastIndexOf("node_modules");
+  if (index < 0) return undefined;
+  const rest = parts.slice(index + 1);
+  if (!rest.length || rest[0] === "" || rest[0] === "." || rest[0] === ".bin") return undefined;
+  if (rest[0]!.startsWith("@") && (rest.length < 2 || !rest[1])) return undefined;
+  return rest.join("/");
 }
 
 /** Nearest directory holding a package.json, relative to the repository; "" is the repository root. */

@@ -13,13 +13,15 @@ import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
 import { isPlaywrightSpec, nextAppRoute, routeMatches, visitedRoutes } from "./route-visits.js";
+import { exportLevelReach } from "./export-reach.js";
+import { LOCKFILE } from "./lockfiles.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
 const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error","template","not-found","middleware","generatemetadata","generatestaticparams"]);
 
 // Lockfiles are reported by the lockfile rule; resolving their readers would only repeat it.
-function isLockfile(filePath: string): boolean { return /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(filePath); }
+function isLockfile(filePath: string): boolean { return LOCKFILE.test(posix.basename(filePath)); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isGoReaderFile(filePath: string): boolean { return filePath.endsWith(".go"); }
@@ -36,6 +38,8 @@ function goReaderReferences(content: string): string {
 }
 /** Vitest's default `typecheck.include`: tests whose outcome is the type checker's. */
 const TYPE_TEST_FILE = /\.(?:test|spec)-d\.[cm]?[jt]sx?$/;
+/** tstyche type tests, which type-check whatever they import. */
+const TYPE_CHECK_TEST_FILE = /\.tst\.[cm]?[jt]sx?$/;
 // "Is this a test?" is answered by the profile's test patterns (src/repo/test-discovery.ts) - one shared
 // definition with analyzer discovery and graph node flags. Module-level helpers receive it explicitly.
 type IsTestFile = (filePath: string) => boolean;
@@ -59,6 +63,7 @@ function isConfigFile(filePath: string): boolean {
   if (base.startsWith(".eslintrc")) return true;
   if (base.startsWith("vitest.config")) return true;
   if (base.startsWith("jest.config")) return true;
+  if (base.startsWith("babel.config") || base.startsWith(".babelrc")) return true;
   if (base.startsWith("prettier.config")) return true;
   if (base.startsWith(".prettierrc")) return true;
   if (/^\.github\/(?:workflows|actions)\//.test(filePath)) return true;
@@ -284,6 +289,15 @@ export class ImpactAnalyzer {
   private testPhases = new Set<string>();
   private workersOutsideSuite: boolean | undefined;
   private runtimeTestSelection = false;
+  private typeTestGlobs: readonly string[] = [];
+  /** A file a type-test runner checks: its outcome depends on types, which runtime and export-level selection ignore. */
+  private isTypeTest(path: string): boolean {
+    return TYPE_TEST_FILE.test(path) || TYPE_CHECK_TEST_FILE.test(path) || this.typeTestGlobs.some((glob) => matchesTestGlob(path, glob));
+  }
+  /** Export-level bindings (export-reach.ts) and each test's reach under them, per analysis. */
+  private bindings: DependencyGraphResult["bindings"];
+  private runtimeForward = new Map<string, string[]>();
+  private exportReach = new Map<string, Set<string>>();
   private unresolved: readonly UnresolvedDependency[] = [];
   /** Why each changed file the reference resolver could not narrow is unresolvable, for fallbackDetails. */
   private referenceBlockers = new Map<string, string[]>();
@@ -466,8 +480,47 @@ export class ImpactAnalyzer {
   private testDependents(graph: DependencyGraph, path: string, dependents: readonly string[]): ReadonlySet<string> {
     if (!this.runtimeTestSelection || !graph.transitiveRuntimeDependentsOf) return new Set(dependents);
     const selected = new Set(graph.transitiveRuntimeDependentsOf(path));
-    for (const dependent of dependents) if (TYPE_TEST_FILE.test(dependent)) selected.add(dependent);
+    for (const dependent of dependents) if (this.isTypeTest(dependent)) selected.add(dependent);
     return selected;
+  }
+
+  /** Tests among `loaders` whose code reaches `importer` by name, or all of them when the walk does not apply. */
+  private computedLoadRunners(importer: string, loaders: string[]): string[] {
+    const bindings = this.bindings;
+    if (!bindings || bindings[importer]?.computedAtLoad || !bindings[importer]) return loaders;
+    return loaders.filter((test) => test === importer || this.isTypeTest(test) || this.reachOf(test, bindings).has(importer));
+  }
+
+  private reachOf(test: string, bindings: NonNullable<DependencyGraphResult["bindings"]>): Set<string> {
+    let reach = this.exportReach.get(test);
+    if (!reach) {
+      reach = exportLevelReach(test, bindings, (file) => this.runtimeForward.get(file) ?? [], !this.runtimeTestSelection);
+      this.exportReach.set(test, reach);
+    }
+    return reach;
+  }
+
+  /** Drops tests whose imports never reach `path` by name (export-reach.ts). Without bindings (older
+   * caches) the file-level set stands. */
+  private exportLevelTests(path: string, tests: ReadonlySet<string>, evidence: ImpactEvidence[]): ReadonlySet<string> {
+    // Type tests (`*.test-d.ts`, tstyche's `*.tst.ts`) check types, which the walk does not narrow.
+    const bindings = this.bindings;
+    if (!bindings) return tests;
+    const kept = new Set<string>();
+    const droppedTests: string[] = [];
+    let reaching = 0;
+    for (const test of tests) {
+      if (!this.isTestFile(test) || this.isTypeTest(test)) { kept.add(test); continue; }
+      if (this.reachOf(test, bindings).has(path)) { kept.add(test); reaching++; } else droppedTests.push(test);
+    }
+    if (!droppedTests.length) return kept;
+    // A barrel still loads every module it re-exports, so an error thrown while `path` loads fails every
+    // importer, used names or not. Any test that reaches `path` by name shows such an error; when none does,
+    // keep one dropped test to load it.
+    if (reaching === 0) kept.add(droppedTests.sort()[0]!);
+    const skipped = droppedTests.length - (reaching === 0 ? 1 : 0);
+    if (skipped) evidence.push(makeEvidence("DEPENDENCY", path, `${skipped} test(s) import ${path} only through re-exports of names they do not use, in side-effect-free packages (export-level selection)${reaching === 0 ? `; ${droppedTests[0]} is kept to load it` : ""}`));
+    return kept;
   }
 
   /** True when nothing in the repository runs a Worker (file-references.ts, suiteMayRunWorkers); false,
@@ -494,6 +547,17 @@ export class ImpactAnalyzer {
     this.knownTests = undefined;
     this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
+    this.typeTestGlobs = graphResult.typeTestGlobs ?? [];
+    this.bindings = graphResult.bindings;
+    this.exportReach = new Map();
+    this.runtimeForward = new Map();
+    // Where tests may be type-checked as they run (no runtime test selection: Jest, ts-jest, tstyche, tsd,
+    // --typecheck), a type import can fail a test too, so the walk follows it as a whole-module edge.
+    if (this.bindings) for (const edge of graph.edges) {
+      if (edge.kind === "asset" || (edge.kind === "type-import" && this.runtimeTestSelection)) continue;
+      const targets = this.runtimeForward.get(edge.from);
+      if (targets) { if (!targets.includes(edge.to)) targets.push(edge.to); } else this.runtimeForward.set(edge.from, [edge.to]);
+    }
     this.unresolved = graphResult.unresolved ?? [];
     this.referenceBlockers = new Map();
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
@@ -1305,7 +1369,7 @@ export class ImpactAnalyzer {
     }
 
     const dependents = graph.transitiveDependentsOf(sourcePath);
-    const testDependents = this.testDependents(graph, sourcePath, dependents);
+    const testDependents = this.exportLevelTests(sourcePath, this.testDependents(graph, sourcePath, dependents), evidence);
     for (const dependent of dependents) {
       if (!this.isTestFile(dependent)) {
         if (!affectedSources.has(dependent)) affectedSources.set(dependent, []);
@@ -1501,11 +1565,20 @@ export class ImpactAnalyzer {
         if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
         continue;
       }
+      if (graphResult.profile.diffciConfig?.computedImports === "follow-path-literals") {
+        evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the repository declares (diffci.json computedImports: follow-path-literals) that such loads reach only files named by path strings, which are already dependencies`));
+        continue;
+      }
       const importerDependents = graph.transitiveDependentsOf(importer);
       const testDependents = this.testDependents(graph, importer, importerDependents);
-      const runners = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));
+      const loaders = [importer, ...importerDependents.filter((path) => testDependents.has(path))].filter((path) => this.isTestFile(path));
+      // A load inside a function runs only when that function's module runs in the test (export-reach.ts):
+      // a test that imports other names from the importer's barrel never calls it. A load at module load
+      // time runs for every test that loads the module, so those keep every dependent.
+      const runners = this.computedLoadRunners(importer, loaders);
       for (const test of runners) this.addAffectedTest(importer, test, graph, affectedTests, "COMPUTED_IMPORT", evidence);
-      evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected`));
+      const skipped = loaders.length - runners.length;
+      evidence.push(makeEvidence("COMPUTED_IMPORT", importer, `${importer} loads a computed module specifier; the ${runners.length} test(s) that run it are selected${skipped ? ` (${skipped} that only load its package through re-exports are not)` : ""}`));
     }
   }
 

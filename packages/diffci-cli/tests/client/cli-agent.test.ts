@@ -88,11 +88,17 @@ describe("agent-facing CLI commands", () => {
         if (attempt === 0) {
           assert.match(result.stdout, /updated \.mcp\.json \(diffci MCP server\)/);
           assert.match(result.stdout, /wrote \.cursor\/mcp\.json \(diffci MCP server\)/);
+          assert.match(result.stdout, /wrote \.kiro\/settings\/mcp\.json \(diffci MCP server\)/);
+          assert.match(result.stdout, /wrote \.agents\/mcp_config\.json \(diffci MCP server\)/);
           assert.match(result.stdout, /wrote \.claude\/skills\/diffci-verify\/SKILL\.md/);
+          assert.match(result.stdout, /wrote \.agents\/skills\/diffci-verify\/SKILL\.md \(Antigravity CLI and Codex skill\)/);
+          assert.match(result.stdout, /wrote \.kiro\/skills\/diffci-verify\/SKILL\.md \(Kiro skill\)/);
+          assert.match(result.stdout, /wrote \.github\/hooks\/diffci\.json \(DiffCI stop hook\)/);
           assert.match(result.stdout, /wrote \.git\/hooks\/pre-push/);
         } else {
           assert.match(result.stdout, /kept \.mcp\.json \(diffci MCP server current\)/);
           assert.match(result.stdout, /kept \.claude\/skills\/diffci-verify\/SKILL\.md \(current\)/);
+          assert.doesNotMatch(result.stdout, /^ {2}(?:wrote|updated) (?!AGENTS|CLAUDE|\.github\/copilot)/m, "a second init rewrites no agent integration");
         }
       }
 
@@ -103,12 +109,18 @@ describe("agent-facing CLI commands", () => {
       const pluginConfig = JSON.parse(readFileSync(join(ROOT, "..", "..", "integrations", "agent-plugin", ".mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> };
       assert.deepEqual(JSON.parse(readFileSync(join(dir, ".cursor", "mcp.json"), "utf8")), pluginConfig, "init must launch MCP exactly like the portable plugin");
       const pluginSkill = readFileSync(join(ROOT, "..", "..", "integrations", "agent-plugin", "skills", "diffci-verify", "SKILL.md"), "utf8").replace(/\r\n/g, "\n");
-      assert.equal(readFileSync(join(dir, ".claude", "skills", "diffci-verify", "SKILL.md"), "utf8"), pluginSkill);
+      for (const skillDir of [".claude", ".agents", ".kiro"]) assert.equal(readFileSync(join(dir, skillDir, "skills", "diffci-verify", "SKILL.md"), "utf8"), pluginSkill);
+      // Kiro auto-approves the read-only tools only; Antigravity CLI takes the plain entry.
+      const kiro = JSON.parse(readFileSync(join(dir, ".kiro", "settings", "mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> };
+      assert.deepEqual(kiro.mcpServers.diffci, { ...(pluginConfig.mcpServers.diffci as object), autoApprove: ["diffci_changed_files", "diffci_select_tests", "diffci_explain_selection"] });
+      assert.deepEqual(JSON.parse(readFileSync(join(dir, ".agents", "mcp_config.json"), "utf8")), pluginConfig);
       assert.match(readFileSync(join(dir, ".git", "hooks", "pre-push"), "utf8"), /diffci:managed pre-push hook/);
       // Stop hooks for Claude Code, Codex and Cursor run diffci agent-stop when the agent ends a turn.
       assert.match(JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8")).hooks.Stop[0].hooks[0].command, /diffci.* agent-stop --agent claude$/);
       assert.match(JSON.parse(readFileSync(join(dir, ".codex", "hooks.json"), "utf8")).hooks.Stop[0].hooks[0].command, /agent-stop --agent codex$/);
       assert.match(JSON.parse(readFileSync(join(dir, ".cursor", "hooks.json"), "utf8")).hooks.stop[0].command, /agent-stop --agent cursor$/);
+      assert.match(JSON.parse(readFileSync(join(dir, ".github", "hooks", "diffci.json"), "utf8")).hooks.agentStop[0].bash, /agent-stop --agent copilot$/);
+      assert.equal(existsSync(join(dir, ".kiro", "hooks")), false, "Kiro's Stop hook cannot block, so init adds none");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -127,14 +139,21 @@ describe("agent-facing CLI commands", () => {
       assert.match(kept.stdout, /kept \.cursor\/mcp\.json \(its diffci server was not written by DiffCI/);
       assert.equal(readFileSync(join(dir, ".cursor", "mcp.json"), "utf8"), foreign);
       assert.match(kept.stdout, /skipped the pre-push hook \(--no-hook\)/);
-      assert.equal(existsSync(join(dir, ".claude", "skills")), false);
+      assert.match(kept.stdout, /skipped the diffci-verify skills \(--no-skill\)/);
+      for (const skillDir of [".claude", ".agents", ".kiro"]) assert.equal(existsSync(join(dir, skillDir, "skills")), false);
+      assert.ok(existsSync(join(dir, ".kiro", "settings", "mcp.json")));
       assert.equal(existsSync(join(dir, ".git", "hooks", "pre-push")), false);
 
-      rmSync(join(dir, ".mcp.json"));
-      const noMcp = runCli(["init", "--repo", dir, "--no-mcp", "--no-hook"], ROOT);
+      for (const path of [".mcp.json", ".kiro", ".agents", ".github"]) rmSync(join(dir, path), { recursive: true, force: true });
+      const noMcp = runCli(["init", "--repo", dir, "--no-mcp", "--no-hook", "--no-agent-hooks"], ROOT);
       assert.equal(noMcp.status, 0, noMcp.stderr);
       assert.match(noMcp.stdout, /skipped the MCP server configs \(--no-mcp\)/);
+      assert.match(noMcp.stdout, /skipped the agent stop hooks \(--no-agent-hooks\)/);
       assert.equal(existsSync(join(dir, ".mcp.json")), false);
+      assert.equal(existsSync(join(dir, ".kiro", "settings", "mcp.json")), false);
+      assert.equal(existsSync(join(dir, ".agents", "mcp_config.json")), false);
+      assert.equal(existsSync(join(dir, ".github", "hooks")), false);
+      assert.ok(existsSync(join(dir, ".agents", "skills", "diffci-verify", "SKILL.md")));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -144,17 +163,20 @@ describe("agent-facing CLI commands", () => {
     const dir = mkdtempSync(join(tmpdir(), "diffci-agent-ignored-"));
     try {
       execFileSync("git", ["init", "--quiet"], { cwd: dir });
-      writeFileSync(join(dir, ".gitignore"), "/.claude/\n", "utf8");
+      writeFileSync(join(dir, ".gitignore"), "/.claude/\n/.kiro/\n", "utf8");
 
       const result = runCli(["init", "--repo", dir], ROOT);
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /Warning: \.gitignore keeps these files out of commits/);
       assert.match(result.stdout, /^ {2}\.claude\/skills\/diffci-verify\/SKILL\.md$/m);
       assert.match(result.stdout, /^ {2}\.claude\/settings\.json$/m);
+      assert.match(result.stdout, /^ {2}\.kiro\/settings\/mcp\.json$/m);
+      assert.match(result.stdout, /^ {2}\.kiro\/skills\/diffci-verify\/SKILL\.md$/m);
+      assert.doesNotMatch(result.stdout, /^ {2}\.agents\/mcp_config\.json$/m);
       assert.doesNotMatch(result.stdout, /^ {2}\.mcp\.json$/m);
       assert.doesNotMatch(result.stdout, /^ {2}\.git\/hooks\/pre-push$/m);
 
-      writeFileSync(join(dir, ".gitignore"), "/.claude/*\n!/.claude/skills/\n!/.claude/settings.json\n", "utf8");
+      writeFileSync(join(dir, ".gitignore"), "/.claude/*\n!/.claude/skills/\n!/.claude/settings.json\n/.kiro/*\n!/.kiro/settings/\n!/.kiro/skills/\n", "utf8");
       const clean = runCli(["init", "--repo", dir], ROOT);
       assert.equal(clean.status, 0, clean.stderr);
       assert.doesNotMatch(clean.stdout, /Warning: \.gitignore/);
