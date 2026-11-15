@@ -114,14 +114,20 @@ test("Rust detection is specific and missing root manifest falls back", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("an excluded nested Cargo package cannot silently become part of its parent", () => {
+test("an excluded nested Cargo package cannot silently become part of its parent, and blocks only if something depends on it", () => {
   const files = { "Cargo.toml": manifest("root"), "src/lib.rs": "", "excluded/Cargo.toml": manifest("excluded"),
     "excluded/src/lib.rs": "", "excluded/tests/api.rs": "" };
   const root = fixture(files);
   try {
     const result = analyzeRustMetadata({ repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) }, metadata(root, [pkg(root, "", "root")]));
-    assert.ok(result.blockers.some(reason => reason.includes("Cargo manifests outside workspace membership") && reason.includes("excluded/Cargo.toml")));
+    // No package depends on it, so its files stay unmodelled (a change to them keeps the full suite)
+    // without blocking the repository.
+    assert.deepEqual(result.blockers, []);
     assert.ok(!result.sourcePaths.includes("excluded/src/lib.rs"));
+    assert.ok(!result.testFiles.includes("excluded/tests/api.rs"));
+    const excluded = pkg(root, "excluded", "excluded");
+    const used = analyzeRustMetadata({ repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) }, metadata(root, [pkg(root, "", "root"), excluded], { workspace_members: [`path+${root}/#root@0.1.0`] }));
+    assert.ok(used.blockers.some(reason => reason.includes("Cargo manifests outside workspace membership") && reason.includes("excluded/Cargo.toml")));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

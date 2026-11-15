@@ -587,8 +587,12 @@ export class ImpactAnalyzer {
     }
     if (profile.adapters?.some(adapter => adapter.id === "rust")) {
       const modeledPaths = new Set([...(profile.rustSources ?? []), ...(profile.rustAssets ?? [])]);
+      // Documentation follows the shared classification (as for the other adapters) unless Rust code
+      // includes it (then it is a modelled asset), names it, or a workspace build script could read it.
+      const documentation = (path: string) => !profile.rustDocumentationReaders?.length
+        && (this.layout.isDocumentationPath(path) || isAgentConfigurationPath(path));
       const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))]
-        .filter(path => path === "Cargo.toml" || /(?:^|\/)Cargo\.lock$/.test(path) || !modeledPaths.has(path));
+        .filter(path => path === "Cargo.toml" || /(?:^|\/)Cargo\.lock$/.test(path) || (!modeledPaths.has(path) && !documentation(path)));
       if (unmodeledPaths.length) fallbackReasons.push(`Rust runtime inputs outside crate metadata or workspace configuration require full validation: ${unmodeledPaths.slice(0, 20).join(", ")}`);
     }
     const hasGoAdapter = profile.adapters?.some(adapter => adapter.id === "go");

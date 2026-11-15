@@ -658,18 +658,16 @@ export function createTestFileMatcher(
  * impact classification cannot disagree about what a test is. */
 export function testFileMatcherForProfile(profile: {
   goTestPackages?: Record<string, string>;
-  mavenTestModules?: Record<string, string>;
   rustTestPackages?: Record<string, string>;
-  pythonTests?: readonly string[];
   testPatterns?: readonly string[];
   testExcludePatterns?: readonly string[];
   testAuthoritativePatterns?: readonly string[];
   testIgnoreRegexSources?: readonly string[];
   testRoots?: readonly string[];
 }): TestFileMatcher {
-  const adapterTests = new Set([...Object.keys(profile.goTestPackages ?? {}), ...Object.keys(profile.mavenTestModules ?? {}), ...Object.keys(profile.rustTestPackages ?? {}), ...(profile.pythonTests ?? [])]);
+  const adapterTests = new Set([...Object.keys(profile.goTestPackages ?? {}), ...Object.keys(profile.rustTestPackages ?? {})]);
   if (adapterTests.size) {
-    const jsMatcher = testFileMatcherForProfile({ ...profile, goTestPackages: undefined, mavenTestModules: undefined, rustTestPackages: undefined, pythonTests: undefined });
+    const jsMatcher = testFileMatcherForProfile({ ...profile, goTestPackages: undefined, rustTestPackages: undefined });
     const matcher = ((path: string) => adapterTests.has(path) || jsMatcher(path)) as TestFileMatcher;
     Object.defineProperty(matcher, "patterns", { value: jsMatcher.patterns });
     return matcher;
