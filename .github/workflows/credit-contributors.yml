@@ -1,0 +1,48 @@
+name: Credit contributors
+
+# Adds an outside contributor to the README's Contributors list when their pull request merges.
+# pull_request_target runs this workflow from main, never the pull request's code: the job only reads
+# PR metadata through the API, so it is safe for pull requests from forks.
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: credit-contributors
+  cancel-in-progress: false
+
+jobs:
+  credit:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged }}
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Credit merged contributions in the README
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/credit-contributors.mjs
+      - name: Commit to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --quiet README.md && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -s -m "docs: credit new contributors in the README" README.md
+          for attempt in 1 2 3; do
+            git push origin HEAD:main && exit 0
+            git pull -q --rebase origin main
+          done
+          exit 1

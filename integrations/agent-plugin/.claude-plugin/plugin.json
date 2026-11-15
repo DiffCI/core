@@ -1,8 +1,8 @@
 {
   "name": "diffci",
   "displayName": "DiffCI",
-  "version": "0.3.38",
-  "description": "Verify coding changes with affected tests and conservative full fallback.",
+  "version": "0.3.45",
+  "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure.",
   "author": {
     "name": "DiffCI",
     "email": "support@diffci.com",

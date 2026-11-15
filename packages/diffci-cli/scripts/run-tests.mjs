@@ -13,6 +13,6 @@ function collect(dir) {
 }
 const tests = collect(join(root, 'tests')).sort();
 if (tests.length === 0) throw new Error('No tests found');
-const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', ...tests], { cwd: root, stdio: 'inherit' });
+const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', ...tests], { cwd: root, stdio: 'inherit', env: { ...process.env, DO_NOT_TRACK: '1' } });
 if (result.error) throw result.error;
 process.exitCode = result.status ?? 1;

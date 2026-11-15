@@ -394,6 +394,46 @@ Dependency graph confidence is UNSAFE; full validation required
 
 Run `npm test` for this revision. Even though the report lists one selected test out of one discovered test, that count is not a runtime measurement or a savings claim. The computed import could reach modules static analysis did not discover, so only the repository's normal full validation remains authoritative. CLI behavior may evolve after version 0.3.2; keep the pinned version when reproducing this exact output.
 
+## Imports from barrels
+
+A test that imports `{ x }` from a package's `index.ts` depends on every file that barrel re-exports, if you
+count files. When the package's `package.json` declares `"sideEffects": false` (or lists only stylesheets), DiffCI
+follows the re-exports by name instead and selects only the tests whose imported names reach a changed file.
+This is the contract bundlers use to drop unused re-exports. Without it, imports stay whole files.
+
+Some cases stay at file level or broaden the selection:
+
+- A changed barrel, or a changed `export *` source DiffCI had to search for a name, selects every test that imports
+  through it.
+- Namespace imports (`import * as x`), CommonJS modules and names DiffCI can't find count as the whole module.
+- A barrel still loads every module it re-exports, so an error thrown while a changed file loads would fail tests
+  that never use it. When no selected test reaches the changed file by name, one of its importers is kept to load it.
+- A computed `import(name)` inside a function selects only the tests whose imports reach its module, since only
+  those can call it. One that runs when its module loads (at the top level, or in a function invoked at once)
+  selects every test that loads the module.
+- Type tests are never dropped: `*.test-d.ts`, `*.tst.ts`, and the files tstyche's `testFileMatch` names. Where
+  every test may be type-checked as it runs (Jest, ts-jest, `--typecheck`), a type import counts as the whole
+  module.
+
+The result's evidence says how many tests each changed file skipped this way.
+
+## Code loaded by a path string
+
+A string that names a code file by path, such as `test.suite('Posts', { config: './config.ts' })`, is a
+dependency: DiffCI follows it from the file that holds it, so a change to that config or anything it imports
+selects the test.
+
+A computed `import(name)` can load any file, so by default every test that runs it is selected for every code
+change. When a repository's computed loads only ever reach files named by such path strings, it can say so:
+
+```json
+{ "computedImports": "follow-path-literals" }
+```
+
+in `diffci.json`. Those loads then select nothing beyond the path-string dependencies. It is an assumption about
+your code, the same one `vitest --changed` makes for every computed import: a load whose path is built at run
+time from something else (a directory listing, an environment variable, the working directory) would be missed.
+
 ## Declare inputs the graph can't see
 
 Some files reach tests without an import: fixtures loaded by name, `.env.test`, a Prisma schema that generates the client, a migration a test applies. DiffCI looks for tests that name such a file and runs the full suite when it finds none. Declare the edge in `diffci.json` (or the `diffci` key in `package.json`) instead:
@@ -428,7 +468,7 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
-| `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts` or `.babelrc` | No |
+| `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts`, `babel.config.js` or `.babelrc`, or a package's `packages/web/jest.config.js` | No |
 | `Dependency manifest changed; full validation required` | Add `peerDependencies` or `engines` to `package.json` | No |
 | `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency in `packages/a/package.json` while a lockfile governs it, edit its `scripts`, or change `exports` to a `*` pattern (a `version` bump, a dependency bump in a repository that commits no lockfile, and an `exports` remap between files are narrowed) | No |
 | `… remaps an export to …, which is outside the dependency graph; full validation required` | Point an `exports` subpath at a file DiffCI does not analyse, such as a `.d.ts` outside every tsconfig | No |
@@ -467,8 +507,9 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Deleted source/asset … not present in HEAD dependency graph; legacy dependents cannot be determined` | Delete `src/legacy.css` while an unchanged `src/app.tsx` still imports it, or while a workflow step names it (renamed or deleted files whose importers all changed are narrowed) | Yes: declare it in `inputs` |
 | `Declared input … selects no tests; full validation required` | `inputs` names the changed file, but its `tests` globs match no test file | Fix: point `tests` at existing tests |
 | `Invalid inputs: each entry needs non-empty files and tests glob lists` | `"inputs": [{ "files": ["fixtures/**"] }]` | Fix: give every entry `files` and `tests` |
+| `Invalid computedImports: the only supported value is follow-path-literals` | `"computedImports": "trust"` | Fix: use `"follow-path-literals"` or remove the key |
 | `Invalid importer TypeScript configuration: …` | Break the JSON in `tsconfig.json`. A `tsconfig.json` in a nested package that is not a workspace member, and whose stated paths stay inside it, decides only changes that reach that package, such as an E2E app whose config extends a generated `.nuxt/tsconfig.json` | No |
-| `Unsupported … …; root-relative test discovery requires full validation` | Set `root: "./src"` in `vitest.config.ts` or `rootDir` in `jest.config.js` | No |
+| `Unsupported … …; root-relative test discovery requires full validation` | Set `root: "./src"` in `vitest.config.ts` or `rootDir` in `jest.config.js`. A root that names the config's own directory is supported: `"."`, `__dirname`, `import.meta.dirname`, `dirname(fileURLToPath(import.meta.url))`, `fileURLToPath(new URL(".", import.meta.url))` or `resolve()` of one of these, directly or through a top-level `const`, with the helpers imported from `node:path` and `node:url` | No |
 | `Multiple runner configurations require completely understood explicit test includes; full validation required` | Keep both `vitest.config.ts` and `jest.config.js` without explicit `include`/`testMatch` | No |
 | `Unmodeled languages alongside an adapter require full validation` | Add Python files to a Go repository. When every such file sits inside nested package directories or a top-level dot-directory such as `.agents/`, only changes that reach those directories fall back | No |
 | `Workspace package … is imported by … file(s) but DiffCI cannot map the import to the package's source files; point the package's types entry at a tsconfig outDir or declarationDir with a rootDir, or at source` | A workspace member imports another workspace package by name, and that package's `types` entry (or its export's `types` condition) points at build output that no `tsconfig*.json` in the package root maps back to source with `outDir`/`declarationDir` and `rootDir`, or points only at JavaScript. Installing or building does not help: built declarations are not source | Fix: give the package a tsconfig with `rootDir` and the output directory its `types` entry uses (as Sentry's `tsconfig.types.json` does), or point the entry at source |
@@ -480,8 +521,9 @@ _The runtime-input check (`Go runtime inputs outside source/embed metadata …`)
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
-| `Go support requires one root go.mod; workspaces and nested modules require full validation` | Add `tools/go.mod` | Yes: `"go": { "scope": "root-module" }` |
-| `Go root-module scope with local replacements requires full validation` | `replace example.com/x => ./x` with `go.scope` set | No |
+| `Go support requires one root go.mod; workspaces and nested modules require full validation` | Add `tools/go.mod` beside a root `go.mod`, add a `go.work`, or add a `.go` file outside every nested module | Yes: `"go": { "scope": "root-module" }` |
+| `Go modules without a root go.mod are not modelled; a change that reaches one requires full validation` | A repository in another language with Go tools in nested modules and no root `go.mod` or `go.work`, such as `tools/agent-shim/go.mod`. Go isn't modelled there: a change that reaches a module's directory falls back, and other changes are planned as if the repository had no Go | No |
+| `Go root-module scope with local replacements requires full validation` | A local `replace` with `go.scope` set whose directory is not a nested module root in the repository. `replace example.com/x => ./x`, where `x/go.mod` exists, is modelled instead: changes to the `x/` packages the root build uses select their importers, and other `x/` files (its own tests, unused packages) fall back as runtime inputs. In-repository replace targets were contributed by [@sarankumar1325](https://github.com/sarankumar1325) in [#110](https://github.com/DiffCI/core/pull/110) | No |
 | `Changes in a Go module outside the declared root-module scope require full validation` | Edit `tools/main.go` with `go.scope` set | No |
 | `Go metadata unavailable: install Go and repository dependencies before analysis (go list must succeed offline)` | Run without Go installed or without downloaded modules | No |
 | `Go custom build flags or incomplete build context require full validation` | Set `GOFLAGS=-tags=integration` | No |
@@ -585,35 +627,12 @@ For supported languages and setup limits, see [What is included](../README.md#wh
 
 ### Rust adapter safety
 
-Cargo package ownership and crate dependencies are not registered for selection yet. Command synthesis and integration remain separate milestones in #62. Metadata unions all features and target-platform dependencies, including dev-dependencies. Feature-conditional source stays crate-granular; required-feature test targets and custom build behavior retain full validation.
+Maintainer: [@FredApps](https://github.com/FredApps).
+
+Cargo package ownership and crate dependencies are not registered for selection yet. Command synthesis and integration remain separate milestones in [#62](https://github.com/DiffCI/core/issues/62). Metadata unions all features and target-platform dependencies, including dev-dependencies. Feature-conditional source stays crate-granular; required-feature test targets and custom build behavior retain full validation.
 
 | Reason | Meaning / next step |
 | --- | --- |
-| `Rust support requires a Cargo workspace or crate at the repository root` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Ambiguous Cargo workspace package names require full validation` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Rust package … has an unavailable or external manifest` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Rust file has no verified Cargo package: …` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Rust target …/… has an unavailable, external or differently owned source` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Unsupported Cargo target kind: …/…` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Multiple Cargo test targets share a source path: …` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Cargo metadata found no supported test targets` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Invalid or incomplete Cargo metadata requires full validation` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Rust support requires a root Cargo.toml` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Cargo metadata unavailable: install Rust and repository dependencies; offline, locked metadata must succeed` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
-| `Cargo manifests outside workspace membership require full validation: …` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
-| `Cargo packages share a manifest; ownership is ambiguous` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
-| `Custom Cargo configuration requires full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo dependency resolution is missing or incomplete; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo dependencies outside the workspace have opaque runtime inputs; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo build scripts can read arbitrary inputs; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo procedural macros can read arbitrary inputs; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo targets requiring features need an explicitly supported test invocation; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Rust runtime inputs, computed includes or path attributes require full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Rust include outside its crate or unavailable requires full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Custom Cargo configuration or compiler environment requires full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Mixed Rust/language repositories require explicit cross-language dependencies; full validation required` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Rust runtime inputs outside crate metadata or workspace configuration require full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Rust include code with a non-Rust extension requires full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo target with a non-Rust extension requires full validation: …` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Cargo dependency feature unification requires the full workspace test invocation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
-| `Incomplete Rust source inventory or symlinked inputs require full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |
+| `Rust support requires a Cargo workspace or crate at the repository root`<br>`Ambiguous Cargo workspace package names require full validation`<br>`Rust package … has an unavailable or external manifest`<br>`Rust file has no verified Cargo package: …`<br>`Rust target …/… has an unavailable, external or differently owned source`<br>`Unsupported Cargo target kind: …/…`<br>`Multiple Cargo test targets share a source path: …`<br>`Cargo metadata found no supported test targets`<br>`Invalid or incomplete Cargo metadata requires full validation`<br>`Rust support requires a root Cargo.toml`<br>`Cargo metadata unavailable: install Rust and repository dependencies; offline, locked metadata must succeed` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Cargo manifests outside workspace membership require full validation: …`<br>`Cargo packages share a manifest; ownership is ambiguous` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
+| `Custom Cargo configuration requires full validation`<br>`Cargo dependency resolution is missing or incomplete; full validation required`<br>`Cargo dependencies outside the workspace have opaque runtime inputs; full validation required`<br>`Cargo build scripts can read arbitrary inputs; full validation required`<br>`Cargo procedural macros can read arbitrary inputs; full validation required`<br>`Cargo targets requiring features need an explicitly supported test invocation; full validation required`<br>`Rust runtime inputs, computed includes or path attributes require full validation: …`<br>`Rust include outside its crate or unavailable requires full validation: …`<br>`Custom Cargo configuration or compiler environment requires full validation`<br>`Mixed Rust/language repositories require explicit cross-language dependencies; full validation required`<br>`Rust runtime inputs outside crate metadata or workspace configuration require full validation: …`<br>`Rust include code with a non-Rust extension requires full validation: …`<br>`Cargo target with a non-Rust extension requires full validation: …`<br>`Cargo dependency feature unification requires the full workspace test invocation`<br>`Incomplete Rust source inventory or symlinked inputs require full validation` | Cargo ownership, build context or dependency evidence is incomplete; retain the full suite. |

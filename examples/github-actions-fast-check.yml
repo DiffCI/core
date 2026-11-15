@@ -10,6 +10,8 @@ permissions:
   contents: read
   # Only for comment: "true" below. Fork pull requests get a read-only token and a warning instead.
   pull-requests: write
+  # Only for check-run: "true" below, the "DiffCI merge gate" check that branch protection can require.
+  checks: write
 
 jobs:
   diffci-fast-check:
@@ -29,3 +31,4 @@ jobs:
           node-version: "22"
           verify: "true"
           comment: "true"
+          check-run: "true"

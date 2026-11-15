@@ -150,7 +150,9 @@ export type DependencyEdgeKind =
   | "re-export"
   | "dynamic-import"
   | "require"
-  | "asset";
+  | "asset"
+  /** A string naming a code file by path (`'./config.ts'`), which code may load at run time. */
+  | "path-literal";
 
 export type DependencyResolution =
   | "internal-source"
@@ -253,7 +255,33 @@ export interface ScopedAdapterBlocker {
   directories: string[];
 }
 
+/**
+ * What one module defines and forwards, and which names it imports from each runtime dependency
+ * (2026-11-10). ImpactAnalyzer uses it to skip a test that imports `{ x }` from a side-effect-free barrel
+ * when the changed file is not reached through `x`. A dependency missing from `imports` and `reexports`
+ * is a whole-module import.
+ */
+export interface ModuleBindings {
+  locals: string[];
+  /** Exports cannot be listed (CommonJS, `export =`, destructuring): any import means the whole module. */
+  opaque?: boolean;
+  /** The nearest package.json declares `sideEffects: false`, or lists only stylesheets. */
+  sideEffectFree?: boolean;
+  /** Names imported from each target, or "*" for the whole module. */
+  imports: Record<string, string[] | "*">;
+  /** The module makes a computed load when it loads (not inside a function), so every test that loads it may
+   * run that load. */
+  computedAtLoad?: boolean;
+  /** Targets imported with `import type` (or only inline `type` specifiers), which can fail a test that is
+   * type-checked as it runs. */
+  typeImports?: string[];
+  /** What `export ... from` forwards from each target. */
+  reexports: Record<string, { pairs: [string, string][]; star: boolean; namespaces: string[] }>;
+}
+
 export interface DependencyGraphResult {
+  /** Export-level bindings per parsed module. Absent (older caches) means file level. */
+  bindings?: Record<string, ModuleBindings>;
   /** Missing framework/language relationships are global, not reachability-narrowable. */
   adapterBlockers?: string[];
   /** Blockers confined to package directories; see ScopedAdapterBlocker. `confidence` still counts them. */
@@ -280,4 +308,7 @@ export interface DependencyGraphResult {
    * checking, so an `import type` edge cannot change a test's outcome (2026-11-03). Absent or false
    * means type-only edges select tests too. */
   runtimeTestSelection?: boolean;
+  /** Globs of the files a type-test runner checks (tstyche's `testFileMatch`, tsd's `*.test-d.ts`). They keep
+   * their type-only dependents under runtime selection, and export-level selection never narrows them. */
+  typeTestGlobs?: string[];
 }

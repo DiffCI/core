@@ -97,6 +97,48 @@ test("verify-checks false and an explicit range reach the CLI", () => {
   assert.equal(run.args[run.args.indexOf("--head") + 1], "def456");
 });
 
+/** A repository whose HEAD is a merge of a pull request head into the base branch, like refs/pull/N/merge. */
+function mergeCheckout() {
+  const repo = mkdtempSync(join(tmpdir(), "diffci-action-merge-"));
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).stdout.trim();
+  git("init", "-q", "-b", "main");
+  git("commit", "-q", "--allow-empty", "-m", "root");
+  git("switch", "-q", "-c", "feature");
+  git("commit", "-q", "--allow-empty", "-m", "change");
+  const prHead = git("rev-parse", "HEAD");
+  git("switch", "-q", "main");
+  git("commit", "-q", "--allow-empty", "-m", "base moved on");
+  const baseTip = git("rev-parse", "HEAD");
+  git("merge", "-q", "--no-ff", "-m", "Merge into main", "feature");
+  const merge = git("rev-parse", "HEAD");
+  const event = join(repo, "..", `${repo.split(/[\\/]/).pop()}-event.json`);
+  writeFileSync(event, JSON.stringify({ pull_request: { head: { sha: prHead }, base: { sha: baseTip } } }));
+  return { repo, git, prHead, baseTip, merge, event };
+}
+
+test("a pull request's merge-commit checkout is verified as it would merge", () => {
+  const { repo, baseTip, merge, event } = mergeCheckout();
+  const run = runVerify({ DIFFCI_REPO: repo, GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: event });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.args[run.args.indexOf("--base") + 1], baseTip, "against the base branch tip GitHub merged into");
+  assert.equal(run.args[run.args.indexOf("--head") + 1], merge, "the checked-out merge commit, so verify does not block");
+  assert.match(run.stdout, /verifying GitHub's merge commit/);
+});
+
+test("a checkout of the pull request head, a push, or an explicit range keeps its range", () => {
+  const { repo, git, prHead, event } = mergeCheckout();
+  git("checkout", "-q", prHead);
+  const head = runVerify({ DIFFCI_REPO: repo, GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: event });
+  assert.ok(!head.args.includes("--base"), "the event range already matches the checkout");
+  git("checkout", "-q", "main");
+  const push = runVerify({ DIFFCI_REPO: repo, GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: event });
+  assert.ok(!push.args.includes("--base"));
+  const explicit = runVerify({ DIFFCI_REPO: repo, GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: event, DIFFCI_BASE: "abc123", DIFFCI_HEAD: "def456" });
+  assert.equal(explicit.args.filter((arg) => arg === "--base").length, 1);
+  assert.equal(explicit.args[explicit.args.indexOf("--base") + 1], "abc123");
+});
+
 test("failing tests or checks fail the step", () => {
   const run = runVerify({}, 1);
   assert.equal(run.status, 1);

@@ -124,3 +124,27 @@ describe("analyzeRepository discoverTests", () => {
     }
   });
 });
+
+describe("test discovery and build-output directory names", () => {
+  it("finds a test in a source directory named build, and skips build output beside a package.json or at the root", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-build-dirs-"));
+    try {
+      const write = (rel: string, content: string) => { mkdirSync(join(dir, rel, ".."), { recursive: true }); writeFileSync(join(dir, rel), content); };
+      write("package.json", JSON.stringify({ name: "root", scripts: { test: "vitest run" }, devDependencies: { vitest: "^3.0.0" } }));
+      write("packages/cli/package.json", JSON.stringify({ name: "cli" }));
+      // payloadcms/payload's packages/payload/src/cli/commands/build/build.spec.ts.
+      write("packages/cli/src/commands/build/build.spec.ts", "import { it } from 'vitest'; it('builds', () => {});\n");
+      write("packages/cli/build/compiled.spec.js", "it('compiled', () => {});\n");
+      write("packages/cli/dist/compiled.spec.js", "it('compiled', () => {});\n");
+      write("dist/root.spec.js", "it('root output', () => {});\n");
+      write("packages/cli/node_modules/dep/x.spec.js", "it('dependency', () => {});\n");
+      const tests = analyzeRepository({ repoPath: dir }).testFilePaths;
+      assert.ok(tests.includes("packages/cli/src/commands/build/build.spec.ts"), JSON.stringify(tests));
+      for (const skipped of ["packages/cli/build/compiled.spec.js", "packages/cli/dist/compiled.spec.js", "dist/root.spec.js", "packages/cli/node_modules/dep/x.spec.js"]) {
+        assert.ok(!tests.includes(skipped), skipped);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

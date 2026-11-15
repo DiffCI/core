@@ -9,7 +9,11 @@ import type { DependencyGraphResult } from "../repo/types.js";
 // 6: the profile's diffciConfig carries declared `inputs` (2026-11-05).
 // 7: folded computed specifiers and root-absolute Vite globs have edges (2026-11-06).
 // 8: Python projects have a graph, and the profile carries pythonSources/pythonTests (2026-11-06).
-export const GRAPH_CACHE_SCHEMA_VERSION = "10";
+// 11: results carry export-level `bindings` (2026-11-10).
+// 12: bindings mark computed loads that run when a module loads (2026-11-10).
+// 13: tsd and tstyche scope type edges to their own files (typeTestGlobs) (2026-11-10).
+// 14: path-literal edges from strings naming code files (2026-11-10).
+export const GRAPH_CACHE_SCHEMA_VERSION = "14";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

@@ -865,6 +865,10 @@ describe("runtime module references", () => {
     "const binding": "const modulePath = './changed' + '.ts'; export const load = async () => import(modulePath);",
     "cache-busting query": "export const load = () => import('./changed?v=' + Date.now());",
     "template over a const": "const dir = '.'; export const load = () => import(`${dir}/changed`);",
+    // 2026-11-12 Paperclip: server/src/vendor/paperclip-runner/index.ts loads its source shim this way.
+    "module-relative URL through a const": "const sourceUrl = new URL('./changed.ts', import.meta.url); export const load = () => import(sourceUrl.href);",
+    "inline module-relative URL": "export const load = () => import(new URL('changed.ts', import.meta.url).href);",
+    "module-relative URL toString": "const url = new URL('./changed.ts?v=1', import.meta.url); export const load = () => import(url.toString());",
   })) {
     it(`resolves a ${name} import to its one target`, async () => {
       const root = createTempRepo({
@@ -885,6 +889,10 @@ describe("runtime module references", () => {
   for (const [name, source] of Object.entries({
     "const rebound in another scope": "const p = './changed'; export const load = (p: string) => import(p);",
     "numeric sum": "const a = 1; const b = 2; export const load = () => import(a + b);",
+    "URL against another base": "const base = 'file:///x/'; const u = new URL('./changed.ts', base); export const load = () => import(u.href);",
+    "absolute module URL": "export const load = () => import(new URL('/changed.ts', import.meta.url).href);",
+    "URL rebound in another scope": "const u = new URL('./changed.ts', import.meta.url); export const load = (u: URL) => import(u.href);",
+    "URL with an unknown head": "export const load = (name: string) => import(new URL(name, import.meta.url).href);",
   })) {
     it(`keeps a ${name} computed`, async () => {
       const root = createTempRepo({ "src/changed.ts": "export const value = 1;", "src/loader.ts": source });
@@ -973,11 +981,59 @@ describe("runtime test selection", () => {
     }
   });
 
+  // tsd and tstyche type-check only their own files (2026-11-10): the rest of a Vitest suite keeps runtime
+  // selection, and their files keep every type edge.
+  it("keeps runtime selection beside tsd, whose *.test-d.ts files still follow type edges", async () => {
+    const root = vitestRepo({ "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "tsd" } }) });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(selected.includes("tests/shape.test-d.ts"), JSON.stringify(selected));
+      assert.ok(!selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("confines Jest in a sub-package to that package's tests", async () => {
+    // payloadcms/payload: .github/actions/triage has its own jest.config.js, packages/payload-cloud a `jest` script.
+    const root = vitestRepo({
+      ".github/actions/triage/jest.config.js": "module.exports = {};",
+      "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "jest" } }),
+      "packages/legacy/tests/legacy.test.ts": "import type { Shape } from '../../../src/types'; export const shape: Shape = { size: 1 };",
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      assert.deepEqual(result.typeTestGlobs, [".github/actions/triage/**", "packages/legacy/**"]);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(!selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats the files tstyche's testFileMatch names as type tests", async () => {
+    const root = vitestRepo({
+      "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "vitest run", "test:types": "tstyche" }, devDependencies: { vitest: "^3.0.0", tstyche: "^4.0.0" } }),
+      "tstyche.json": JSON.stringify({ testFileMatch: ["tests/typed.test.ts"] }),
+    });
+    try {
+      const result = await buildDependencyGraph({ repoPath: root });
+      assert.equal(result.runtimeTestSelection, true);
+      assert.deepEqual(result.typeTestGlobs, ["tests/typed.test.ts"]);
+      const selected = new ImpactAnalyzer().analyze(changed("src/types.ts"), result, result.profile).affectedTests.map((test) => test.path);
+      assert.ok(selected.includes("tests/typed.test.ts"), JSON.stringify(selected));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   for (const [name, extra] of Object.entries<FixtureFiles>({
-    "a Jest config": { "packages/legacy/jest.config.js": "module.exports = {};" },
-    "ts-jest in a workspace package": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", devDependencies: { "ts-jest": "^29.0.0" } }) },
+    "a root Jest config": { "jest.config.js": "module.exports = {};" },
+    "ts-jest at the root": { "package.json": JSON.stringify({ name: "fixture", version: "1.0.0", scripts: { test: "vitest run" }, devDependencies: { vitest: "^3.0.0", "ts-jest": "^29.0.0" } }) },
     "Vitest typecheck mode": { "vitest.config.ts": "export default { test: { typecheck: { enabled: true } } };" },
-    "a tsd script": { "packages/legacy/package.json": JSON.stringify({ name: "legacy", scripts: { test: "tsd" } }) },
   })) {
     it(`keeps type-only edges selecting tests when the repository has ${name}`, async () => {
       const root = vitestRepo(extra);

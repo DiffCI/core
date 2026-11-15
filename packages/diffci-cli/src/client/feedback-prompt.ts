@@ -28,7 +28,7 @@ export function formatFeedbackPrompt(telemetry: TelemetryMode): string {
     "  volunteer a pilot:   https://diffci.com/#pilot",
     "  star the engine:     https://github.com/DiffCI/core",
   ];
-  if (telemetry === "off") lines.push("  share anonymous run counts: diffci telemetry --mode anonymous (no repository content)");
+  if (telemetry === "repo") lines.push("  run counts include this repository name; diffci telemetry --mode count-only drops it");
   lines.push("Shown at most weekly; DIFFCI_NO_FEEDBACK_PROMPT=1 hides it.");
   return lines.join("\n");
 }
