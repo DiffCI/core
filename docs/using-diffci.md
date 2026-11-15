@@ -624,3 +624,12 @@ Core's path-rule baseline planners (`src/planner/path-baseline.ts` and `src/rese
 `npm test` checks that every reason in `src/` is listed here (`node scripts/fallback-reasons.mjs` prints them).
 
 For supported languages and setup limits, see [What is included](../README.md#what-is-included). For the published CLI and source boundary, see [the release boundary](release-boundary.md#published-cli-source-archive).
+
+### Rust adapter foundation
+
+Cargo package and target mapping is not registered for selection yet. Dependency analysis, command synthesis and integration are separate milestones in [#62](https://github.com/DiffCI/core/issues/62).
+
+| Reason | Meaning / next step |
+| --- | --- |
+| `Rust crate dependency analysis is not available; full validation required`<br>`Rust support requires a Cargo workspace or crate at the repository root`<br>`Ambiguous Cargo workspace package names require full validation`<br>`Rust package … has an unavailable or external manifest`<br>`Rust file has no verified Cargo package: …`<br>`Rust target …/… has an unavailable, external or differently owned source`<br>`Unsupported Cargo target kind: …/…`<br>`Multiple Cargo test targets share a source path: …`<br>`Cargo metadata found no supported test targets`<br>`Invalid or incomplete Cargo metadata requires full validation`<br>`Rust support requires a root Cargo.toml`<br>`Cargo metadata unavailable: install Rust and repository dependencies; offline, locked metadata must succeed` | Cargo ownership or dependency evidence is incomplete; retain the full suite. Check the root manifest, target paths and offline metadata. |
+| `Cargo manifests outside workspace membership require full validation: …`<br>`Cargo packages share a manifest; ownership is ambiguous` | Cargo package ownership is incomplete or ambiguous; retain the full suite. |
