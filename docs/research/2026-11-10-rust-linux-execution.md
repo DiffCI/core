@@ -24,7 +24,7 @@ cargo test -p execution-consumer -p execution-leaf
 
 The independent full baseline is the original workflow's `cargo test`. Both receive the same offline environment. Healthy and restored runs have 6 selected versus 9 full Rust tests. Each injected production fault causes the expected runtime test failure and exit 101 in both modes; launch, timeout and compilation errors do not count as detection.
 
-The test also verifies unchanged inputs and lockfile, clean committed state, explicit named targets, and refusal of inherited Git directory/index redirection before fixture initialization. CI sets `DIFFCI_REQUIRE_CARGO=1`, so missing Cargo, rustc or rustdoc cannot silently skip this proof.
+The test also verifies unchanged inputs and lockfile, clean committed state, explicit named targets, and refusal of inherited Git directory/index redirection before fixture initialization. Core CI sets `DIFFCI_REQUIRE_CARGO=1` in its Linux Node 24 job, so missing Cargo, rustc or rustdoc cannot silently skip this proof there; the other matrix jobs skip it to save CI compute.
 
 Reproduce with Git and the Rust toolchain installed:
 

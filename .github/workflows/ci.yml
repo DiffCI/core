@@ -9,7 +9,9 @@ env:
 jobs:
   check:
     env:
-      DIFFCI_REQUIRE_CARGO: "1"
+      # The real Cargo execution fixture (tests/repo/rust-execution.test.ts) builds workspaces; one
+      # Linux job proves it and fails if Cargo is missing, the other matrix entries skip it.
+      DIFFCI_REQUIRE_CARGO: ${{ matrix.os == 'ubuntu-26.04' && matrix.node == 24 && '1' || '0' }}
     strategy:
       matrix:
         os: [ubuntu-26.04, windows-latest]

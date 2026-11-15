@@ -35,7 +35,7 @@ Command synthesis was NOT_APPLICABLE because the repository's original full test
 
 ## Reproduction
 
-Use the `Rust public repository replay` GitHub Actions workflow or run the harness in a disposable clone outside Core. Build Core with `npm ci` and `npm run build`, clone the official repository, and check out the pinned target head above. Then run:
+Use the `Rust public repository replay` GitHub Actions workflow (run by hand with `workflow_dispatch`) or run the harness in a disposable clone outside Core. Build Core with `npm ci` and `npm run build`, clone the official repository, and check out the pinned target head above. Then run:
 
 ```sh
 node scripts/replay-rust.mjs \

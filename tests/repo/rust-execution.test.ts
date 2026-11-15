@@ -15,6 +15,7 @@ import { ImpactAnalyzer } from "../../src/repo/impact.js";
 
 // Ordinary Node-only development may skip this executable fixture. Rust validation must set
 // DIFFCI_REQUIRE_CARGO=1 so a missing/broken toolchain cannot produce a successful skipped run.
+// Core CI sets it in one Linux job; the other CI matrix entries skip the fixture to save compute.
 const toolchain = ["cargo", "rustc", "rustdoc"].map(executable => ({
   executable,
   result: spawnSync(executable, ["--version"], {
@@ -161,7 +162,9 @@ function assertRuntimeFailure(results: RunResult[], expectedFailure: RegExp): vo
 }
 
 test("real Cargo selection executes affected suites and detects source regressions", {
-  skip: !cargoAvailable && process.env.DIFFCI_REQUIRE_CARGO !== "1" ? "Cargo/Rust toolchain unavailable; set DIFFCI_REQUIRE_CARGO=1 to require execution" : false,
+  skip: process.env.DIFFCI_REQUIRE_CARGO === "1" ? false
+    : process.env.CI ? "Real Cargo execution runs in the one CI job with DIFFCI_REQUIRE_CARGO=1"
+    : !cargoAvailable ? "Cargo/Rust toolchain unavailable; set DIFFCI_REQUIRE_CARGO=1 to require execution" : false,
   timeout: 300_000,
 }, async t => {
   // Inherited Git redirection could put fixture commits or indexes outside its owned root.
