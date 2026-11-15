@@ -74,13 +74,17 @@ function internalPath(root: string, path: string): string | undefined {
   return rel === ".." || rel.startsWith("../") || isAbsolute(rel) ? undefined : rel;
 }
 
+/** Resolve a metadata or checkout path against a realpath'd workspace root. */
+function resolvedPath(root: string, path: string): string | undefined {
+  try {
+    return internalPath(root, realpathSync(path));
+  } catch { return undefined; }
+}
+
 /** Refuse symlink escapes as well as lexical escapes before using a metadata path. */
 function repositoryPath(root: string, path: string, known: ReadonlySet<string>): string | undefined {
-  const rel = internalPath(root, path);
-  if (!rel || !known.has(rel)) return undefined;
-  try {
-    return internalPath(realpathSync(root), realpathSync(path)) === undefined ? undefined : rel;
-  } catch { return undefined; }
+  const rel = resolvedPath(root, path);
+  return rel && known.has(rel) ? rel : undefined;
 }
 
 function under(path: string, directory: string): boolean {
@@ -190,8 +194,8 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
   }
   try {
     const metadata = parseCargoMetadata(output);
-    const root = resolve(context.repoPath);
-    if (realpathSync(metadata.workspace_root) !== realpathSync(root)) {
+    const root = realpathSync(resolve(context.repoPath));
+    if (realpathSync(metadata.workspace_root) !== root) {
       result.blockers.push("Rust support requires a Cargo workspace or crate at the repository root");
       return result;
     }
@@ -209,7 +213,8 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
         result.blockers.push(`Rust package ${pkg.name} has an unavailable or external manifest`);
         continue;
       }
-      packages.push({ pkg, manifest, directory: internalPath(root, dirname(pkg.manifest_path))! });
+      const directory = dirname(manifest) === "." ? "" : dirname(manifest);
+      packages.push({ pkg, manifest, directory });
       result.sourcePaths.push(manifest);
     }
     // Deepest package wins, regardless of Cargo's package ordering.

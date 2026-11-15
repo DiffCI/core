@@ -242,3 +242,61 @@ describe("glob matching: bounded runtime", () => {
     assert.ok(elapsedMs < 1000, `single adversarial match took ${elapsedMs} ms`);
   });
 });
+
+// Paperclip (2026-11-11): packages/tailscale-https-broker/vitest.config.ts sets `root` to the config's own
+// directory through import.meta.url, and the "Unsupported vitest root" blocker made every change plan FULL.
+describe("a test root that names the config's own directory", () => {
+  const rootError = (config: string, name = "vitest.config.ts") => {
+    const root = tmpRepo();
+    try {
+      write(root, name, config);
+      return discoverTestRunnerConfigs(root).configs[0]?.discoveryError;
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+
+  it("accepts Paperclip's dirname(fileURLToPath(import.meta.url)) through a const and shorthand", () => {
+    assert.equal(rootError(`import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+import { defineConfig } from "vitest/config";
+
+const root = dirname(fileURLToPath(import.meta.url));
+
+export default defineConfig({
+  root,
+  test: { include: ["src/**/*.test.ts"], environment: "node" },
+});`), undefined);
+  });
+
+  it("accepts the other config-directory idioms", () => {
+    for (const config of [
+      `export default { root: __dirname, test: { include: ["src/**/*.test.ts"] } }`,
+      `export default { root: import.meta.dirname, test: { include: ["src/**/*.test.ts"] } }`,
+      `import path from "path"; import url from "url"; export default { root: path.dirname(url.fileURLToPath(import.meta.url)), test: { include: ["src/**/*.test.ts"] } }`,
+      `import * as path from "node:path"; export default { root: path.resolve(__dirname), test: { include: ["src/**/*.test.ts"] } }`,
+      `import { resolve } from "node:path"; export default { root: resolve(import.meta.dirname, "."), test: { include: ["src/**/*.test.ts"] } }`,
+      `import { fileURLToPath } from "node:url"; export default { root: fileURLToPath(new URL(".", import.meta.url)), test: { include: ["src/**/*.test.ts"] } }`,
+      `import { fileURLToPath } from "node:url"; import { dirname } from "node:path"; const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename); export default { root: __dirname, test: { include: ["src/**/*.test.ts"] } }`,
+    ]) assert.equal(rootError(config), undefined, config);
+  });
+
+  it("accepts jest rootDir: __dirname", () => {
+    assert.equal(rootError(`module.exports = { rootDir: __dirname, testMatch: ["<rootDir>/src/**/*.test.js"] };`, "jest.config.js"), undefined);
+  });
+
+  it("keeps other roots unsupported", () => {
+    for (const config of [
+      // A subdirectory, a parent, an environment variable.
+      `import { resolve } from "node:path"; export default { root: resolve(__dirname, "src"), test: {} }`,
+      `import { dirname } from "node:path"; export default { root: dirname(__dirname), test: {} }`,
+      `export default { root: process.env.ROOT, test: {} }`,
+      // dirname not imported from node:path, or a local function of that name.
+      `import { dirname } from "./helpers"; import { fileURLToPath } from "node:url"; export default { root: dirname(fileURLToPath(import.meta.url)), test: {} }`,
+      `import { fileURLToPath } from "node:url"; function dirname(p) { return p + "/src"; } export default { root: dirname(fileURLToPath(import.meta.url)), test: {} }`,
+      // An inner binding shadows the top-level const.
+      `import { dirname } from "node:path"; const root = dirname(__filename); export default defineConfig(() => { const root = "src"; return { root, test: {} }; });`,
+      // A mutable binding, and a cycle.
+      `import { dirname } from "node:path"; let root = dirname(__filename); export default { root, test: {} }`,
+      `const a = b; const b = a; export default { root: a, test: {} }`,
+    ]) assert.match(rootError(config) ?? "", /^Unsupported vitest root/, config);
+  });
+});

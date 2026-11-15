@@ -1,0 +1,74 @@
+name: Bug report
+description: DiffCI crashed, printed something wrong, or selected the wrong tests.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If DiffCI left out a test that later failed (a miss), say so below: misses are fixed first.
+
+        For a suspected security vulnerability, don't open an issue. Follow [SECURITY.md](https://github.com/DiffCI/core/blob/main/SECURITY.md) instead.
+        Don't paste secrets, tokens or private source code.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What went wrong?
+      options:
+        - DiffCI left out a test that should have run (a miss)
+        - DiffCI ran more tests than it needed to (an unexpected full fallback)
+        - DiffCI crashed or printed an error
+        - The output or a command was wrong or confusing
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DiffCI version
+      description: The output of `npx -y -p @diffci.com/diffci@latest diffci version`, or the version printed in your report.
+      placeholder: "0.3.38"
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: npx @diffci.com/diffci@latest check
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node.js version, package manager, and how you ran it (terminal, GitHub Action, MCP from an agent).
+      placeholder: "Ubuntu 24.04, Node 22.11, pnpm 9, terminal"
+    validations:
+      required: true
+  - type: input
+    id: repository
+    attributes:
+      label: Repository and commits
+      description: A public URL with base and head SHAs, so we can reproduce it. For a private repository, describe it instead (language, test runner, monorepo or not).
+      placeholder: "https://github.com/owner/name base 1a2b3c... head 4d5e6f..."
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Paste what DiffCI printed. Add `--redact-paths` if file paths are sensitive.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: For a miss, name the test that should have been selected and the change that affects it.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: The output above contains no secrets, tokens or private source code.
+          required: true
