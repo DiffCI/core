@@ -36,7 +36,9 @@ Each failing job is one of:
 
 A failing check job is the PR's **own** failure when none of its annotation signatures also failed on a different
 pull request in the window. A signature is the annotated file plus the first message line, with numbers and hashes
-blurred. A failure seen on several PRs is **shared**: a broken base branch, or a test failing for everyone.
+blurred. A failure seen on several PRs is **shared**: a broken base branch, or a test failing for everyone. A
+check job that leaves no annotations but fails on at least half of the window's pull requests (and at least five)
+is shared too: it is broken for everyone, whatever each change did.
 
 | Verdict | Meaning |
 | --- | --- |

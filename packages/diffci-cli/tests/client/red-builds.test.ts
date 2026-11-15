@@ -275,6 +275,17 @@ describe("gate jobs and matrix-named jobs (continue, gutenberg)", () => {
   });
 });
 
+describe("a check job failing on most pull requests (continue)", () => {
+  it("counts an unannotated check failing on half the PRs or more as shared, not likely", () => {
+    const runs = Array.from({ length: 8 }, (_, i) => run(i + 1, { conclusion: i < 6 ? "failure" : "success" }));
+    const jobs = new Map(runs.filter((r) => r.conclusion === "failure").map((r) => [r.id, [job(r.id * 10, "jetbrains-tests")]]));
+    const rows = classify({ repository: REPO, runs, jobs, annotations: new Map() });
+    assert.deepEqual([...new Set(rows.map((r) => r.verdict))], ["shared"]);
+    const few = classify({ repository: REPO, runs: runs.slice(0, 2), jobs, annotations: new Map() });
+    assert.deepEqual([...new Set(few.map((r) => r.verdict))], ["likely"], "two PRs are too few to call it broken for everyone");
+  });
+});
+
 describe("pickMainWorkflow", () => {
   // Minutes per workflow from real 100-run samples (2026-11-13): plain "most minutes" chose the wrong one.
   function sample(entries: Array<[number, string, string, number]>, conclusion = "success") {

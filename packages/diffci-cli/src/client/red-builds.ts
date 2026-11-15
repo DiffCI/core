@@ -165,19 +165,30 @@ export function classify(input: ClassifyInput): RedRun[] {
   const prKey = (r: RunSummary) => `${r.headRepo}:${r.headBranch}`;
   const failingOf = (jobs: JobSummary[]) => jobs.filter((j) => j.conclusion === "failure" || j.conclusion === "timed_out");
 
-  // Which PRs each failure signature appeared on, across the whole window.
+  // Which PRs each failure signature, and each failing check job, appeared on across the whole window.
   const seen = new Map<string, Set<string>>();
+  const jobFailedOn = new Map<string, Set<string>>();
   for (const run of input.runs) {
     const jobs = input.jobs.get(run.id);
     if (run.conclusion !== "failure" || !jobs) continue;
     for (const job of failingOf(jobs)) {
       if (bucketJob(job, patterns, run.workflowName) !== "check") continue;
+      if (!jobFailedOn.has(job.name)) jobFailedOn.set(job.name, new Set());
+      jobFailedOn.get(job.name)!.add(prKey(run));
       for (const sig of signatures(input.annotations.get(job.id) ?? [])) {
         if (!seen.has(sig)) seen.set(sig, new Set());
         seen.get(sig)!.add(prKey(run));
       }
     }
   }
+
+  // A check job with no annotations that fails on most pull requests is broken for everyone, not for this
+  // change (continue's jetbrains-tests failed on all 185 red runs). It counts as shared, never as own.
+  const prs = new Set(input.runs.map(prKey)).size;
+  const brokenForEveryone = (name: string) => {
+    const failedOn = jobFailedOn.get(name)?.size ?? 0;
+    return failedOn >= 5 && failedOn * 2 >= prs;
+  };
 
   const rows: RedRun[] = [];
   for (const run of input.runs) {
@@ -192,7 +203,7 @@ export function classify(input: ClassifyInput): RedRun[] {
       const annotations = input.annotations.get(job.id);
       const sigs = signatures(annotations ?? []);
       let ownership: "own" | "shared" | "timeout" | "unknown";
-      if (sigs.size === 0) ownership = "unknown";
+      if (sigs.size === 0) ownership = brokenForEveryone(job.name) ? "shared" : "unknown";
       else if ([...sigs].every((s) => TIMEOUT.test(s))) ownership = "timeout";
       else if ([...sigs].some((s) => !TIMEOUT.test(s) && (seen.get(s)?.size ?? 0) > 1)) ownership = "shared";
       else ownership = "own";
