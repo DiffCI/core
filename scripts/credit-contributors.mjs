@@ -41,6 +41,31 @@ function linkedNumbers(section) {
   return numbers;
 }
 
+/** Tier names from CONTRIBUTING.md#contributor-tiers that are written in the README; Contributor is the unwritten default. */
+export const README_TIERS = ["Regular contributor", "Area maintainer"];
+const tierLabel = /\*\*\[([^\]]+)\]\(CONTRIBUTING\.md#contributor-tiers\)\*\*/;
+
+/**
+ * Each listed contributor's tier label, keyed by lower-case GitHub login: "Contributor" unless the entry carries
+ * **[Regular contributor](CONTRIBUTING.md#contributor-tiers)** or **[Area maintainer: <area>](…)** after the name.
+ * diffci.com copies these labels onto its contributor cards (DiffCI.com scripts/credit-contributors.mjs).
+ */
+export function contributorTiers(readme) {
+  const start = readme.indexOf("### Contributors");
+  if (start < 0) throw new Error("README has no ### Contributors section");
+  const tiers = {};
+  for (const line of readme.slice(start).split("\n").filter((line) => line.startsWith("- "))) {
+    const login = line.match(/\*\*\[[^\]]+\]\(https:\/\/github\.com\/([^)/]+)\)\*\*/)?.[1];
+    if (!login) throw new Error(`Contributors entry has no bold GitHub profile link: ${line.slice(0, 80)}`);
+    const label = line.match(tierLabel)?.[1] ?? "Contributor";
+    if (label !== "Contributor" && label !== "Regular contributor" && !/^Area maintainer: \S/.test(label)) {
+      throw new Error(`@${login} has an unknown tier label "${label}"; use one of ${README_TIERS.join(", ")} (Area maintainer: <area>)`);
+    }
+    tiers[login.toLowerCase()] = label;
+  }
+  return tiers;
+}
+
 /** Returns the README with every creditable pull request credited, and the logins it added or extended. */
 export function creditReadme(readme, pulls, repository = "DiffCI/core") {
   const start = readme.indexOf("### Contributors");

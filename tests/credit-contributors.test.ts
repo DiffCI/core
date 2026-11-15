@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 // @ts-expect-error plain ESM script without type declarations
-import { creditReadme, summarize } from "../scripts/credit-contributors.mjs";
+import { contributorTiers, creditReadme, README_TIERS, summarize } from "../scripts/credit-contributors.mjs";
 
 const readme = [
   "# DiffCI",
@@ -60,5 +60,27 @@ describe("credit contributors", () => {
   it("finds the live README's Contributors list", () => {
     const live = readFileSync(new URL("../README.md", import.meta.url), "utf8");
     assert.deepEqual(creditReadme(live, []).credited, []);
+  });
+
+  it("reads tier labels after the name and rejects unknown tiers", () => {
+    const tierReadme = (label: string) => `### Contributors\n\n- **[@sam](https://github.com/Sam)**${label}: a fix ([#1](x)).\n- **[Pat Lee](https://github.com/pat)**: a fix.\n`;
+    assert.deepEqual(contributorTiers(tierReadme(", **[Area maintainer: Rust](CONTRIBUTING.md#contributor-tiers)**")), { sam: "Area maintainer: Rust", pat: "Contributor" });
+    assert.deepEqual(contributorTiers(tierReadme(", **[Regular contributor](CONTRIBUTING.md#contributor-tiers)**")).sam, "Regular contributor");
+    for (const bad of ["Maintainer: Rust", "Area maintainer", "Regular contributor: Go"]) {
+      assert.throws(() => contributorTiers(tierReadme(`, **[${bad}](CONTRIBUTING.md#contributor-tiers)**`)), /unknown tier label/);
+    }
+  });
+
+  it("keeps a tier label when a pull request is appended", () => {
+    const tiered = "### Contributors\n\n- **[@sam](https://github.com/sam)**, **[Area maintainer: Rust](CONTRIBUTING.md#contributor-tiers)**: a fix ([#131](x)).\n";
+    const next = creditReadme(tiered, [{ number: 140, title: "feat(rust): more", merged_at: "2026-11-15T00:00:00Z", author_association: "CONTRIBUTOR", user: { login: "sam", type: "User" } }]).readme;
+    assert.equal(contributorTiers(next).sam, "Area maintainer: Rust");
+  });
+
+  it("uses only CONTRIBUTING.md tier names in the live README", () => {
+    const contributing = readFileSync(new URL("../CONTRIBUTING.md", import.meta.url), "utf8");
+    for (const tier of README_TIERS) assert.match(contributing, new RegExp(`^\\| \\*\\*${tier}\\*\\* \\|`, "m"), tier);
+    const tiers = contributorTiers(readFileSync(new URL("../README.md", import.meta.url), "utf8"));
+    assert.equal(tiers.fredapps, "Area maintainer: Rust");
   });
 });
