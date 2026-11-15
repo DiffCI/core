@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.DiffCI/diffci",
   "title": "DiffCI",
-  "description": "Fail-closed, change-aware verification for AI coding agents with affected-test guidance.",
-  "version": "0.3.38",
+  "description": "Verification for AI coding agents: runs the tests and checks a change affects, with a receipt.",
+  "version": "0.3.45",
   "websiteUrl": "https://diffci.com/mcp-server",
   "repository": {
     "url": "https://github.com/DiffCI/core",
@@ -22,7 +22,7 @@
     {
       "registryType": "npm",
       "identifier": "@diffci.com/diffci",
-      "version": "0.3.38",
+      "version": "0.3.45",
       "transport": {
         "type": "stdio"
       },

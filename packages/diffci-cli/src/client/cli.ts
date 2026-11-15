@@ -12,15 +12,23 @@
  *   init               seed a repository with AI-agent instructions for using DiffCI
  *   mcp                run the stdio MCP server
  *   verify             fail-closed verification of a working-tree snapshot or commit range
+ *   watch              verify changes after each save
+ *   agent-stop         verify changes when an AI agent finishes a turn
+ *   telemetry          configure anonymous usage reporting
  *   gate               run a build's whole gate and record what DiffCI would have skipped (observe)
  *   check              analysis plus automatic paired runtime measurement
  *   plan               print Core's advisory JSON plan for a commit range (the input check-plan reads)
  *   check-plan         compare a saved test selection with one full-suite JUnit result
+ *   red-builds         count a repository's red PR builds a check before the push could have prevented
  *   observe            analyse the checkout and write an observation report
  *   verify-savings     run a paired full-versus-selected timing check
+ *   pilot              run observation and verification savings
+ *   pilot-packet       generate a shareable compatibility packet
  *   validate-specs     block conflicting same-turn change specifications
  *   verify-workflow    check that a DiffCI job in this repository's workflows cannot affect other jobs
  *   enforce-misses     after a full run on main, find failures enforce mode would have skipped
+ *   coverage           build a test coverage map
+ *   outcomes           summarize previous verification outcomes
  *   version            print the observer version
  *
  * Exit codes: `observe` exits 0 even when it refuses or errors, because a broken observer must not
@@ -40,14 +48,14 @@ import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook, isGitRepository } from "./hook.js";
-import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATH, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
+import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATHS, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
 import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
 import { formatJobSummary } from "./job-summary.js";
-import { configureTelemetry, readTelemetryPreference, recordUsage } from "./telemetry.js";
+import { configureTelemetry, readTelemetryPreference, recordUsage, telemetryNotice } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, type VerificationReport } from "./verify.js";
@@ -63,6 +71,7 @@ import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import { checkPlan } from "./check-plan.js";
+import { runRedBuildsCommand } from "./red-builds.js";
 import { buildCoverageMap, formatCoverageRun } from "./coverage-map.js";
 import { confidenceCurve, formatConfidenceCurve } from "./test-ranking.js";
 import { parseShard, readTimings, timingsFromOutcomes, type TimingsFile } from "./test-shards.js";
@@ -129,10 +138,11 @@ function readCheckPlanInput(path: string): string {
   }
 }
 
-const PLAN_USAGE = "Usage: diffci plan --base <commit> [--head HEAD] [--repo <clean-checkout>]\nPrints Core's advisory JSON plan, the input check-plan reads. Accepts --flag=value. Does not run, skip or cancel tests.";
+const PLAN_USAGE = "Usage: diffci plan --base <commit> [--head HEAD] [--repo <clean-checkout>]\nPrints Core's advisory JSON plan, the input check-plan reads. Accepts --flag=value. Does not run, skip or cancel tests.\nCounts the run with the repository name (see diffci telemetry); DO_NOT_TRACK=1 stops counting.";
 
 /** Same output and exit codes as Core's own `plan` command, so saved plans stay interchangeable. */
 async function runPlanCommand(args: readonly string[]): Promise<number> {
+  let repoPath: string | undefined;
   try {
     if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
       console.log(PLAN_USAGE);
@@ -152,11 +162,14 @@ async function runPlanCommand(args: readonly string[]): Promise<number> {
     const base = values.get("--base");
     if (!base) throw new Error("Expected: diffci plan --base <commit> [--head HEAD] [--repo <path>]");
     const { analyzeCheckout } = await import("@diffci.com/core/analyze");
-    const plan = await analyzeCheckout({ repoPath: values.get("--repo") ?? process.cwd(), base, head: values.get("--head") ?? "HEAD" });
+    repoPath = values.get("--repo") ?? process.cwd();
+    const plan = await analyzeCheckout({ repoPath, base, head: values.get("--head") ?? "HEAD" });
     console.log(JSON.stringify(plan, null, 2));
+    await recordUsage("plan", plan.plan.mode === "SELECTIVE" ? "selective" : "full", observerIdentity().version, {}, process.env, repoPath);
     return 0;
   } catch (error: unknown) {
     console.error(JSON.stringify({ error: error instanceof Error ? error.message : String(error), recommendation: "RUN_FULL_CI" }));
+    if (repoPath !== undefined) await recordUsage("plan", "error", observerIdentity().version, {}, process.env, repoPath);
     return 1;
   }
 }
@@ -409,8 +422,8 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   const skipped: string[] = [];
   if (flags["no-mcp"] === true) skipped.push("skipped the MCP server configs (--no-mcp)");
   else for (const path of MCP_CONFIG_PATHS) writes.push(writeMcpConfig(repoPath, path, identity.version, force));
-  if (flags["no-skill"] === true) skipped.push(`skipped ${SKILL_PATH} (--no-skill)`);
-  else writes.push(writeSkill(repoPath, force));
+  if (flags["no-skill"] === true) skipped.push("skipped the diffci-verify skills (--no-skill)");
+  else for (const path of SKILL_PATHS) writes.push(writeSkill(repoPath, force, path));
   if (flags["no-agent-hooks"] === true) skipped.push("skipped the agent stop hooks (--no-agent-hooks)");
   else for (const agent of HOOK_AGENTS) writes.push(writeAgentStopHook(repoPath, agent, hookCommand(manager, identity.version)));
   if (flags["no-hook"] === true) skipped.push("skipped the pre-push hook (--no-hook)");
@@ -431,7 +444,7 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   if (!includeWorkflow) console.log("  skipped .github/workflows/diffci.yml (pass --workflow to add it)");
   if (!includeVerificationWorkflow) console.log("  skipped .github/workflows/diffci-verify.yml (pass --verification-workflow to add it)");
   console.log(`\nDefault agent command: ${agentCommand}`);
-  console.log("\nOptional telemetry is off unless you have opted in. Use diffci telemetry --mode anonymous for execution counts, or --mode installations to also share a random installation ID. No repository content is sent. Use --mode off to disable; --no-send always overrides consent.");
+  console.log("\nDiffCI counts plan, check, observe and verify runs with the repository name (host/owner/repo), never its content. diffci telemetry --mode count-only drops the name; DO_NOT_TRACK=1 stops counting.");
   return 0;
 }
 
@@ -604,7 +617,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
         headOverride: stringFlag(flags, "head"),
         policy,
       });
-  await recordUsage("verify", report.verification, identity.version, flags, env);
+  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath);
   if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   if (reportPath) {
     mkdirSync(dirname(reportPath), { recursive: true });
@@ -804,10 +817,10 @@ function summarise(report: ObservationReport, executionFollows = false): string 
 async function runCheck(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
   const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
   const reportPath = resolve(stringFlag(flags, "out") ?? defaultReportPath(env));
-  const observationCode = await runObserve({ ...flags, out: reportPath, quiet: true, "no-send": true }, env);
+  const observationCode = await runObserve({ ...flags, out: reportPath, quiet: true, "no-send": true, "skip-usage": true }, env);
   if (observationCode !== 0) return observationCode;
   const observation = JSON.parse(readFileSync(reportPath, "utf8")) as ObservationReport;
-  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env);
+  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env, repoPath);
   const print = (message: string): void => { if (flags.quiet !== true && flags.json !== true) console.log(message); };
   print(summarise(observation, true));
   print(`  observation report: ${reportPath}`);
@@ -947,7 +960,8 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
 
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env);
+  // check counts itself; its inner observation is not a second run.
+  if (flags["skip-usage"] !== true) await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env, repoPath);
 
   const summary = summarise(report);
   if (flags.json === true) {
@@ -1029,7 +1043,10 @@ function runVerifyWorkflow(flags: Record<string, string | boolean>, env: NodeJS.
   }
   console.log(`Scanned ${result.workflowsScanned.length} workflow file(s).`);
   if (result.observerJobs.length === 0) {
-    console.log("No job runs the DiffCI action. Add one before starting the observation window.");
+    // Jobs that run DiffCI as a gate (verify, check-run, fail-on-error) are allowed to fail and are not
+    // observers, but their warnings still belong in front of the user rather than behind this return.
+    for (const finding of result.findings) console.log(formatFinding(finding));
+    console.log("No job runs DiffCI as an observer (jobs that run it as a gate, with verify, check-run or fail-on-error, are allowed to fail and are not checked here). Add an observer job before starting the observation window.");
     return 1;
   }
   console.log(`DiffCI runs in: ${result.observerJobs.join(", ")}`);
@@ -1371,17 +1388,18 @@ Usage:
   diffci init [--repo <path>] [--workflow] [--verification-workflow] [--install] [--no-hook] [--no-mcp] [--no-skill]
               [--no-agent-hooks] [--force]
   diffci watch [--repo <path>] [--checks] [--debounce-ms <ms>] [--no-log]
-  diffci agent-stop --agent claude|codex|cursor   (run by the agent stop hooks init installs; reads the hook JSON on stdin)
+  diffci agent-stop --agent claude|codex|cursor|copilot   (run by the agent stop hooks init installs; reads the hook JSON on stdin)
   diffci mcp
   diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
                 [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
                 [--shard <i/N> [--timings <file>]] [--no-coverage]
-  diffci telemetry [--mode off|anonymous|installations] [--internal-usage]
+  diffci telemetry [--mode repo|count-only] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
+  diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>] [--check-jobs <regex>] [--ci-only-jobs <regex>]
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
   diffci pilot-packet [--repo <path>] [--out-dir <dir>] [--base <sha> --head <sha>]
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
@@ -1408,9 +1426,11 @@ Usage:
   diffci version
 
 init writes AGENTS.md, CLAUDE.md, Cursor rules, Copilot instructions, and diffci.config.json. It also
-registers the DiffCI MCP server in .mcp.json (Claude Code) and .cursor/mcp.json (Cursor), keeping other
-servers, adds the diffci-verify skill to .claude/skills, installs the pre-push hook, and adds stop hooks
-(.claude/settings.json, .codex/hooks.json, .cursor/hooks.json) that run diffci agent-stop when an agent ends a
+registers the DiffCI MCP server in .mcp.json (Claude Code, VS Code), .cursor/mcp.json (Cursor),
+.kiro/settings/mcp.json (Kiro) and .agents/mcp_config.json (Antigravity CLI), keeping other servers, adds the
+diffci-verify skill to .claude/skills, .agents/skills and .kiro/skills, installs the pre-push hook, and adds stop
+hooks (.claude/settings.json, .codex/hooks.json, .cursor/hooks.json, .github/hooks/diffci.json for GitHub
+Copilot) that run diffci agent-stop when an agent ends a
 turn: it verifies the uncommitted changes and, when tests or checks fail, asks the agent to fix them before
 finishing, at most DIFFCI_AGENT_HOOK_MAX times a session (default 3; DIFFCI_AGENT_HOOK=0 turns it off).
 --no-mcp, --no-skill, --no-hook and --no-agent-hooks leave each out. --workflow adds a separate non-blocking observation workflow. --install detects npm, pnpm, Yarn,
@@ -1479,10 +1499,12 @@ either way. Plain http is refused; the token is never printed.
 directory outside the checkout. --shared-graph-cache (or DIFFCI_SHARED_GRAPH_CACHE=1) also shares them via
 DiffCI Cloud (Team/Business) using the api-url and api-token; DIFFCI_GRAPH_CACHE_SECRET encrypts them
 client-side. Graphs hold paths and import edges, never file contents; a cache failure only means a local build.
---share-usage (or DIFFCI_SHARE_USAGE=1) opts in to command, outcome, version, surface and activity reporting.
-diffci telemetry --mode anonymous saves consent; --mode installations also shares a random local installation ID.
---mode off disables saved consent and deletes the ID. --internal-usage labels tests/internal activity.
-No repository, commit, test, report, paths, or machine details are sent. --no-send or DIFFCI_NO_SEND=1 disables it.
+Usage counting is on: plan, check, observe and verify send command, outcome, version, surface, CI or local,
+activity, a random local installation ID and the repository name (host/owner/repo from GITHUB_REPOSITORY,
+GitLab CI or the origin remote). diffci telemetry --mode count-only drops the name and the ID; --mode repo
+restores them. --internal-usage labels tests/internal activity. No commit, path, test, report, content or
+machine details are sent. Only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or DIFFCI_SHARE_USAGE=0 stop counting;
+--no-send stops report uploads only.
 Interactive check and observe runs print feedback links to stderr at most weekly; they send nothing.
 CI, MCP, --json and --quiet never show them; DIFFCI_NO_FEEDBACK_PROMPT=1 hides them.
 `;
@@ -1504,6 +1526,11 @@ async function main(): Promise<void> {
     process.exitCode = await runPlanCommand(process.argv.slice(3));
     return;
   }
+  // Stateless and read-only like check-plan: no shared flags, telemetry or feedback prompt.
+  if (process.argv[2] === "red-builds") {
+    process.exitCode = await runRedBuildsCommand(process.argv.slice(3));
+    return;
+  }
   const { command, flags } = parseArgs(process.argv);
   const env = process.env;
 
@@ -1518,7 +1545,7 @@ async function main(): Promise<void> {
       const mode = stringFlag(flags, "mode");
       const preference = mode ? configureTelemetry(mode, flags["internal-usage"] === true, env) : readTelemetryPreference(env);
       console.log(`DiffCI telemetry: ${preference.mode}; activity: ${preference.internal ? "internal" : "external"}.`);
-      console.log("Reporting includes command, outcome, version, surface and activity. Installation mode adds a random local ID; installations are not people. No repository content or machine details are sent. --no-send always overrides consent.");
+      console.log(telemetryNotice(preference.mode));
       process.exitCode = 0;
       return;
     }

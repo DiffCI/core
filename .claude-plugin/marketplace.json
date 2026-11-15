@@ -1,6 +1,6 @@
 {
   "name": "diffci-marketplace",
-  "description": "DiffCI plugins for change-aware CI verification.",
+  "description": "DiffCI plugins: verification for AI coding agents.",
   "version": "1.0.0",
   "owner": {
     "name": "DiffCI",
@@ -11,7 +11,7 @@
     {
       "name": "diffci",
       "source": "./integrations/agent-plugin",
-      "description": "Change-aware CI verification with conservative affected-test selection and full fallback."
+      "description": "Verify an agent's change before push: affected tests and checks, a receipt, full fallback when unsure."
     }
   ]
 }

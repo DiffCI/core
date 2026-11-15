@@ -34,6 +34,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { matchesGlob } from "./test-discovery.js";
+import { LOCKFILE_NAMES } from "./lockfiles.js";
 
 const MAX_READ_BYTES = 1_048_576;
 
@@ -210,7 +211,7 @@ export interface ReferenceResolution {
 
 const MAX_DEPTH = 5;
 const MAX_TRANSITIVE_READERS = 50;
-const LOCKFILES = new Set(["package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "npm-shrinkwrap.json"]);
+const LOCKFILES: ReadonlySet<string> = new Set(LOCKFILE_NAMES);
 const TEST_LIFECYCLE = ["pretest", "test", "posttest", "prepare", "preinstall", "install", "postinstall"];
 /** Non-code files that can run something or direct what code reads: shell and interpreter scripts,
  * and structured manifests. Only these are followed to their own readers. */

@@ -1,8 +1,8 @@
 # DiffCI CLI
 
-`@diffci.com/diffci` provides change-aware CI observation and verification for
-coding agents. It analyzes a local Git checkout, conservatively selects affected
-tests when evidence is complete, and falls back to a full run when it is not.
+`@diffci.com/diffci` is verification for AI coding agents. It analyzes a local
+Git checkout, runs the tests and checks a change affects when evidence is
+complete, falls back to a full run when it is not, and leaves a receipt.
 
 ```sh
 npx --yes @diffci.com/diffci@latest observe --no-send

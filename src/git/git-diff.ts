@@ -15,7 +15,7 @@ import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
 import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
-import { LOCKFILE } from "../repo/lockfiles.js";
+import { LOCKFILE, LOCKFILE_NAMES } from "../repo/lockfiles.js";
 import { ciConfigPredicate, gitlabLocalIncludes, isConventionalCiConfigPath } from "./ci-config-paths.js";
 
 export const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -195,12 +195,12 @@ export function normalizeDirectories(paths: Iterable<string>): string[] {
   return dirs;
 }
 
-const CONFIG_PATTERNS = [
+/** Exported for tests only: each entry must match a real configuration file name. */
+export const CONFIG_PATTERNS = [
   /^next\.config\./,
   /^tsconfig\.json$/,
   /^jsconfig\.json$/,
   /^eslint\.config\./,
-  /^eslint\.rc/,
   /^\.eslint/,
   /^postcss\.config\./,
   /^tailwind\.config\./,
@@ -208,6 +208,9 @@ const CONFIG_PATTERNS = [
   /^prettier\.config\./,
   /^vitest\.config\./,
   /^jest\.config\./,
+  // babel-jest transforms every test file with these; without this a .js/.ts babel.config or .babelrc.js was
+  // classified as source with no importers and selected no tests (2026-11-11, #99).
+  /^(?:babel\.config\.|\.babelrc)/,
   /^playwright\.config\./,
   /^webpack\.config\./,
   /^rollup\.config\./,
@@ -225,7 +228,6 @@ const CONFIG_PATTERNS = [
   /^yarn\.lock$/,
   /^pnpm-lock\.yaml$/,
   /^bun\.lockb$/,
-  /^(npm|pnpm|yarn)-lock\./,
   // Python projects (2026-11-06): what pytest, the interpreter and the installed packages are.
   /^pyproject\.toml$/,
   /^setup\.(?:py|cfg)$/,
@@ -343,7 +345,6 @@ export function testListEdit(oldBody: string, newBody: string): { added: string[
 }
 
 const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
-const PACKAGE_LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
 
 /** Exact root requests for the supported Classic layout. Unlike scriptRecord, never discard an
  * invalid dependency value: an omitted root would make the lockfile attribution incomplete. */
@@ -526,6 +527,20 @@ function readRootPathsAtSha(sha: string, repoPath: string | undefined): Readonly
   return roots.size === paths.length ? roots : undefined;
 }
 
+/**
+ * Test-runner and transform configurations that apply to the tests of the directory that holds them, so
+ * a workspace package's copy configures that package's tests like a root one configures the root's
+ * (issue #117). `CONFIG_PATTERNS` is anchored at the repository root; without this a lone
+ * `packages/web/jest.config.js` or `packages/web/babel.config.js` change gave a SELECTIVE plan with no tests.
+ */
+const NESTED_TEST_CONFIG = /^(?:jest\.config\.|vitest\.config\.|babel\.config\.|\.babelrc)/;
+
+/** Exported for tests only: a test-runner or transform configuration below the repository root. */
+export function isNestedTestConfig(path: string): boolean {
+  const segments = path.split("/");
+  return segments.length > 1 && !segments.includes("node_modules") && NESTED_TEST_CONFIG.test(segments[segments.length - 1]!);
+}
+
 /** `isCiConfig` defaults to names alone; analyzeGitDelta also passes what GitLab `include` reaches. */
 export function computeAnalysis(files: ChangedFile[], isCiConfig: (path: string) => boolean = isConventionalCiConfigPath): GitDeltaAnalysis {
   const paths = files.flatMap((f) =>
@@ -534,7 +549,7 @@ export function computeAnalysis(files: ChangedFile[], isCiConfig: (path: string)
 
   const matching = (test: (p: string) => boolean) => [...new Set(paths.filter(test))].sort();
   const signalPaths: NonNullable<GitDeltaAnalysis["signalPaths"]> = {
-    config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p))),
+    config: matching((p) => CONFIG_PATTERNS.some((pattern) => pattern.test(p)) || isNestedTestConfig(p)),
     dependencyManifest: matching((p) => p === "package.json"),
     lockfile: matching((p) => LOCKFILE.test(p)),
     workflow: matching(isCiConfig),
@@ -841,7 +856,7 @@ export async function analyzeGitDelta(
       const lockfileGoverns = (path: string) => {
         for (let dir = posix.dirname(path); ; dir = posix.dirname(dir)) {
           const prefix = dir === "." ? "" : `${dir}/`;
-          if (PACKAGE_LOCKFILES.some((name) => [baseSha, headSha].some((sha) => readFileAtSha(sha, prefix + name, repoPath) !== undefined))) return true;
+          if (LOCKFILE_NAMES.some((name) => [baseSha, headSha].some((sha) => readFileAtSha(sha, prefix + name, repoPath) !== undefined))) return true;
           if (dir === ".") return false;
         }
       };
