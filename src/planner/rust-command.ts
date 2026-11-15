@@ -70,5 +70,20 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
     const commandSpec = { executable: "cargo", args: ["test", ...cratePackages.flatMap(pkg => ["-p", pkg])] };
     groups.unshift({ runnerId: "cargo:test:packages", label: "Cargo package tests", paths: cratePaths.sort(), commandSpec });
   }
+  // Each command is its own Cargo invocation, so each must resolve every package's features exactly
+  // as the full `cargo test` does (see rustFeatureCoverage in adapters/rust.ts).
+  const coverage = profile.rustFeatureCoverage;
+  if (!coverage) return refuse("Rust tests require verified Cargo feature resolution");
+  for (const group of groups) {
+    const args = group.commandSpec.args;
+    const selected = new Set(args.flatMap((arg, index) => args[index - 1] === "-p" ? [arg] : []));
+    for (const pkg of selected) {
+      for (const dependency of coverage.deficits[pkg] ?? []) {
+        if (!coverage.units.some(unit => unit.covers.includes(dependency) && unit.crates.every(name => selected.has(name)))) {
+          return refuse(`Selected Cargo crates would build ${dependency} with different features than the full cargo test; full validation required`);
+        }
+      }
+    }
+  }
   return { commands: groups.map(group => group.commandSpec), groups, unroutedPaths: [] };
 }

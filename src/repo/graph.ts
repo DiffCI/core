@@ -622,7 +622,9 @@ class DependencyGraphImpl implements DependencyGraph {
 export function hydrateDependencyGraph(graph: DependencyGraph, repoPath: string, testPatterns?: readonly string[]): DependencyGraph {
   const sourcePaths = new Set(graph.nodes.filter((n) => n.isSource).map((n) => n.path));
   const assetPaths = new Set(graph.nodes.filter((n) => n.isAsset).map((n) => n.path));
-  const declaredTests = new Set(graph.nodes.filter(node => node.isTest).map(node => node.path));
+  // Cargo target roots such as src/lib.rs are tests by metadata, not by file name. Only Rust nodes
+  // are added here so other languages keep their pattern-based test identity.
+  const declaredTests = new Set(graph.nodes.filter(node => node.isTest && node.path.endsWith(".rs")).map(node => node.path));
   const baseMatcher = testPatterns ? createTestFileMatcher(testPatterns) : DEFAULT_TEST_FILE_MATCHER;
   const matcher = ((path: string) => declaredTests.has(path) || baseMatcher(path)) as TestFileMatcher;
   Object.defineProperty(matcher, "patterns", { value: baseMatcher.patterns });
@@ -1096,7 +1098,8 @@ export async function buildDependencyGraph(
     for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : ""));
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
-  profile.goTestPackages = Object.assign({}, ...contributions.filter((item) => item.id === "go").map((item) => item.testPackages));
+  // Rust test targets are not Go packages; other adapters keep their existing routing here.
+  profile.goTestPackages = Object.assign({}, ...contributions.filter((item) => item.id !== "rust").map((item) => item.testPackages));
   profile.goTestEnvironment = contributions.find((item) => item.id === "go")?.executionEnv;
   const goContribution = contributions.find((item) => item.id === "go");
   profile.goDependencyPaths = goContribution ? {
@@ -1111,6 +1114,8 @@ export async function buildDependencyGraph(
     profile.rustSources = [...new Set(rustContribution.sourcePaths)].sort();
     profile.rustAssets = [...new Set(rustContribution.assetPaths)].sort();
     profile.rustTestInvocation = rustTestInvocation(repoPath, files);
+    if (rustContribution.rustFeatureCoverage) profile.rustFeatureCoverage = rustContribution.rustFeatureCoverage;
+    profile.rustDocumentationReaders = [...new Set(rustContribution.rustDocumentationReaders ?? [])].sort();
   }
   const pythonContribution = contributions.find((item) => item.id === "python");
   if (pythonContribution) {

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, posix, relative, resolve } from "node:path";
 import { contribution, type AdapterContext, type AdapterContribution, type RepositoryAdapter } from "./types.js";
 
 export interface CargoTarget {
@@ -25,8 +26,83 @@ export interface CargoPackage {
 export interface CargoMetadata {
   packages: CargoPackage[];
   workspace_members: string[];
+  /** The members plain `cargo test` at the root builds and tests (root package or `default-members`). */
+  workspace_default_members?: string[];
   workspace_root: string;
   resolve?: { nodes: Array<{ id: string; dependencies: string[] }> } | null;
+}
+
+/** Cargo's own feature resolution (`cargo tree`, format `{p}|{f}`) for the full invocation and for
+ * sets of tested crates. Cargo decides features, including resolver 2 and host/target splits. */
+export interface CargoFeatureEvidence {
+  workspace: string;
+  units: Array<{ crates: string[]; tree: string }>;
+}
+
+/** Runs Cargo for each set of crates; undefined when any run fails. */
+export type CargoFeatureResolver = (units: string[][]) => CargoFeatureEvidence | undefined;
+
+/** Packages whose features change when a tested crate runs without the rest of the full invocation,
+ * and the sets of tested crates (each crate alone, and each crate with its dependents) that give a
+ * package exactly the full invocation's features. */
+export interface RustFeatureCoverage {
+  deficits: Record<string, string[]>;
+  units: Array<{ crates: string[]; covers: string[] }>;
+}
+
+export const CARGO_TREE_ARGS = ["tree", "--offline", "--locked", "--prefix", "none", "-e", "normal,build,dev", "-f", "{p}|{f}"];
+
+/** Package (`name vX.Y.Z`) to the distinct feature sets Cargo resolved for it; undefined when the
+ * output is not a feature tree. A package built for both host and target can have two sets. */
+export function parseCargoFeatureTree(output: string): Map<string, Set<string>> | undefined {
+  const packages = new Map<string, Set<string>>();
+  for (const line of output.split(/\r?\n/)) {
+    const separator = line.indexOf("|");
+    if (separator < 0) continue;
+    const name = /^(\S+) (v\S+)/.exec(line.slice(0, separator));
+    if (!name) return undefined;
+    const features = line.slice(separator + 1).replace(/\s*\(\*\)\s*$/, "").trim();
+    if (!/^[A-Za-z0-9_+.:/,-]*$/.test(features)) return undefined;
+    const key = `${name[1]} ${name[2]}`;
+    let sets = packages.get(key);
+    if (!sets) packages.set(key, sets = new Set());
+    sets.add(features.split(",").filter(Boolean).sort().join(","));
+  }
+  return packages.size ? packages : undefined;
+}
+
+/** Whether any declaration can make a package's features depend on which crates are selected. With
+ * no feature requests, no disabled defaults and no forwarding, every package always gets its default
+ * features, whatever subset of the workspace Cargo builds. */
+export function cargoFeaturesVary(metadata: CargoMetadata): boolean {
+  return metadata.packages.some(pkg => pkg.dependencies?.some(dep => dep.features.length || !dep.uses_default_features)
+    || Object.values(pkg.features ?? {}).some(features => features.some(feature => feature.includes("/"))));
+}
+
+/** Feature resolution is monotonic in the crates Cargo is asked to build: a selected set gives every
+ * package at least the features of any subset and at most those of the full invocation. A package
+ * therefore keeps exactly the full invocation's features (per host/target build, since the sets
+ * compared are the same) whenever one unit inside the selection already resolves it that way. */
+export function rustFeatureCoverage(evidence: CargoFeatureEvidence, members: readonly string[]): RustFeatureCoverage | undefined {
+  const full = parseCargoFeatureTree(evidence.workspace);
+  if (!full) return undefined;
+  const trees = evidence.units.map(unit => ({ crates: [...unit.crates].sort(), tree: parseCargoFeatureTree(unit.tree) }));
+  if (trees.some(unit => !unit.tree)) return undefined;
+  const same = (sets: Set<string>, key: string) => {
+    const expected = full.get(key);
+    return expected !== undefined && expected.size === sets.size && [...sets].every(set => expected.has(set));
+  };
+  const deficits: Record<string, string[]> = {};
+  for (const member of members) {
+    const alone = trees.find(unit => unit.crates.length === 1 && unit.crates[0] === member);
+    if (!alone) return undefined;
+    const missing = [...alone.tree!].filter(([key, sets]) => !same(sets, key)).map(([key]) => key).sort();
+    if (missing.length) deficits[member] = missing;
+  }
+  const needed = new Set(Object.values(deficits).flat());
+  const units = trees.map(unit => ({ crates: unit.crates, covers: [...unit.tree!].filter(([key, sets]) => needed.has(key) && same(sets, key)).map(([key]) => key).sort() }))
+    .filter(unit => unit.covers.length);
+  return { deficits, units };
 }
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -66,6 +142,8 @@ export function parseCargoMetadata(output: string): CargoMetadata {
   const ids = value.packages.map(pkg => (pkg as CargoPackage).id);
   if (new Set(ids).size !== ids.length || new Set(value.workspace_members).size !== value.workspace_members.length
     || value.workspace_members.some(id => !ids.includes(id))) throw new Error("Incomplete Cargo workspace membership");
+  if (value.workspace_default_members !== undefined && (!strings(value.workspace_default_members)
+    || value.workspace_default_members.some(id => !(value.workspace_members as string[]).includes(id)))) throw new Error("Invalid Cargo default members");
   return value as unknown as CargoMetadata;
 }
 
@@ -91,20 +169,27 @@ function under(path: string, directory: string): boolean {
   return directory === "" || path.startsWith(`${directory}/`);
 }
 
-/** Cargo modules can live under names other adapters exclude. Never silently
- * omit their contents or follow a symlink that aliases another crate's inputs. */
-function completeRustInventory(root: string, files: ReadonlySet<string>): boolean {
-  const pending = [""];
-  let entries = 0;
+/** Cargo modules can live under names other adapters exclude. Never silently omit their contents
+ * or follow a symlink that aliases another crate's inputs. Without `#[path]` (which falls back),
+ * `mod` only loads files below a target root's directory, so only those trees are checked: a
+ * symlink or unlisted file elsewhere in the repository cannot become crate source, and neither can a
+ * linked non-Rust file inside them. */
+function completeRustInventory(root: string, files: ReadonlySet<string>, trees: readonly string[]): boolean {
+  const pending = [...new Set(trees)].filter((tree, _, all) => !all.some(other => other !== tree && under(tree, other)));
   while (pending.length) {
     const directory = pending.pop()!;
     for (const entry of readdirSync(resolve(root, directory), { withFileTypes: true })) {
-      if (++entries > 50_000) return false;
       const path = directory ? `${directory}/${entry.name}` : entry.name;
-      if (entry.name === ".git" || path === "target") continue;
-      if (entry.isSymbolicLink()) return false;
-      if (entry.isDirectory()) pending.push(path);
-      else if (entry.isFile() && path.endsWith(".rs") && !files.has(path)) return false;
+      if (entry.isSymbolicLink()) {
+        // A linked directory or Rust file can alias module source; a linked LICENSE or README cannot.
+        if (path.endsWith(".rs")) return false;
+        try { if (statSync(resolve(root, path)).isDirectory()) return false; } catch { /* dangling, not source */ }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        // Version control, dependency trees and Cargo's own output never hold module source.
+        if (![".git", "node_modules", "target"].includes(entry.name)) pending.push(path);
+      } else if (entry.isFile() && path.endsWith(".rs") && !files.has(path)) return false;
     }
   }
   return true;
@@ -112,7 +197,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>): boolea
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): Array<{ path: string; code: boolean }> | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; documentation: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -148,13 +233,15 @@ function rustInputs(source: string): Array<{ path: string; code: boolean }> | un
     if (identifier) { tokens.push({ value: identifier[0] }); i += identifier[0].length; continue; }
     tokens.push({ value: source[i++]! });
   }
-  // Runtime reads are not Cargo dependency edges, including reads of another
-  // crate's otherwise-modelled source. Reject known filesystem/process/FFI
-  // access before the changed-path ownership guard can hide that uncertainty.
-  const runtimeInputs = new Set(["fs", "File", "OpenOptions", "DirEntry", "ReadDir", "Command", "process", "extern", "unsafe",
-    "read_dir", "read_link", "read_to_string", "canonicalize", "metadata", "symlink_metadata", "try_exists", "exists", "is_file", "is_dir"]);
-  if (tokens.some(token => runtimeInputs.has(token.value))) return undefined;
+  // Runtime file access is not a blocker by itself, matching the Go and Python adapters: a changed
+  // non-Rust file is never a modelled source, so it keeps the full suite whoever reads it. What a
+  // dependency edge cannot see is code that reaches another crate's modelled Rust inputs at run or
+  // build time. Report literal paths (the caller checks which crates they reach) and Cargo/rustc
+  // invocations; ordinary identifiers such as `fs`, `process`, `unsafe` or `metadata` are not inputs.
   const inputs: Array<{ path: string; code: boolean }> = [];
+  const paths: string[] = [];
+  let compiles = false;
+  const includeArguments = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i]!.value === "mod" && tokens[i + 1]?.value === "target" && tokens[i + 2]?.value === ";") return undefined;
     if (tokens[i]!.value === "#") {
@@ -170,26 +257,46 @@ function rustInputs(source: string): Array<{ path: string; code: boolean }> | un
         if (depth) return undefined;
       }
     }
-    if (!["include", "include_str", "include_bytes"].includes(tokens[i]!.value)) continue;
-    if (tokens[i + 1]?.value !== "!") {
-      // Re-exported/renamed builtins could otherwise be called under a name we
-      // cannot recognize in another source file.
-      if (tokens.some(token => token.value === "use")) return undefined;
+    if (tokens[i]!.value === "use") {
+      // A renamed or re-exported include macro could be called under a name we cannot recognize.
+      for (let j = i + 1; j < tokens.length && tokens[j]!.value !== ";"; j++) {
+        if (["include", "include_str", "include_bytes"].includes(tokens[j]!.value)) return undefined;
+      }
       continue;
     }
+    if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
+      && tokens[i + 4]?.value === "(" && /^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")) compiles = true;
+    // `env!("CARGO")`, `env::var("RUSTC")` and similar name the toolchain a test is about to run.
+    if (["CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER"].includes(tokens[i]!.literal ?? "")) compiles = true;
+    if (!["include", "include_str", "include_bytes"].includes(tokens[i]!.value) || tokens[i + 1]?.value !== "!") continue;
     const close = new Map([["(", ")"], ["[", "]"], ["{", "}"]]).get(tokens[i + 2]?.value ?? "");
     const literal = tokens[i + 3]?.literal;
     let end = i + 4;
     if (tokens[end]?.value === ",") end++;
     if (!close || literal === undefined || tokens[end]?.value !== close || /[\0\r\n\\]/.test(literal)) return undefined;
     inputs.push({ path: literal, code: tokens[i]!.value === "include" });
+    includeArguments.add(i + 3);
   }
-  return inputs;
+  let documentation = false;
+  tokens.forEach((token, index) => {
+    if (token.literal === undefined || includeArguments.has(index)) return;
+    if (pathLike(token.literal)) paths.push(token.literal);
+    // A test that checks README or docs content at run time (version-sync and the like).
+    if (/\.(?:md|mdx)$|^(?:\.\/)?(?:docs?|documentation)(?:\/|$)/i.test(token.literal)) documentation = true;
+  });
+  return { inputs, paths, compiles, documentation };
 }
 
-export function analyzeRustMetadata(context: AdapterContext, output: string): AdapterContribution {
+/** A string that names a file or directory rather than ordinary text. */
+function pathLike(value: string): boolean {
+  if (!value || value.length > 4096 || /[\0\r\n]/.test(value)) return false;
+  if (value === "." || value === "..") return true;
+  return /[\\/]/.test(value) && !/\s/.test(value) || /(?:^|[\\/])(?:Cargo\.(?:toml|lock)|[^\\/\s]+\.rs)$/.test(value);
+}
+
+export function analyzeRustMetadata(context: AdapterContext, output: string, resolveFeatures?: CargoFeatureResolver): AdapterContribution {
   const result = contribution(rustAdapter);
-  if (context.files.some(file => /(?:^|\/)\.cargo\/config(?:\.toml)?$/.test(file))) {
+  if (context.files.some(file => /(?:^|\/)\.cargo\/config(?:\.toml)?$/.test(file) && changesBuild(resolve(context.repoPath, file)))) {
     result.blockers.push("Custom Cargo configuration requires full validation");
   }
   try {
@@ -200,8 +307,13 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
       return result;
     }
     const known = new Set(context.files);
-    if (!completeRustInventory(root, known)) result.blockers.push("Incomplete Rust source inventory or symlinked inputs require full validation");
     const members = metadata.packages.filter(pkg => metadata.workspace_members.includes(pkg.id));
+    // Plain `cargo test` tests only the root package of a non-virtual workspace, or `default-members`.
+    // Selecting another member would run tests the full invocation never runs, so only these crates'
+    // targets are tests; other members stay sources whose changes reach their tested dependents.
+    const defaults = metadata.workspace_default_members;
+    if (!defaults) result.blockers.push("Cargo metadata without default workspace members requires full validation; use Cargo 1.71 or later");
+    const tested = new Set(defaults ?? []);
     if (new Set(members.map(pkg => pkg.name)).size !== members.length) {
       result.blockers.push("Ambiguous Cargo workspace package names require full validation");
       return result;
@@ -222,7 +334,14 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
     const manifests = new Set(packages.map(pkg => pkg.manifest));
     const unmodeledManifests = context.files.filter(file => /(?:^|\/)Cargo\.toml$/.test(file)
       && file !== "Cargo.toml" && !manifests.has(file));
-    if (unmodeledManifests.length) result.blockers.push(`Cargo manifests outside workspace membership require full validation: ${unmodeledManifests.join(", ")}`);
+    // Cargo metadata resolves every path dependency (all features, all platforms), so when no local
+    // package outside the workspace appears, no member depends on these crates: they are fixtures or
+    // excluded crates. Their files stay unmodelled, so changing one keeps the full suite (impact.ts)
+    // without blocking changes elsewhere. Otherwise the repository-wide fallback stays.
+    const localDependencyOutside = metadata.packages.some(pkg => !metadata.workspace_members.includes(pkg.id) && (pkg.source === undefined || pkg.source === null));
+    const unmodeledBoundary = (file: string) => !localDependencyOutside
+      && unmodeledManifests.some(manifest => under(file, manifest.slice(0, -"/Cargo.toml".length)));
+    if (unmodeledManifests.length && localDependencyOutside) result.blockers.push(`Cargo manifests outside workspace membership require full validation: ${unmodeledManifests.join(", ")}`);
     if (manifests.size !== packages.length) result.blockers.push("Cargo packages share a manifest; ownership is ambiguous");
     const owner = (file: string) => {
       const candidate = packages.find(pkg => under(file, pkg.directory));
@@ -233,11 +352,13 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
       return candidate;
     };
     for (const file of context.files.filter(file => file.endsWith(".rs"))) {
+      if (!owner(file) && unmodeledBoundary(file)) continue;
       if (!owner(file) || !repositoryPath(root, resolve(root, file), known)) {
         result.blockers.push(`Rust file has no verified Cargo package: ${file}`);
       } else result.sourcePaths.push(file);
     }
     result.rustTestTargets = {};
+    const buildScriptCrates = new Set<string>();
     for (const { pkg } of packages) {
       for (const target of pkg.targets) {
         const path = repositoryPath(root, target.src_path, known);
@@ -246,7 +367,13 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
           continue;
         }
         if (!path.endsWith(".rs")) result.blockers.push(`Cargo target with a non-Rust extension requires full validation: ${path}`);
-        if (target.kind.includes("custom-build")) continue;
+        if (target.kind.includes("custom-build")) {
+          // The build script is the crate's own source; what it reads is modelled below.
+          result.sourcePaths.push(path);
+          buildScriptCrates.add(pkg.id);
+          (result.rustDocumentationReaders ??= []).push(path);
+          continue;
+        }
         const kind = target.kind.includes("test") ? "test"
           : target.kind.includes("bin") ? "bin"
           : target.kind.includes("example") ? "example"
@@ -259,7 +386,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
         result.sourcePaths.push(path);
         // Cargo's test/doctest flags are authoritative. A crate's lib/bin root
         // represents its unit tests, including #[cfg(test)] modules in other files.
-        if (!target.test && !target.doctest) continue;
+        if ((!target.test && !target.doctest) || !tested.has(pkg.id)) continue;
         if (Object.hasOwn(result.rustTestTargets, path)) {
           result.blockers.push(`Multiple Cargo test targets share a source path: ${path}`);
           continue;
@@ -269,6 +396,9 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
         result.rustTestTargets[path] = { name: target.name, kind };
       }
     }
+    const moduleTrees = packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path)))
+      .filter((path): path is string => path !== undefined).map(path => dirname(path) === "." ? "" : dirname(path));
+    if (!completeRustInventory(root, known, moduleTrees)) result.blockers.push("Incomplete Rust source inventory or symlinked inputs require full validation");
     result.sourcePaths = [...new Set(result.sourcePaths)].sort();
     result.testFiles.sort();
     if (!result.testFiles.length) result.blockers.push("Cargo metadata found no supported test targets");
@@ -303,24 +433,22 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
         }
       }
     }
-    if (metadata.packages.some(pkg => !metadata.workspace_members.includes(pkg.id))) {
-      result.blockers.push("Cargo dependencies outside the workspace have opaque runtime inputs; full validation required");
+    // Registry and Git dependencies are locked and immutable unless Cargo.lock changes, and a
+    // Cargo.lock change keeps the full suite. Their build scripts and procedural macros run the same
+    // code for the selected and the full invocation; anything they read from this repository outside
+    // modelled Rust sources is a changed path that keeps the full suite. A local path dependency that
+    // is not a workspace member has no modelled ownership, so it still blocks the repository.
+    const localOutside = metadata.packages.filter(pkg => !metadata.workspace_members.includes(pkg.id) && (pkg.source === undefined || pkg.source === null));
+    if (localOutside.length) {
+      result.blockers.push(`Local Cargo path dependencies outside the workspace require full validation: ${localOutside.map(pkg => pkg.name).sort().join(", ")}`);
     }
-    // The metadata graph unions all features for edges, but selective commands
-    // must preserve the full suite's feature unification. A different selected
-    // workspace member can enable a shared dependency's features. Until that
-    // execution context is reproduced, forwarded/default-disabled features
-    // retain the full original invocation rather than silently dropping tests.
-    if (metadata.packages.some(pkg => pkg.dependencies?.some(dep => dep.features.length || !dep.uses_default_features)
-      || Object.values(pkg.features ?? {}).some(features => features.some(feature => feature.includes("/"))))) {
-      result.blockers.push("Cargo dependency feature unification requires the full workspace test invocation");
-    }
-    if (metadata.packages.some(pkg => pkg.targets.some(target => target.kind.includes("custom-build")))
-      || context.files.some(file => /(?:^|\/)build\.rs$/.test(file))) {
-      result.blockers.push("Cargo build scripts can read arbitrary inputs; full validation required");
-    }
-    if (metadata.packages.some(pkg => pkg.targets.some(target => target.kind.includes("proc-macro")))) {
-      result.blockers.push("Cargo procedural macros can read arbitrary inputs; full validation required");
+    // A workspace crate's build script can read any file. Its own source and every non-Rust input
+    // are already full-suite changes; what remains is another crate's Rust source or manifest, so
+    // such a crate depends on every workspace crate: it and its dependents run for any Rust change,
+    // while crates without build scripts still narrow.
+    for (const id of buildScriptCrates) {
+      const anchor = anchors.get(id)!;
+      for (const other of packages) if (other.manifest !== anchor) result.edges.push({ from: anchor, to: other.manifest, kind: "import" });
     }
     if (packages.some(({ pkg }) => pkg.targets.some(target => target["required-features"]?.length))) {
       result.blockers.push("Cargo targets requiring features need an explicitly supported test invocation; full validation required");
@@ -328,12 +456,33 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
       if (!sourceOwner) continue;
-      const inputs = rustInputs(readFileSync(resolve(root, source), "utf8"));
-      if (inputs === undefined) {
-        result.blockers.push(`Rust runtime inputs, computed includes or path attributes require full validation: ${source}`);
+      const scanned = rustInputs(readFileSync(resolve(root, source), "utf8"));
+      if (scanned === undefined) {
+        result.blockers.push(`Rust computed includes or path attributes require full validation: ${source}`);
         continue;
       }
-      for (const input of inputs) {
+      // Code that runs Cargo or rustc can build any workspace crate; a literal path can reach another
+      // crate's sources at run or build time (relative to the crate, as under `cargo test`, or to the
+      // file). Model both as dependencies of this crate instead of blocking the repository.
+      if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
+      const reached = new Set<string>();
+      if (scanned.compiles) for (const other of packages) reached.add(other.manifest);
+      for (const literal of scanned.paths) {
+        const clean = literal.replace(/\\/g, "/").replace(/^(?:[A-Za-z]:)?\/+/, "");
+        const glob = clean.search(/[*?[{]/);
+        const prefix = glob < 0 ? clean : clean.slice(0, clean.lastIndexOf("/", glob) + 1);
+        for (const base of new Set([sourceOwner.directory, dirname(source) === "." ? "" : dirname(source)])) {
+          const joined = posix.normalize(posix.join(base || ".", prefix || "."));
+          if (joined === ".." || joined.startsWith("../")) continue;
+          const rel = joined === "." ? "" : joined.replace(/\/+$/, "");
+          const inside = rel ? owner(rel) ?? owner(`${rel}/`) : packages.find(pkg => pkg.directory === "");
+          if (inside) reached.add(inside.manifest);
+          for (const other of packages) if (other.directory && (rel === "" || under(other.directory, rel) || other.directory === rel)) reached.add(other.manifest);
+        }
+      }
+      reached.delete(sourceOwner.manifest);
+      for (const manifest of reached) result.edges.push({ from: sourceOwner.manifest, to: manifest, kind: "import" });
+      for (const input of scanned.inputs) {
         const path = repositoryPath(root, resolve(root, dirname(source), input.path), known);
         if (!path || owner(path)?.pkg.id !== sourceOwner.pkg.id) {
           result.blockers.push(`Rust include outside its crate or unavailable requires full validation: ${source}`);
@@ -348,10 +497,78 @@ export function analyzeRustMetadata(context: AdapterContext, output: string): Ad
       }
     }
     result.assetPaths = [...new Set(result.assetPaths)].sort();
+    // Selective commands must give every package the features the full invocation gives it. Cargo
+    // resolves each tested crate alone and with its dependents (what a change to it selects); the
+    // planner checks each selected set against those units.
+    if (!cargoFeaturesVary(metadata)) result.rustFeatureCoverage = { deficits: {}, units: [] };
+    else {
+      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => pkg.name);
+      const dependents = new Map<string, string[]>();
+      for (const edge of result.edges) {
+        if (edge.from.endsWith("Cargo.toml") && edge.to.endsWith("Cargo.toml") && edge.from !== edge.to) {
+          dependents.set(edge.to, [...(dependents.get(edge.to) ?? []), edge.from]);
+        }
+      }
+      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, pkg.name]));
+      const units = new Map<string, string[]>();
+      for (const { pkg, manifest } of packages) {
+        if (tested.has(pkg.id)) units.set(pkg.name, [pkg.name]);
+        const seen = new Set([manifest]); const pending = [manifest];
+        while (pending.length) for (const next of dependents.get(pending.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); pending.push(next); }
+        const closure = [...seen].map(path => byManifest.get(path)).filter((name): name is string => name !== undefined && testedNames.includes(name)).sort();
+        if (closure.length) units.set(closure.join(" "), closure);
+      }
+      const evidence = resolveFeatures?.([...units.values()]);
+      const coverage = evidence && rustFeatureCoverage(evidence, testedNames);
+      if (coverage) result.rustFeatureCoverage = coverage;
+      else result.blockers.push("Cargo feature resolution is unavailable; full validation required");
+    }
   } catch {
     result.blockers.push("Invalid or incomplete Cargo metadata requires full validation");
   }
   return result;
+}
+
+/** Ask Cargo how it resolves features for the full invocation and for sets of tested crates.
+ * Read-only and offline like `cargo metadata`; any failure leaves the evidence missing. */
+function cargoFeatureResolver(repoPath: string): CargoFeatureResolver {
+  return (units) => {
+    if (units.length > 400) return undefined;
+    try {
+      const tree = (extra: string[]) => execFileSync("cargo", [...CARGO_TREE_ARGS, ...extra], {
+        cwd: repoPath, encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024,
+        windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, RUSTUP_AUTO_INSTALL: "0" },
+      });
+      return { workspace: tree([]), units: units.map(crates => ({ crates, tree: tree(crates.flatMap(name => ["-p", name])) })) };
+    } catch { return undefined; }
+  };
+}
+
+/** Configuration keys that change how crates are compiled, which code is compiled or what runs the
+ * tests. Aliases, registries, network, terminal, `[env]` and target-dir settings apply equally to
+ * the selected and the full invocation, so they do not block. */
+const BUILD_CONFIG = /^\s*(?:build\s*\.\s*)?(?:rustflags|rustdocflags|target|rustc|rustdoc|rustc-wrapper|rustc-workspace-wrapper)\s*=|^\s*\[\s*(?:target|patch|unstable)\b|^\s*(?:target|patch|unstable)\s*\.|^\s*(?:paths|include)\s*=/m;
+const COMPILER_ENVIRONMENT = /^(?:RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUST(?:DOC)?FLAGS|CARGO_BUILD_RUST(?:DOC)?FLAGS|CARGO_BUILD_TARGET|RUSTC|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC(?:_WRAPPER|_WORKSPACE_WRAPPER)?|CARGO_BUILD_RUSTDOC|CARGO_TARGET_.+_(?:RUNNER|RUSTFLAGS))$/;
+
+function changesBuild(path: string): boolean {
+  try { return BUILD_CONFIG.test(readFileSync(path, "utf8")); }
+  catch { return existsSync(path); }
+}
+
+/** Every configuration file Cargo reads for a command run at the repository root: the root and each
+ * parent directory's `.cargo/config(.toml)`, then `$CARGO_HOME/config(.toml)`. */
+function cargoConfigLocations(repoPath: string): string[] {
+  const directories: string[] = [];
+  let directory = resolve(repoPath);
+  try { directory = realpathSync(directory); } catch { /* metadata reports the missing root */ }
+  for (;;) {
+    directories.push(resolve(directory, ".cargo"));
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  directories.push(process.env.CARGO_HOME || resolve(homedir(), ".cargo"));
+  return directories.flatMap(home => [resolve(home, "config"), resolve(home, "config.toml")]).filter(path => existsSync(path));
 }
 
 export const rustAdapter: RepositoryAdapter = {
@@ -363,9 +580,10 @@ export const rustAdapter: RepositoryAdapter = {
       failure.blockers.push("Rust support requires a root Cargo.toml");
       return failure;
     }
-    if (context.files.some(file => /(?:^|\/)\.cargo\/config(?:\.toml)?$/.test(file))
-      || existsSync(resolve(context.repoPath, ".cargo/config")) || existsSync(resolve(context.repoPath, ".cargo/config.toml"))
-      || Object.entries(process.env).some(([key, value]) => value && /^(?:RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC(?:_WRAPPER|_WORKSPACE_WRAPPER)?|CARGO_TARGET_.+_(?:RUNNER|RUSTFLAGS))$/.test(key))) {
+    const configs = [...context.files.filter(file => /(?:^|\/)\.cargo\/config(?:\.toml)?$/.test(file)).map(file => resolve(context.repoPath, file)),
+      ...cargoConfigLocations(context.repoPath)];
+    if (configs.some(changesBuild)
+      || Object.entries(process.env).some(([key, value]) => value && COMPILER_ENVIRONMENT.test(key))) {
       failure.blockers.push("Custom Cargo configuration or compiler environment requires full validation");
       return failure;
     }
@@ -378,7 +596,7 @@ export const rustAdapter: RepositoryAdapter = {
         windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, RUSTUP_AUTO_INSTALL: "0" },
       });
-      return analyzeRustMetadata(context, output);
+      return analyzeRustMetadata(context, output, cargoFeatureResolver(context.repoPath));
     } catch {
       failure.blockers.push("Cargo metadata unavailable: install Rust and repository dependencies; offline, locked metadata must succeed");
       return failure;

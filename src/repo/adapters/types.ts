@@ -22,6 +22,11 @@ export interface AdapterContribution {
   testPackages: Record<string, string>;
   /** Cargo target roots; a lib/bin root represents the crate's unit tests. */
   rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
+  /** Rust files that may read documentation: workspace build scripts, and sources naming a
+   * documentation path in a string literal. */
+  rustDocumentationReaders?: string[];
+  /** Packages whose Cargo features change when a tested crate runs without the rest of the full invocation. */
+  rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
   executionEnv?: Record<string, string>;
   /** The interpreter the adapter analysed with and its runner should use, such as ["python3"]. */
   interpreter?: string[];

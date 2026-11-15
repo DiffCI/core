@@ -55,6 +55,12 @@ export interface RepositoryProfile {
   rustTestPackages?: Record<string, string>;
   rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
   rustSources?: string[];
+  /** Rust files that may read documentation (adapters/rust.ts). While one exists, documentation
+   * changes keep the full suite; otherwise they follow the shared documentation classification. */
+  rustDocumentationReaders?: string[];
+  /** Cargo feature resolution per tested crate (adapters/rust.ts). Absent means a selective command
+   * cannot be shown to keep the full invocation's features. */
+  rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
   rustAssets?: string[];
   /** Set only when the repository's test invocation is supported and reproducible. */
   rustTestInvocation?: "cargo test";

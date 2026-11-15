@@ -27,12 +27,15 @@ function delta(path: string, extra: Partial<ChangedFile> = {}): GitDelta {
 }
 const workflow = (run = "cargo test") => `name: test\non: push\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: ${run}\n`;
 
-test("Rust registers independently and preserves every adapter's test matcher", () => {
+test("Rust registers independently and adds only its own targets to the test matcher", () => {
   assert.ok(REPOSITORY_ADAPTERS.includes(rustAdapter));
   assert.equal(rustAdapter.detect({ repoPath: "/unused", files: ["src/app.ts"], profile: {} as never }), false);
-  const matcher = testFileMatcherForProfile({ goTestPackages: { "a_test.go": "a" }, mavenTestModules: { "Test.java": "m" }, pythonTests: ["test_a.py"], rustTestPackages: { "src/lib.rs": "r" } });
-  for (const path of ["a_test.go", "Test.java", "test_a.py", "src/lib.rs", "a.test.ts"]) assert.ok(matcher(path), path);
+  const matcher = testFileMatcherForProfile({ goTestPackages: { "a_test.go": "a" }, rustTestPackages: { "src/lib.rs": "r" } });
+  for (const path of ["a_test.go", "src/lib.rs", "a.test.ts"]) assert.ok(matcher(path), path);
   assert.equal(matcher("src/helper.rs"), false);
+  // Other languages keep exactly the matcher they had without the Rust adapter.
+  const withoutRust = testFileMatcherForProfile({ goTestPackages: { "a_test.go": "a" } });
+  for (const path of ["Test.java", "test_a.py", "src/Main.java", "app.py"]) assert.equal(matcher(path), withoutRust(path), path);
 });
 
 test("Cargo target build output is excluded without hiding JavaScript target directories", () => {
@@ -59,11 +62,47 @@ test("Rust invocation evidence accepts only reproducible plain commands", () => 
       [{ ".github/workflows/test.yml": workflow(), ".github/workflows/other.yml": workflow(run) }, false] as [Record<string, string>, boolean],
     ]),
     [{ ".github/workflows/test.yml": `${workflow()}  delegated:\n    uses: org/project/.github/workflows/tests.yml@main\n` }, false],
-    ...["./.github/actions/tests", "org/setup@v1", "dtolnay/rust-toolchain@stable"].flatMap(action => [
+    ...["./.github/actions/tests", "org/setup@v1", "actions/download-artifact@v4"].flatMap(action => [
       [{ ".github/workflows/test.yml": workflow().replace("      - run:", `      - uses: ${action}\n      - run:`) }, false] as [Record<string, string>, boolean],
       [{ ".github/workflows/test.yml": `${workflow()}      - uses: ${action}\n` }, false] as [Record<string, string>, boolean],
     ]),
     [{ ".github/workflows/test.yml": workflow().replace("      - run:", "        with: { path: elsewhere }\n      - run:") }, false],
+    // Ordinary CI around a plain `cargo test`: toolchain and cache actions, a matrix, neutral
+    // environment, and lint/format/build steps or jobs that run no tests.
+    [{ ".github/workflows/ci.yml": `name: CI
+on: [push, pull_request]
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        toolchain: [stable, beta]
+    runs-on: \${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "\${{ matrix.toolchain }}", components: "clippy, rustfmt" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - run: cargo test
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: rustup component add clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+` }, true],
+    ...["      - run: cargo clippy && cargo test\n", "        if: github.event_name == 'push'\n", "        continue-on-error: true\n", "        env: { CARGO_TERM_COLOR: always, RUSTDOCFLAGS: x }\n"].map(extra =>
+      [{ ".github/workflows/test.yml": `${workflow()}${extra}` }, false] as [Record<string, string>, boolean]),
+    [{ ".github/workflows/test.yml": `${workflow()}    if: github.ref == 'refs/heads/main'\n` }, false],
+    [{ ".github/workflows/test.yml": `${workflow()}    container: rust:latest\n` }, false],
     ...[
       { lint: "cargo test", test: "just test" },
       { lint: "cargo test" },
@@ -95,7 +134,7 @@ test("registered Rust graph propagates crate roots and manifests and fails close
     { name, kind: ["lib"], src_path: join(root, name, "src/lib.rs"), test: true, doctest: true },
     { name: "api", kind: ["test"], src_path: join(root, name, "tests/api.rs"), test: true, doctest: false },
   ] }));
-  const metadata = JSON.stringify({ packages, workspace_members: packages.map(p => p.id), workspace_root: root, resolve: { nodes: packages.map(p => ({ id: p.id, dependencies: p.id === "app" ? ["core"] : [] })) } });
+  const metadata = JSON.stringify({ packages, workspace_members: packages.map(p => p.id), workspace_default_members: packages.map(p => p.id), workspace_root: root, resolve: { nodes: packages.map(p => ({ id: p.id, dependencies: p.id === "app" ? ["core"] : [] })) } });
   t.mock.method(rustAdapter, "analyze", (context: AdapterContext) => analyzeRustMetadata(context, metadata));
   try {
     const graph = await buildDependencyGraph({ repoPath: root });
@@ -113,7 +152,13 @@ test("registered Rust graph propagates crate roots and manifests and fails close
     }
     const independent = new ImpactAnalyzer().analyze(delta("other/src/lib.rs"), graph, graph.profile);
     assert.deepEqual(independent.affectedTests.map(test => test.path).sort(), ["other/src/lib.rs", "other/tests/api.rs"]);
-    for (const change of [delta("Cargo.toml"), delta("Cargo.lock"), delta("app/Cargo.lock"), delta("README.md"), delta("data.bin", { changeType: "deleted" }), delta("core/src/lib.rs", { changeType: "renamed", oldPath: "old.rs" }), delta("target/generated.rs")]) {
+    // Documentation follows the shared classification: no tests, no fallback.
+    for (const path of ["README.md", "docs/guide.md", "core/CHANGELOG.md"]) {
+      const docs = new ImpactAnalyzer().analyze(delta(path), graph, graph.profile);
+      assert.equal(docs.fallbackRequired, false, `${path}: ${docs.fallbackReasons}`);
+      assert.deepEqual(docs.affectedTests, []);
+    }
+    for (const change of [delta("Cargo.toml"), delta("Cargo.lock"), delta("app/Cargo.lock"), delta(".github/workflows/test.yml"), delta("data.bin", { changeType: "deleted" }), delta("core/src/lib.rs", { changeType: "renamed", oldPath: "old.rs" }), delta("target/generated.rs")]) {
       const impact = new ImpactAnalyzer().analyze(change, graph, graph.profile);
       assert.equal(impact.fallbackRequired, true, change.files[0]?.path);
       assert.ok(impact.fallbackReasons.some(reason => reason.startsWith("Rust runtime inputs")));
@@ -121,5 +166,41 @@ test("registered Rust graph propagates crate roots and manifests and fails close
     writeFileSync(join(root, "foreign.js"), "export const value = 1;");
     const mixed = await buildDependencyGraph({ repoPath: root });
     assert.ok(mixed.adapterBlockers?.some(reason => reason.includes("Mixed Rust")));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("documentation stays full-suite when Rust code may read it, and excluded fixture crates are confined", async t => {
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers=["core", "app"]\nexclude=["tests/fixtures"]\n', ".github/workflows/test.yml": workflow(),
+    "tests/fixtures/sample/Cargo.toml": '[package]\nname="sample"\nversion="0.1.0"\n', "tests/fixtures/sample/src/lib.rs": "pub fn sample() {}" };
+  for (const name of ["core", "app"]) {
+    files[`${name}/Cargo.toml`] = `[package]\nname="${name}"\nversion="0.1.0"\n`;
+    files[`${name}/src/lib.rs`] = "pub fn value() {}";
+  }
+  const root = fixture(files);
+  const packages = ["core", "app"].map(name => ({ id: name, name, manifest_path: join(root, name, "Cargo.toml"), dependencies: [], features: {}, targets: [
+    { name, kind: ["lib"], src_path: join(root, name, "src/lib.rs"), test: true, doctest: true },
+  ] }));
+  const metadata = (extra: object[] = []) => JSON.stringify({ packages: [...packages, ...extra], workspace_members: packages.map(p => p.id), workspace_default_members: packages.map(p => p.id),
+    workspace_root: root, resolve: { nodes: [...packages, ...extra].map(p => ({ id: (p as { id: string }).id, dependencies: [] })) } });
+  let output = metadata();
+  t.mock.method(rustAdapter, "analyze", (context: AdapterContext) => analyzeRustMetadata(context, output));
+  try {
+    let graph = await buildDependencyGraph({ repoPath: root });
+    // No member depends on the excluded fixture crate, so it no longer blocks the repository.
+    assert.deepEqual(graph.adapterBlockers, []);
+    assert.equal(new ImpactAnalyzer().analyze(delta("core/src/lib.rs"), graph, graph.profile).fallbackRequired, false);
+    const fixtureChange = new ImpactAnalyzer().analyze(delta("tests/fixtures/sample/src/lib.rs"), graph, graph.profile);
+    assert.equal(fixtureChange.fallbackRequired, true);
+    assert.equal(new ImpactAnalyzer().analyze(delta("README.md"), graph, graph.profile).fallbackRequired, false);
+    // A test that names README.md may read it at run time: documentation keeps the full suite.
+    writeFileSync(join(root, "app/src/lib.rs"), '#[test] fn readme() { assert!(std::fs::read_to_string("../README.md").is_ok()); }');
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.profile.rustDocumentationReaders, ["app/src/lib.rs"]);
+    assert.equal(new ImpactAnalyzer().analyze(delta("README.md"), graph, graph.profile).fallbackRequired, true);
+    // A member that path-depends on the fixture keeps the repository-wide fallback.
+    output = metadata([{ id: "sample", name: "sample", manifest_path: join(root, "tests/fixtures/sample/Cargo.toml"), dependencies: [], features: {},
+      targets: [{ name: "sample", kind: ["lib"], src_path: join(root, "tests/fixtures/sample/src/lib.rs"), test: true, doctest: true }] }]);
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(graph.adapterBlockers?.some(reason => reason.startsWith("Cargo manifests outside workspace membership")));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
