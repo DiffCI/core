@@ -627,6 +627,8 @@ For supported languages and setup limits, see [What is included](../README.md#wh
 
 ### Rust adapter foundation
 
+Maintainer: [@FredApps](https://github.com/FredApps).
+
 Cargo package and target mapping is not registered for selection yet. Dependency analysis, command synthesis and integration are separate milestones in [#62](https://github.com/DiffCI/core/issues/62).
 
 | Reason | Meaning / next step |
