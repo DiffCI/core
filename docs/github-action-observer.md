@@ -114,6 +114,12 @@ jobs:
 - **Only real failures fail it.** Failing tests or checks fail the step. A
   DiffCI problem (it could not verify, timed out after
   `verify-timeout-minutes`, or did not start) only warns.
+- **It tests the change as it would merge.** On a pull request, a default
+  `actions/checkout` checks out GitHub's merge commit, so the fast check
+  verifies that commit against the base branch tip it was merged into. If you
+  check out the pull request head instead (`ref:
+  ${{ github.event.pull_request.head.sha }}`), it verifies the pull request's
+  own range. Neither changes the checkout.
 - **`verify-checks: "false"`** skips lint and typecheck when other jobs already
   run them first.
 - Nothing is sent anywhere and no outcome log is kept on the runner. The
@@ -122,6 +128,54 @@ jobs:
 
 The `verify-status` output is `passed`, `failed`, `blocked` or `skipped`. See
 the [fast check example](../examples/github-actions-fast-check.yml).
+
+## Merge gate
+
+Set `check-run: "true"` next to `verify: "true"` to also post one check run,
+**DiffCI merge gate**, on the pull request's head commit. Branch protection
+(or a ruleset) can then require it by that name, whatever your jobs are called.
+It is meant for pull requests written by AI coding agents: the change cannot
+merge until the tests it affects have passed, and the check says which agent
+wrote it and what ran.
+
+| Fast check | Check run conclusion |
+| --- | --- |
+| `passed` | `success`: every affected test (and lint/typecheck) passed, on GitHub's merge commit with a default checkout |
+| `failed` | `failure` |
+| `skipped`, `blocked`, did not run, or `verify` off | `neutral`: DiffCI could not narrow or verify the change, so your full test job decides |
+
+GitHub treats `neutral` as passing for a required check, so DiffCI never
+blocks a merge on its own uncertainty, and it never replaces your full test job:
+keep that required too.
+
+The check's summary lists the agent, how many test files ran out of how many,
+the checks that ran, the DiffCI version and a link to the run. With
+`upload-artifact` on (the default), the run's artifact holds the observation
+report and, when the fast check ran, the verification receipt. The agent comes
+from the `Co-authored-by` trailers and "Generated with" lines of the pull
+request's commits and from an agent-prefixed head branch (`claude/`, `codex/`,
+`copilot/`, `cursor/`, `devin/`, `jules/`, `openhands/`). Only a fixed label
+such as `claude` is written, never a name, email or branch; with no marker it
+says "none detected", which does not mean a person wrote it.
+
+```yaml
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      # ... checkout, setup-node and npm ci as in the fast check above
+      - uses: DiffCI/core@<reviewed-core-release-or-commit>
+        with:
+          node-version: "22"
+          verify: "true"
+          check-run: "true"
+```
+
+The check run needs `checks: write`. Pull requests from forks get a read-only
+token on the `pull_request` event, so they get a warning instead of a check run;
+do not switch to `pull_request_target` for this. A failed post never fails the
+step. `check-run-name` renames the check; the `gate-conclusion` and `agent`
+outputs carry the same answer for later steps.
 
 ## Outputs
 
@@ -135,6 +189,9 @@ outputs:
 | `affected-test-count` | Number of affected test files. |
 | `total-test-count` | Number of test files the full suite runs. |
 | `reason` | One line on why the full suite is required. |
+| `verify-status` | With `verify`: `passed`, `failed`, `blocked` or `skipped`. |
+| `gate-conclusion` | With `check-run`: `success`, `failure` or `neutral`. |
+| `agent` | With `check-run`: the detected agents, such as `claude` or `claude+codex`, or `none detected`. |
 
 The Action itself still runs and skips nothing. If you choose to narrow a test
 job on these outputs, branch on `full-suite-required` and run the full suite

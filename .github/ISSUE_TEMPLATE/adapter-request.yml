@@ -1,0 +1,47 @@
+name: Language or test runner request
+description: Ask DiffCI to support a language, build tool or test runner it doesn't handle yet.
+labels: ["enhancement", "adapter"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        JS/TS, Vue, Go, Maven and Python (pytest) are supported today. Before opening a new request, check the open tracking issues and add a 👍 to the one you need, since reactions decide the order:
+        [Rust (Cargo)](https://github.com/DiffCI/core/issues/62) · [Gradle](https://github.com/DiffCI/core/issues/68) · [PHP](https://github.com/DiffCI/core/issues/88) · [Django](https://github.com/DiffCI/core/issues/87) · [all adapter issues](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3Aadapter).
+
+        Want to build it yourself? [docs/adding-an-adapter.md](https://github.com/DiffCI/core/blob/main/docs/adding-an-adapter.md) explains how adapters are split into one-PR steps.
+  - type: input
+    id: stack
+    attributes:
+      label: Language, build tool and test runner
+      placeholder: "Kotlin, Gradle 8, JUnit 5"
+    validations:
+      required: true
+  - type: textarea
+    id: ci
+    attributes:
+      label: How your CI runs the tests
+      description: The test command or the workflow step, and roughly how long it takes.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: layout
+    attributes:
+      label: Repository layout
+      description: Single project or monorepo, how tests are found (file naming, source sets), anything unusual such as code generation or tests that read data files.
+  - type: input
+    id: example
+    attributes:
+      label: Public example repository
+      description: A public repository with this setup that DiffCI could be tested against, if you know one.
+      placeholder: https://github.com/owner/name
+  - type: dropdown
+    id: help
+    attributes:
+      label: Could you help?
+      options:
+        - I'd like to build part of it
+        - I can test a pre-release on my repository
+        - Not right now
+    validations:
+      required: true

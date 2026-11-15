@@ -16,7 +16,7 @@ JS/TS, Vue, Go, Maven and Python (pytest) are supported today. Django, Rust, PHP
 
 - [Python (pytest)](https://github.com/DiffCI/core/issues/61) ([design partners](https://github.com/DiffCI/core/issues/75))
 - [Django](https://github.com/DiffCI/core/issues/87)
-- [Rust (Cargo)](https://github.com/DiffCI/core/issues/62)
+- [Rust (Cargo)](https://github.com/DiffCI/core/issues/62), maintained by [@FredApps](https://github.com/FredApps)
 - [PHP (Composer + PHPUnit/Pest)](https://github.com/DiffCI/core/issues/88)
 - [Gradle (Java/Kotlin)](https://github.com/DiffCI/core/issues/68)
 

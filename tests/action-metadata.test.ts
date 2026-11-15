@@ -65,10 +65,13 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "github-token",
     "verify",
     "verify-checks",
-    "verify-timeout-minutes"
+    "verify-timeout-minutes",
+    "check-run",
+    "check-run-name"
   ]);
   assert.equal(action.inputs.comment?.default, "false", "commenting is opt-in");
   assert.equal(action.inputs.verify?.default, "false", "running repository code is opt-in");
+  assert.equal(action.inputs["check-run"]?.default, "false", "posting a check run is opt-in");
   assert.deepEqual(Object.keys(action.outputs), [
     "report-path",
     "status",
@@ -77,7 +80,9 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "affected-test-count",
     "total-test-count",
     "reason",
-    "verify-status"
+    "verify-status",
+    "gate-conclusion",
+    "agent"
   ]);
   assert.match(raw, /cd "\$RUNNER_TEMP"/);
   assert.match(raw, /uses: actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1/);
@@ -125,6 +130,17 @@ test("public observer Action runs the fast check only on request, after the impa
   assert.equal(verify.env?.DIFFCI_FULL, "${{ steps.impact.outputs.full-suite-required }}");
   const upload = action.runs.steps.find((step) => step.uses?.startsWith("actions/upload-artifact@")) as { if?: string };
   assert.match(upload.if ?? "", /^\$\{\{ always\(\) &&/, "the report is kept when the fast check fails");
+});
+
+test("public observer Action posts the merge gate only on request, after the fast check, with the token in the environment", async () => {
+  const { action } = await readAction();
+  const ids = action.runs.steps.map((step) => step.id);
+  assert.ok(ids.indexOf("gate") > ids.indexOf("verify"), "the gate reads the fast check's status");
+  const gate = action.runs.steps.find((step) => step.id === "gate") as { if?: string; env?: Record<string, string>; run?: string };
+  assert.equal(gate.if, "${{ always() && inputs.check-run == 'true' }}", "it reports a failed fast check too");
+  assert.equal(gate.run, 'node "$GITHUB_ACTION_PATH/action/check-run.mjs"');
+  assert.equal(gate.env?.DIFFCI_GITHUB_TOKEN, "${{ inputs.github-token }}");
+  assert.equal(gate.env?.DIFFCI_VERIFY_STATUS, "${{ steps.verify.outputs.status }}");
 });
 
 test("public observer Action fetches missing history only into a shallow checkout", async () => {

@@ -17,16 +17,24 @@ if (cliPackage.mcpName !== expected.name) {
 }
 
 const baseUrl = process.env.MCP_REGISTRY_URL ?? "https://registry.modelcontextprotocol.io";
-const response = await fetch(`${baseUrl}/v0.1/servers?search=${encodeURIComponent(expected.name)}`, {
-  headers: { Accept: "application/json", "User-Agent": "diffci-registry-verifier" },
-});
-if (!response.ok) throw new Error(`MCP Registry returned HTTP ${response.status}`);
-
-const payload = await response.json();
-const entries = Array.isArray(payload) ? payload : Array.isArray(payload.servers) ? payload.servers : [];
-const published = entries
-  .map((entry) => entry?.server ?? entry)
-  .find((server) => server?.name === expected.name && server?.version === expected.version);
+// The search lists every version, 30 to a page. 0.3.40 was the 31st and sat on page two, so a first-page-only
+// check reported it missing after a successful publish, and the retry loop republished into a 400 duplicate
+// (2026-11-12). Follow the cursor until the version is found or the pages run out.
+let published;
+let cursor;
+for (let page = 0; page < 50 && !published; page++) {
+  const url = `${baseUrl}/v0.1/servers?search=${encodeURIComponent(expected.name)}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+  const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "diffci-registry-verifier" } });
+  if (!response.ok) throw new Error(`MCP Registry returned HTTP ${response.status}`);
+  const payload = await response.json();
+  const entries = Array.isArray(payload) ? payload : Array.isArray(payload.servers) ? payload.servers : [];
+  published = entries
+    .map((entry) => entry?.server ?? entry)
+    .find((server) => server?.name === expected.name && server?.version === expected.version);
+  const next = Array.isArray(payload) ? undefined : payload.metadata?.nextCursor;
+  if (!next || next === cursor) break;
+  cursor = next;
+}
 
 if (!published) {
   console.error(`MCP Registry does not yet contain ${expected.name}@${expected.version}.`);

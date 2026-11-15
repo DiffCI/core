@@ -62,7 +62,7 @@ export function packageFacts(repoPath: string): ObservedFact[] {
 /** Which lockfile is committed. The repository's own statement about its package manager. */
 export function lockfileFacts(repoPath: string): ObservedFact[] {
   const facts: ObservedFact[] = [];
-  for (const name of ["pnpm-lock.yaml", "yarn.lock", "package-lock.json", "bun.lockb", "npm-shrinkwrap.json"]) {
+  for (const name of ["pnpm-lock.yaml", "yarn.lock", "package-lock.json", "bun.lock", "bun.lockb", "npm-shrinkwrap.json"]) {
     if (existsSync(join(repoPath, name))) {
       facts.push({ kind: "lockfile.present", value: name, evidence: { file: name, text: name } });
     }

@@ -12,12 +12,12 @@
  * packages and every edge into server-utils was missing. Those imports must fall back, not skip.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
-import { buildDependencyGraph, refineConfidenceForDelta } from "../../src/repo/graph.js";
+import { buildDependencyGraph, installedPackageSpecifier, refineConfidenceForDelta } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
 import { DefaultCIPlanner } from "../../src/planner/planner.js";
 import { createTaskRegistry } from "../../src/planner/task-registry.js";
@@ -154,6 +154,87 @@ describe("framework blockers confined to nested package directories", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  // Paperclip (2026-11-11): a TypeScript monorepo with one Go tool in tools/agent-shim and no root go.mod.
+  // The Go adapter failed for the whole repository, which also marked it mixed Go/JavaScript, so a
+  // three-file UI change planned FULL.
+  const GO_REASON = "Go modules without a root go.mod are not modelled; a change that reaches one requires full validation";
+  function withGoTool(root: string): void {
+    write(root, "tools/agent-shim/go.mod", "module example.com/agent-shim\n\ngo 1.22\n");
+    write(root, "tools/agent-shim/main.go", "package main\n\nfunc main() {}\n");
+    write(root, "tools/agent-shim/main_test.go", "package main\n\nimport \"testing\"\n\nfunc TestMain(t *testing.T) {}\n");
+  }
+
+  it("confines Go modules without a root go.mod to their directories", async () => {
+    const root = sdkRepo();
+    try {
+      withGoTool(root);
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      const global = graph.adapterBlockers ?? [];
+      assert.ok(!global.some((reason) => reason.startsWith("Go support requires") || reason.startsWith("Mixed Go/JavaScript") || reason === GO_REASON), JSON.stringify(global));
+      assert.deepEqual(graph.scopedAdapterBlockers?.find((b) => b.reason === GO_REASON)?.directories, ["tools/agent-shim"]);
+      assert.ok(!(graph.profile.adapters ?? []).some((adapter) => adapter.id === "go"), JSON.stringify(graph.profile.adapters));
+      assert.ok(!impact.fallbackReasons.some((reason) => reason.startsWith("Go ")), JSON.stringify(impact.fallbackReasons));
+      assert.equal(plan.mode, "SELECTIVE");
+      assert.ok(plan.selectedTests.includes("packages/utils/test/bedrock.test.ts"));
+      assert.ok(!plan.selectedTests.includes("packages/utils/test/other.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("falls back for a change inside a Go module without a root go.mod", async () => {
+    const root = sdkRepo();
+    try {
+      withGoTool(root);
+      const { impact, plan } = await planFor(root, "tools/agent-shim/main.go");
+      assert.ok(impact.fallbackReasons.includes(GO_REASON), JSON.stringify(impact.fallbackReasons));
+      assert.equal(plan.mode, "FULL");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps the Go blocker global when a Go file sits outside every nested module", async () => {
+    const root = sdkRepo();
+    try {
+      withGoTool(root);
+      write(root, "cmd/stray.go", "package main\n");
+      const { graph, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok((graph.adapterBlockers ?? []).includes("Go support requires one root go.mod; workspaces and nested modules require full validation"), JSON.stringify(graph.adapterBlockers));
+      assert.equal(plan.mode, "FULL");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Paperclip (2026-11-11): E2E specs import another package's installed dependency by relative path
+  // (`../../ui/node_modules/vite/dist/node/index.js`). A clean checkout has no such file, so it was an
+  // unresolved import and every server change that reached the spec planned FULL.
+  it("names the package of a relative import into node_modules", () => {
+    assert.equal(installedPackageSpecifier("tests/e2e/a.spec.ts", "../../ui/node_modules/vite/dist/node/index.js"), "vite/dist/node/index.js");
+    assert.equal(installedPackageSpecifier("tests/runner-e2e/x/y.ts", "../../../server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js"), "@modelcontextprotocol/sdk/dist/esm/client/index.js");
+    assert.equal(installedPackageSpecifier("a/b.ts", "../node_modules/x/node_modules/y/index.js"), "y/index.js");
+    assert.equal(installedPackageSpecifier("a/b.ts", "../src/x.js"), undefined);
+    assert.equal(installedPackageSpecifier("a/b.ts", "../../../node_modules/vite/index.js"), undefined, "outside the repository");
+    assert.equal(installedPackageSpecifier("a/b.ts", "../node_modules/@scope"), undefined);
+    assert.equal(installedPackageSpecifier("a/b.ts", "../node_modules/.bin/vite"), undefined);
+  });
+
+  it("records a relative import into an installed dependency as that external package", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      write(root, "packages/node/test/vite.test.ts", "import { it } from 'vitest'; import { createServer } from '../../utils/node_modules/vite/dist/node/index.js'; import { init } from '../src/index'; it('works', () => { init(); createServer; });");
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(!graph.unresolved.some((ref) => ref.specifier.includes("node_modules")), JSON.stringify(graph.unresolved));
+      const reference = graph.references.find((ref) => ref.importer === "packages/node/test/vite.test.ts" && ref.specifier.startsWith("vite/"));
+      assert.equal(reference?.resolution, "external-package");
+      assert.equal(reference?.specifier, "vite/dist/node/index.js");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("keeps a relative import into a linked workspace package unresolved", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      write(root, "packages/node/test/linked.test.ts", "import { it } from 'vitest'; import { bedrock } from '../node_modules/@sdk/utils/src/bedrock'; it('works', () => { bedrock(); });");
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(graph.unresolved.some((ref) => ref.importer === "packages/node/test/linked.test.ts" && ref.specifier.includes("node_modules/@sdk/utils")), JSON.stringify(graph.unresolved));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("falls back when a changed workspace package is imported by name but not installed", async () => {
     const root = sdkRepo({ consumer: true });
     try {
@@ -223,6 +304,102 @@ describe("framework blockers confined to nested package directories", () => {
       assert.deepEqual(graph.graph.dependenciesOf("packages/node/src/types.ts"), ["packages/utils/src/bedrock.ts"]);
       const hookRef = graph.references.find((ref) => ref.importer === "packages/node/src/hook.ts");
       assert.equal(hookRef?.resolution, "internal-source", JSON.stringify(hookRef));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("maps a `.js` export entry to the TypeScript source beside it", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      // payloadcms/payload: `"types": "./src/exports/build-config.js"` names src/exports/build-config.ts.
+      write(root, "packages/utils/package.json", JSON.stringify({ name: "@sdk/utils", version: "1.0.0", main: "./src/index.ts",
+        exports: { ".": { types: "./src/index.js", import: "./src/index.js" }, "./config": { types: "./src/config.js", default: "./src/config.js" } },
+        scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "packages/utils/tsconfig.json", JSON.stringify({ extends: "../../tsconfig.json", compilerOptions: { outDir: "dist", rootDir: "./src" }, include: ["src/**/*"] }));
+      write(root, "packages/utils/src/index.ts", "export { bedrock } from './bedrock';\nexport { other } from './other';\n");
+      write(root, "packages/utils/src/config.ts", "export const config = 1;\n");
+      write(root, "packages/node/src/config.ts", "import { config } from '@sdk/utils/config'; export const c = config;");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.deepEqual(graph.graph.dependenciesOf("packages/node/src/config.ts"), ["packages/utils/src/config.ts"]);
+      assert.ok(plan.selectedTests.includes("packages/node/test/index.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("follows a workspace import into a package no tsconfig lists", async () => {
+    // The long path: on Windows tmpdir() can be an 8.3 short name that TypeScript's resolved paths do not use.
+    const root = realpathSync.native(sdkRepo({ consumer: true }));
+    try {
+      // payloadcms/payload: the root tsconfig references some packages; the rest are reached only by import.
+      write(root, "tsconfig.json", JSON.stringify({ compilerOptions: { module: "esnext", moduleResolution: "bundler", target: "es2022", strict: true }, include: ["packages/node"] }));
+      write(root, "packages/utils/package.json", JSON.stringify({ name: "@sdk/utils", version: "1.0.0", exports: { ".": { types: "./src/index.ts", import: "./src/index.ts" } }, scripts: { test: "vitest run" }, devDependencies: { vitest: "4.1.8" } }));
+      write(root, "packages/utils/src/index.ts", "export { bedrock } from './bedrock';\nexport { other } from './other';\n");
+      // What `pnpm install` leaves: TypeScript resolves the import through the link into packages/utils/src.
+      mkdirSync(join(root, "packages/node/node_modules/@sdk"), { recursive: true });
+      symlinkSync(join(root, "packages/utils"), join(root, "packages/node/node_modules/@sdk/utils"), "junction");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(graph.graph.dependenciesOf("packages/node/src/index.ts").includes("packages/utils/src/index.ts"), JSON.stringify(graph.graph.dependenciesOf("packages/node/src/index.ts")));
+      assert.ok(plan.selectedTests.includes("packages/node/test/index.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("maps a stylesheet export to an asset, and ignores a type import of a subpath the package does not have", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // payloadcms/payload: `@payloadcms/ui/css/app.css`, and a stale `import type ... from 'payload/types'`.
+      const manifest = JSON.parse(readFileSync(join(root, "packages/utils/package.json"), "utf8"));
+      manifest.exports["./css/app.css"] = "./src/css/app.css";
+      write(root, "packages/utils/package.json", JSON.stringify(manifest));
+      write(root, "packages/utils/src/css/app.css", "body { margin: 0; }\n");
+      write(root, "packages/node/src/layout.ts", "import '@sdk/utils/css/app.css';\nimport type { Missing } from '@sdk/utils/types';\nexport type M = Missing;\nexport const layout = 1;\n");
+      const { graph, impact } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(graph.graph.dependenciesOf("packages/node/src/layout.ts").includes("packages/utils/src/css/app.css"), JSON.stringify(graph.graph.dependenciesOf("packages/node/src/layout.ts")));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("follows a relative import of build output to the source it is compiled from", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      // payloadcms/payload's packages/payload/bin.js: `await import('./dist/cli/index.js')`, outDir dist, rootDir src.
+      buildOutputManifest(root, "flat");
+      write(root, "packages/utils/tsconfig.build.json", JSON.stringify({ compilerOptions: { outDir: "dist", rootDir: "./src" } }));
+      write(root, "packages/utils/bin.js", "const { bedrock } = await import('./dist/bedrock.js');\nexport const run = () => bedrock();\n");
+      write(root, "packages/utils/test/bin.test.ts", "import { it } from 'vitest'; import { run } from '../bin.js'; it('runs', () => { run(); });");
+      const { graph, impact, plan } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(graph.graph.dependenciesOf("packages/utils/bin.js"), ["packages/utils/src/bedrock.ts"]);
+      assert.ok(!graph.unresolved.some((u) => u.importer === "packages/utils/bin.js"), JSON.stringify(graph.unresolved));
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(plan.selectedTests.includes("packages/utils/test/bin.test.ts"), JSON.stringify(plan.selectedTests));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("does not let a fixture only path strings name block every change to the package it imports", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      // payloadcms/payload's codemod tests read `./basic.input.ts` as text; it imports a removed subpath on purpose.
+      write(root, "packages/node/test/codemod.test.ts", "import { it } from 'vitest'; import { readFileSync } from 'node:fs';\nit('migrates', () => readFileSync(new URL('./fixtures/basic.input.ts', import.meta.url), 'utf8'));\n");
+      write(root, "packages/node/test/fixtures/basic.input.ts", "import { old } from '@sdk/utils/removed';\nexport const x = old;\n");
+      // As in Payload, no tsconfig compiles the fixtures: only the path string reaches them.
+      write(root, "tsconfig.json", JSON.stringify({ compilerOptions: { module: "esnext", moduleResolution: "bundler", target: "es2022", strict: true }, include: ["packages", "dev-packages"], exclude: ["**/fixtures/**"] }));
+      const { graph, impact } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.deepEqual(impact.fallbackReasons, []);
+      assert.ok(graph.unresolved.some((u) => u.importer === "packages/node/test/fixtures/basic.input.ts"), JSON.stringify(graph.unresolved));
+      // A change to the fixture itself reaches its unmapped import and still falls back.
+      const own = await planFor(root, "packages/node/test/fixtures/basic.input.ts");
+      assert.ok(own.impact.fallbackRequired, JSON.stringify(own.impact.fallbackReasons));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("still falls back for a runtime import of a workspace subpath it cannot map", async () => {
+    const root = sdkRepo({ consumer: true });
+    try {
+      buildOutputManifest(root, "flat");
+      write(root, "packages/node/src/missing.ts", "import { x } from '@sdk/utils/missing';\nexport const m = x;\n");
+      const { impact } = await planFor(root, "packages/utils/src/bedrock.ts");
+      assert.ok(impact.fallbackReasons.some((reason) => reason.startsWith("Workspace package @sdk/utils is imported by 1 file")), JSON.stringify(impact.fallbackReasons));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

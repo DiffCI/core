@@ -6,7 +6,7 @@
     "role": "owner",
     "name": "DiffCI",
     "email": "aditya@diffci.com",
-    "description": "DiffCI develops open-source infrastructure for understanding software changes and reducing unnecessary CI work. DiffCI Core is an MIT-licensed engine that analyzes repository changes, dependency impact and CI structure to produce conservative CI execution plans with full-run fallbacks when evidence is insufficient.",
+    "description": "DiffCI develops open-source verification for AI coding agents: infrastructure for understanding what a software change affects and reducing unnecessary CI work. DiffCI Core is an MIT-licensed engine that analyzes repository changes, dependency impact and CI structure to produce conservative CI execution plans with full-run fallbacks when evidence is insufficient.",
     "webpageUrl": {
       "url": "https://github.com/DiffCI"
     }
@@ -15,7 +15,7 @@
     {
       "guid": "diffci-core",
       "name": "DiffCI Core",
-      "description": "DiffCI Core is an open-source engine for understanding software changes and planning less CI work conservatively. It analyzes Git changes, repository dependencies and GitHub Actions structure to determine affected code and tests while falling back to full CI when evidence is insufficient. The project aims to make CI more efficient, transparent and measurable while reducing unnecessary compute. Environmental impact estimates are kept separate from measured compute results.",
+      "description": "DiffCI Core is an open-source engine that verifies AI coding agents' changes: it works out what a change affects and plans less CI work conservatively. It analyzes Git changes, repository dependencies and GitHub Actions structure to determine affected code and tests while falling back to full CI when evidence is insufficient. The project aims to make CI more efficient, transparent and measurable while reducing unnecessary compute. Environmental impact estimates are kept separate from measured compute results.",
       "webpageUrl": {
         "url": "https://github.com/DiffCI/core"
       },
