@@ -8,6 +8,7 @@ function profile(): RepositoryProfile {
   return {
     adapters: [{ id: "rust", version: "1", blockers: [] }],
     rustTestInvocation: "cargo test",
+    rustFeatureCoverage: { deficits: {}, units: [] },
     rustTestPackages: { "crates/core/src/lib.rs": "actual-core", "crates/core/tests/one.rs": "actual-core", "crates/core/tests/two.rs": "actual-core", "cli/src/main.rs": "cli" },
     rustTestTargets: { "crates/core/src/lib.rs": { name: "actual_core", kind: "lib" }, "crates/core/tests/one.rs": { name: "custom-integration", kind: "test" }, "crates/core/tests/two.rs": { name: "second", kind: "test" }, "cli/src/main.rs": { name: "cli", kind: "bin" } },
     packageManager: "unknown", packageJson: { scripts: {}, dependencies: [], devDependencies: [] },
@@ -101,5 +102,26 @@ describe("Rust selective command synthesis", () => {
     const p = profile(); p.packageJson.scripts.test = "cargo test";
     assert.equal(planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]).refusalReason, undefined);
     assert.deepEqual(planSelectiveTestCommands(p, []).commands, []);
+  });
+  it("refuses profiles without Cargo feature resolution evidence", () => {
+    const p = profile();
+    delete p.rustFeatureCoverage;
+    refuses(p);
+  });
+
+  it("checks every Cargo invocation against the full run's feature resolution", () => {
+    // Testing actual-core alone drops a feature cli turns on; cli alone, or both together, keep it.
+    const p = profile();
+    p.rustFeatureCoverage = { deficits: { "actual-core": ["actual-core v0.1.0"] }, units: [{ crates: ["actual-core", "cli"], covers: ["actual-core v0.1.0"] }] };
+    const alone = planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]);
+    assert.match(alone.refusalReason ?? "", /would build actual-core v0\.1\.0 with different features/);
+    assert.deepEqual(alone.commands, []);
+    const together = planSelectiveTestCommands(p, ["crates/core/src/lib.rs", "cli/src/main.rs"]);
+    assert.equal(together.refusalReason, undefined);
+    assert.deepEqual(together.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli"] }]);
+    // An integration target runs as its own `cargo test -p actual-core --test …`, which the unit does not cover.
+    refuses(p, ["cli/src/main.rs", "crates/core/tests/one.rs"]);
+    const cli = planSelectiveTestCommands(p, ["cli/src/main.rs"]);
+    assert.equal(cli.refusalReason, undefined);
   });
 });

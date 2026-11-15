@@ -27,7 +27,8 @@ function pkg(root: string, directory: string, name: string, targets = [target(ro
 }
 
 function metadata(root: string, packages: CargoPackage[], extra: Record<string, unknown> = {}) {
-  return JSON.stringify({ workspace_root: root, workspace_members: packages.map(pkg => pkg.id), packages, resolve: { nodes: packages.map(pkg => ({ id: pkg.id, dependencies: [] })) }, ...extra });
+  const members = (extra.workspace_members as string[] | undefined) ?? packages.map(pkg => pkg.id);
+  return JSON.stringify({ workspace_root: root, workspace_members: members, workspace_default_members: members, packages, resolve: { nodes: packages.map(pkg => ({ id: pkg.id, dependencies: [] })) }, ...extra });
 }
 
 const manifest = (name: string) => `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2021"\n`;
@@ -521,5 +522,37 @@ test("a realistic Cargo workspace now narrows: build script, local derive crate,
     // like the full run.
     assert.deepEqual(result.rustFeatureCoverage?.deficits, { cli: ["core v0.1.0"], core: ["core v0.1.0"], server: ["core v0.1.0"] });
     assert.deepEqual(result.rustFeatureCoverage?.units, [{ crates: ["cli", "codegen", "core", "server"], covers: ["core v0.1.0"] }]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("only crates plain cargo test covers are test targets (root package or default-members)", { skip: !cargoAvailable }, () => {
+  for (const layout of ["root-package", "default-members"] as const) {
+    const files: Record<string, string> = layout === "root-package"
+      ? { "Cargo.toml": manifest("root") + '\n[workspace]\nmembers = ["member"]\n', "src/lib.rs": "#[cfg(test)] mod tests { #[test] fn root() {} }" }
+      : { "Cargo.toml": '[workspace]\nmembers = ["root", "member"]\ndefault-members = ["root"]\nresolver = "2"\n', "root/Cargo.toml": manifest("root"), "root/src/lib.rs": "#[cfg(test)] mod tests { #[test] fn root() {} }" };
+    Object.assign(files, { "member/Cargo.toml": manifest("member"), "member/src/lib.rs": "", "member/tests/api.rs": "#[test] fn member() {}" });
+    const root = fixture(files);
+    try {
+      assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
+      const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+      assert.equal(full.status, 0, full.stderr);
+      assert.doesNotMatch(full.stdout, /member: test/, layout);
+      const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
+      assert.deepEqual(result.blockers, [], layout);
+      assert.deepEqual(Object.values(result.testPackages), ["root"], layout);
+      assert.ok(result.sourcePaths.includes("member/src/lib.rs"), layout);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+test("Cargo metadata without default members falls back", () => {
+  const files = { "Cargo.toml": manifest("app"), "src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const app = pkg(root, "", "app");
+    const output = JSON.stringify({ ...JSON.parse(metadata(root, [app])), workspace_default_members: undefined });
+    const result = analyzeRustMetadata({ repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) }, output);
+    assert.ok(result.blockers.some(reason => reason.includes("without default workspace members")));
+    assert.deepEqual(result.testFiles, []);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
