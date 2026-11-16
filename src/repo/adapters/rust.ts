@@ -281,10 +281,14 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   tokens.forEach((token, index) => {
     if (token.literal === undefined || includeArguments.has(index)) return;
     if (pathLike(token.literal)) paths.push(token.literal);
-    // A test that checks README or docs content at run time (version-sync and the like).
-    if (/\.(?:md|mdx)$|^(?:\.\/)?(?:docs?|documentation)(?:\/|$)/i.test(token.literal)) documentation = true;
+    // A test that checks README or docs content at run time (version-sync, link checks and the like):
+    // a Markdown name or bare extension (`"md"` in an extension check), or a documentation directory
+    // anywhere in the path (`../docs`, `concat!(env!("CARGO_MANIFEST_DIR"), "/../docs")`).
+    if (/(?:^|\.)mdx?$|(?:^|[\\/])(?:docs?|documentation)(?:[\\/]|$)/i.test(token.literal)) documentation = true;
   });
-  return { inputs, paths, compiles, navigates: navigatesUpward(tokens), documentation };
+  const navigates = navigatesUpward(tokens);
+  // Code that climbs out of its crate can walk to README or docs without naming them.
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates };
 }
 
 /** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,

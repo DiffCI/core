@@ -197,6 +197,19 @@ test("documentation stays full-suite when Rust code may read it, and excluded fi
     graph = await buildDependencyGraph({ repoPath: root });
     assert.deepEqual(graph.profile.rustDocumentationReaders, ["app/src/lib.rs"]);
     assert.equal(new ImpactAnalyzer().analyze(delta("README.md"), graph, graph.profile).fallbackRequired, true);
+    // Paths that reach docs relative to the crate, or walk up and match the Markdown extension (review on #94).
+    for (const body of ['let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs");',
+      'let _ = concat!(env!("CARGO_MANIFEST_DIR"), "/../docs");',
+      'let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap(); for e in std::fs::read_dir(root).unwrap() { let p = e.unwrap().path(); if p.extension().map_or(false, |x| x == "md") { let _ = p; } }']) {
+      writeFileSync(join(root, "app/src/lib.rs"), `#[test] fn docs() { ${body} }`);
+      graph = await buildDependencyGraph({ repoPath: root });
+      assert.deepEqual(graph.profile.rustDocumentationReaders, ["app/src/lib.rs"], body);
+      assert.equal(new ImpactAnalyzer().analyze(delta("docs/guide.md"), graph, graph.profile).fallbackRequired, true, body);
+    }
+    // Ordinary strings that merely contain "doc" or "md" are not documentation paths.
+    writeFileSync(join(root, "app/src/lib.rs"), '#[test] fn names() { assert_eq!("cmd", "cmd"); let _ = "doctor/visit"; }');
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.profile.rustDocumentationReaders, []);
     // A member that path-depends on the fixture keeps the repository-wide fallback.
     output = metadata([{ id: "sample", name: "sample", manifest_path: join(root, "tests/fixtures/sample/Cargo.toml"), dependencies: [], features: {},
       targets: [{ name: "sample", kind: ["lib"], src_path: join(root, "tests/fixtures/sample/src/lib.rs"), test: true, doctest: true }] }]);
