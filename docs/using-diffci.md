@@ -453,21 +453,22 @@ Some changes still run the full suite whatever `inputs` says, because they chang
 
 ## More commands
 
-`diffci --help` lists every command. This section covers four that aren't explained elsewhere: [`verify-workflow`](#verify-workflow-check-that-the-diffci-job-cant-affect-ci), [`pilot-packet`](#pilot-packet-a-shareable-compatibility-packet), [`validate-specs`](#validate-specs-block-specifications-that-change-the-same-target) and [`telemetry`](#telemetry-choose-what-usage-counting-sends).
+`diffci --help` lists every command. This section covers four that aren't explained elsewhere: [`verify-workflow`](#verify-workflow-check-how-the-diffci-job-could-affect-ci), [`pilot-packet`](#pilot-packet-a-shareable-compatibility-packet), [`validate-specs`](#validate-specs-block-specifications-that-change-the-same-target) and [`telemetry`](#telemetry-choose-what-usage-counting-sends).
 
-### verify-workflow: check that the DiffCI job can't affect CI
+### verify-workflow: check how the DiffCI job could affect CI
 
 ```sh
 npx @diffci.com/diffci@latest verify-workflow --repo .
 ```
 
-`verify-workflow` reads the YAML files in `.github/workflows` and finds the jobs that run the DiffCI action as an observer. It then checks that these jobs can't change what the rest of CI does. Findings are marked `[BLOCKING]` or `[WARNING]` and have stable codes. For example:
+`verify-workflow` reads the YAML files in `.github/workflows` and finds the jobs that run the DiffCI action as an observer. It then looks for the ways those jobs could change what the rest of CI does. Each finding has a stable code and is marked `[BLOCKING]` or `[WARNING]`; only blocking findings fail the command, so a pass means no blocking interference was found, not that the warnings are harmless. For example:
 
-- `JOB_IS_A_DEPENDENCY`: another job `needs:` it.
-- `JOB_NOT_CONTINUE_ON_ERROR`: it doesn't have `continue-on-error: true`, so a DiffCI failure fails the workflow run.
-- `JOB_NOT_DEDICATED`: it shares a job with build or test steps.
-- `JOB_HAS_WRITE_PERMISSIONS`: it has a `write` permission.
-- `ACTION_NOT_PINNED`: the action isn't pinned to a 40-character commit SHA.
+- `JOB_IS_A_DEPENDENCY` (blocking): another job `needs:` it.
+- `JOB_NOT_CONTINUE_ON_ERROR` (blocking): it doesn't have `continue-on-error: true`, so a DiffCI failure fails the workflow run.
+- `JOB_NOT_DEDICATED` (blocking): it shares a job with build or test steps.
+- `JOB_HAS_WRITE_PERMISSIONS` (warning): it has a `write` permission.
+- `JOB_SHARES_CONCURRENCY_GROUP` (warning): it shares a concurrency group with another job, so one can cancel the other.
+- `ACTION_NOT_PINNED` (warning): the action isn't pinned to a 40-character commit SHA.
 
 `check` prints `run diffci verify-workflow for details` when it finds a blocking problem.
 
@@ -485,7 +486,7 @@ It exits 0 when there are no blocking findings; warnings alone still exit 0. It 
 `verify-workflow --enforce [--default-branch main] [--full-command "<cmd>"]` checks the opposite for enforce mode. It confirms three things:
 
 - a job runs `diffci verify --policy enforce` as a gate (a `continue-on-error` dry run doesn't count);
-- that job is switched on and off by the `vars.DIFFCI_ENFORCE` repository variable;
+- that job's `DIFFCI_ENFORCE` environment variable is set from `${{ vars.DIFFCI_ENFORCE }}`, so turning the repository variable off stops enforcement (it doesn't check a job-level `if:`, so with the variable off the job may still run, but without enforcing);
 - the full test command still runs on every push to the default branch.
 
 It exits 1 if any of these is missing.
@@ -504,7 +505,7 @@ npx @diffci.com/diffci@latest pilot-packet --repo . --base HEAD~1 --head HEAD
 - `diffci-observe.json`: the raw observation report.
 - `diffci-observe.yml`: a non-blocking observation workflow for you to review. It isn't installed.
 
-`--label` names the repository in the packet (default: the checkout's folder name). `--repository-url` adds a link and must be `https://`. `--redact-paths` keeps file paths out of the report.
+`--label` names the repository in the packet (default: the checkout's folder name). `--repository-url` adds a link and must be `https://`. `--redact-paths` hashes the file paths in the analysis result. Workflow findings and some fallback details can still name files (such as `.github/workflows/ci.yml`), so read the packet before you share it.
 
 It exits 0 when the observation is `OBSERVED`. It exits 1 when the observation was refused (for example, no supported project was found). It exits 2 when `--out-dir` is inside the checkout or `--repository-url` isn't https. It changes no file in the checkout and sends nothing.
 
@@ -540,10 +541,10 @@ npx @diffci.com/diffci@latest telemetry                     # show the current c
 npx @diffci.com/diffci@latest telemetry --mode count-only   # count runs without the repository name
 ```
 
-Usage counting is **on by default**. After each `plan`, `check`, `observe` and `verify` run, DiffCI sends a small count. It includes the command, the outcome, the version, where it ran, a random installation ID and the repository name (host/owner/repo). It never sends code, paths, commits, test names or reports. [Usage counting](telemetry.md) has the full field list.
+Usage counting is **on by default**. After each `plan`, `check`, `observe` and `verify` run, DiffCI sends a small count. It includes the command, the outcome, the version, where it ran and the repository name (host/owner/repo), plus a random installation ID once one has been saved by `diffci telemetry --mode repo`. It never sends code, paths, commits, test names or reports. [Usage counting](telemetry.md) has the full field list.
 
-- `--mode repo` (default): the count includes the repository name and the installation ID.
-- `--mode count-only`: drops both and deletes the local installation ID.
+- `--mode repo` (default): the count includes the repository name. Running `diffci telemetry --mode repo` also saves a random installation ID, which is sent from then on; the default, never configured, sends none.
+- `--mode count-only`: drops the name and deletes the saved installation ID.
 - `--internal-usage`: labels your runs as internal (tests, development).
 
 The choice is saved in `~/.diffci/telemetry.json` (or under `$DIFFCI_TELEMETRY_HOME`). Older saved choices carry over: `off` and `anonymous` become `count-only`, and `installations` becomes `repo`. On the command line, `--mode` takes only `repo` or `count-only`; anything else exits 1.
