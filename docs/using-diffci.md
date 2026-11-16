@@ -670,3 +670,5 @@ Sometimes DiffCI selects tests but can't write a command that runs only those te
 | `The runner reads test paths as patterns and cannot be given … literally` | A test path with glob or regex characters, such as `[id].test.ts`, for a runner that reads paths as patterns | Run the full suite |
 
 `npm test` checks that every literal reason in `src/planner/test-command.ts` is listed here (`node scripts/fallback-reasons.mjs --no-command` prints them).
+
+_Documented by [@sarankumar1325](https://github.com/sarankumar1325) in [#150](https://github.com/DiffCI/core/pull/150); the isolation refusal is covered for a root Vitest config by his tests in [#149](https://github.com/DiffCI/core/pull/149)._
