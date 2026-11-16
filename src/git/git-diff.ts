@@ -515,7 +515,7 @@ function readFileAtSha(sha: string, path: string, repoPath: string | undefined):
 function listFilesAtSha(sha: string, repoPath: string | undefined): string[] {
   const result = runGit(["ls-tree", "-r", "--full-tree", "--name-only", "-z", sha], repoPath);
   if (result.status !== 0) return [];
-  return result.stdout.split(" ").filter(Boolean);
+  return result.stdout.split("\0").filter(Boolean);
 }
 
 /** Root entries include directories and gitlinks, which recursive file inventories can omit. */

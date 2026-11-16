@@ -150,7 +150,7 @@ type BaseTree<T> = { ok: true; value: T } | { ok: false; reason: string };
  * alone (2026-11-03, LobeHub replay: a type error the change introduced read as already broken). */
 function installedModuleDirs(repoPath: string): string[] {
   const listed = git(repoPath, ["ls-files", "-z", "--", "package.json", "*/package.json"]);
-  const dirs = listed.status === 0 ? listed.stdout.toString("utf8").split(" ").filter(Boolean).map((file) => posix.dirname(file)) : ["."];
+  const dirs = listed.status === 0 ? listed.stdout.toString("utf8").split("\0").filter(Boolean).map((file) => posix.dirname(file)) : ["."];
   return [...new Set(dirs)].filter((dir) => !dir.split("/").includes("node_modules") && existsSync(join(repoPath, dir, "node_modules"))).sort();
 }
 
