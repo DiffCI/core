@@ -13,6 +13,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
+import { LOCKFILE_NAMES } from "../repo/lockfiles.js";
 import type { EvidenceRef, ObservedFact } from "./schema.js";
 
 /** Finds the 1-indexed line of the first occurrence of `needle`, for citable evidence. */
@@ -62,7 +63,7 @@ export function packageFacts(repoPath: string): ObservedFact[] {
 /** Which lockfile is committed. The repository's own statement about its package manager. */
 export function lockfileFacts(repoPath: string): ObservedFact[] {
   const facts: ObservedFact[] = [];
-  for (const name of ["pnpm-lock.yaml", "yarn.lock", "package-lock.json", "bun.lock", "bun.lockb", "npm-shrinkwrap.json"]) {
+  for (const name of LOCKFILE_NAMES) {
     if (existsSync(join(repoPath, name))) {
       facts.push({ kind: "lockfile.present", value: name, evidence: { file: name, text: name } });
     }
