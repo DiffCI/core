@@ -11,43 +11,8 @@ export interface WorkingTreeSnapshot {
   /** Unreachable commit used only so the existing commit-range analyzer can inspect the tree. */
   commitSha: string;
   changed: boolean;
-  /** Set when every difference from HEAD is a CRLF checkout of an LF-committed file (see lineEndingOnlyChanges). */
+  /** Files left out of the snapshot because they differ from HEAD only by a CRLF checkout of LF content (crlfCheckouts). */
   lineEndingOnly?: string[];
-}
-
-/**
- * The paths, when every difference between HEAD and the snapshot is only CRLF line endings on files
- * committed with LF; otherwise undefined.
- *
- * WHY (2026-11-06). On DentalPresence the pre-push hook could not verify any push: 268 files had been
- * checked out with CRLF under Git for Windows' system-wide `core.autocrlf=true` before the repository
- * set it to false. `git status` called the checkout clean because its stat cache still matched, while
- * the snapshot re-reads every file and saw 268 changes. Git's own view decides "clean" for the user, so
- * a CRLF-only checkout is verified rather than blocked, and the receipt names the files.
- */
-export function lineEndingOnlyChanges(repoPathInput: string, snapshot: WorkingTreeSnapshot): string[] | undefined {
-  const repoPath = resolve(repoPathInput);
-  const baseTreeSha = requireGit(repoPath, ["rev-parse", "--verify", `${snapshot.baseSha}^{tree}`], "could not resolve the snapshot base tree");
-  const changes = snapshotChanges(repoPath, baseTreeSha, snapshot.treeSha);
-  if (changes.length === 0 || changes.some((change) => change.status !== "modified")) return undefined;
-  for (const change of changes) {
-    const committed = spawnSync("git", ["cat-file", "blob", `${baseTreeSha}:${change.path}`], {
-      cwd: repoPath,
-      maxBuffer: 256 * 1024 * 1024,
-      windowsHide: true,
-    });
-    if (committed.status !== 0 || committed.stdout.includes(13)) return undefined;
-    let checkedOut: Buffer;
-    try {
-      checkedOut = readFileSync(join(repoPath, change.path));
-    } catch {
-      return undefined;
-    }
-    if (!checkedOut.includes(13)) return undefined;
-    const normalized = Buffer.from(checkedOut.toString("latin1").replace(/\r\n/g, "\n"), "latin1");
-    if (!normalized.equals(committed.stdout)) return undefined;
-  }
-  return changes.map((change) => change.path);
 }
 
 /** One path that differs between two snapshots. A rename is a deletion plus an addition. */
@@ -88,6 +53,49 @@ function requireGit(repoPath: string, args: string[], context: string, env?: Nod
 }
 
 /**
+ * Files staged in the temporary index that differ from the base tree only because the checkout has CRLF
+ * where the commit has LF (2026-11-15). On diffci.com, 968 of 1,020 "changed" files were such checkouts
+ * next to 52 real changes. The earlier rule (2026-11-06, DentalPresence's pre-push hook) cleared them only
+ * when nothing else had changed, so the analysis
+ * resolved readers for every one, chose the full suite, and verify took 15 minutes. `git status` calls
+ * these files clean, and so does the snapshot now, whatever else changed; the receipt lists them.
+ */
+function crlfCheckouts(repoPath: string, baseTreeSha: string, indexEnvironment: NodeJS.ProcessEnv): string[] {
+  const modified = requireGit(repoPath, ["diff-index", "--cached", "--no-renames", "--diff-filter=M", "--name-only", "-z", baseTreeSha], "could not compare the working tree with HEAD", indexEnvironment)
+    .split("\0").filter(Boolean);
+  const candidates: Array<{ path: string; normalized: Buffer }> = [];
+  for (const path of modified) {
+    let checkedOut: Buffer;
+    try { checkedOut = readFileSync(join(repoPath, path)); } catch { continue; }
+    if (!checkedOut.includes(13)) continue;
+    candidates.push({ path, normalized: Buffer.from(checkedOut.toString("latin1").replace(/\r\n/g, "\n"), "latin1") });
+  }
+  if (candidates.length === 0) return [];
+  // One batch read of the committed blobs: `--batch` prints "<sha> blob <size>\n<bytes>\n" per object.
+  const batch = spawnSync("git", ["cat-file", "--batch"], {
+    cwd: repoPath,
+    input: candidates.map(({ path }) => `${baseTreeSha}:${path}\n`).join(""),
+    maxBuffer: 1024 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (batch.status !== 0) return [];
+  const output = batch.stdout;
+  const found: string[] = [];
+  let offset = 0;
+  for (const { path, normalized } of candidates) {
+    const headerEnd = output.indexOf(10, offset);
+    if (headerEnd < 0) break;
+    const header = output.subarray(offset, headerEnd).toString("utf8").split(" ");
+    if (header[1] !== "blob") { offset = headerEnd + 1; continue; }
+    const size = Number(header[2]);
+    const committed = output.subarray(headerEnd + 1, headerEnd + 1 + size);
+    offset = headerEnd + 1 + size + 1;
+    if (!committed.includes(13) && normalized.equals(committed)) found.push(path);
+  }
+  return found;
+}
+
+/**
  * Materialize the current worktree as a Git tree without changing the user's index or checkout.
  *
  * A temporary index begins at HEAD and stages the working tree into that isolated index. Git therefore
@@ -109,6 +117,10 @@ export function captureWorkingTreeSnapshot(repoPathInput: string): WorkingTreeSn
   try {
     requireGit(repoPath, ["read-tree", baseSha], "could not initialize the verification snapshot", indexEnvironment);
     requireGit(repoPath, ["add", "-A", "--", "."], "could not capture the working tree", indexEnvironment);
+    const lineEndingOnly = crlfCheckouts(repoPath, baseTreeSha, indexEnvironment);
+    if (lineEndingOnly.length > 0) {
+      requireGit(repoPath, ["reset", "-q", baseSha, "--pathspec-from-file=-", "--pathspec-file-nul"], "could not leave line-ending-only files out of the snapshot", indexEnvironment, `${lineEndingOnly.join("\0")}\0`);
+    }
     const treeSha = requireGit(repoPath, ["write-tree"], "could not write the verification tree", indexEnvironment);
     const identityEnvironment = {
       GIT_AUTHOR_NAME: "DiffCI",
@@ -125,7 +137,7 @@ export function captureWorkingTreeSnapshot(repoPathInput: string): WorkingTreeSn
       identityEnvironment,
       "DiffCI working tree snapshot\n",
     );
-    return { baseSha, treeSha, commitSha, changed: treeSha !== baseTreeSha };
+    return { baseSha, treeSha, commitSha, changed: treeSha !== baseTreeSha, ...(lineEndingOnly.length > 0 ? { lineEndingOnly } : {}) };
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
