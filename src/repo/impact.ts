@@ -51,6 +51,19 @@ type IsTestFile = (filePath: string) => boolean;
 // exact directories.
 function isScriptFile(filePath: string, layout: RepositoryLayout): boolean { return layout.isScriptPath(filePath); }
 function isDocumentationFile(filePath: string, layout: RepositoryLayout): boolean { return layout.isDocumentationPath(filePath); }
+/**
+ * What a tool configuration file controls, when that is worth naming in the fallback reason
+ * (issue #142). A change to one of these falls back to the full suite either way; "Unknown changed
+ * file" made a deliberate decision read like a gap in DiffCI. Returns undefined for the files that
+ * stay under the general configuration sentence.
+ */
+function toolConfigurationSubject(filePath: string): string | undefined {
+  const base = posix.basename(filePath);
+  if (base === ".nvmrc" || base === ".node-version") return "Node version";
+  if (base === ".npmrc") return "package manager settings";
+  return undefined;
+}
+
 function isConfigFile(filePath: string): boolean {
   const CONFIG_FILE_NAMES = new Set(["package.json","package-lock.json","yarn.lock","pnpm-lock.yaml","bun.lockb","bun.lock","tsconfig.json","tsconfig.base.json","tsconfig.build.json","jsconfig.json"]);
   const base = posix.basename(filePath);
@@ -824,6 +837,20 @@ export class ImpactAnalyzer {
           paths = paths.filter((path) => !isWorkerConfig(path));
           if (paths.length === 0) continue;
         }
+        if (rule.signal === "config" && paths.length > 0) {
+          // A tool configuration we can name is reported by name, not folded into the generic sentence,
+          // so a reader sees which file decided the full run (issue #142).
+          const named = paths.filter((path) => toolConfigurationSubject(path) !== undefined);
+          if (named.length > 0) {
+            for (const path of named) {
+              const message = `Tool configuration changed: ${toolConfigurationSubject(path)} (${path}); full validation required`;
+              riskSignals.push({ level: "critical", reason: "CONFIG_GLOBAL", message, paths: [path] });
+              if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+            }
+            paths = paths.filter((path) => toolConfigurationSubject(path) === undefined);
+            if (paths.length === 0) continue;
+          }
+        }
         if ((rule.signal === "infrastructure" || rule.signal === "database") && paths.length > 0) {
           // A database or deployment definition the repository declared inputs for selects those tests in
           // processChangedPath. Configuration, manifests, lockfiles and workflows stay global (2026-11-05).
@@ -1124,9 +1151,16 @@ export class ImpactAnalyzer {
       const specifiersOnly = (changedPath === "package.json" && this.packageJsonSpecifiersOnly) || this.specifiersOnlyManifests.has(changedPath)
         || this.exportsRemaps.get(changedPath)?.dataChanged === false;
       const options = specifiersOnly ? { allowNoReaders: true, implicitReadersUnresolvable: true } : {};
-      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)) return;
+      // A tool configuration we recognise by name gets a reason that says what it controls, whether or
+      // not some file happens to reference it: a reader of `.mocharc.json` cannot prove which tests
+      // notice a change to the runner's settings, so this is still a full run (issue #142).
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, options)
+        && toolConfigurationSubject(changedPath) === undefined) return;
       if (covered) return;
-      const message = `Unknown changed file: ${changedPath}`;
+      const subject = toolConfigurationSubject(changedPath);
+      const message = subject
+        ? `Tool configuration changed: ${subject} (${changedPath}); full validation required`
+        : `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
@@ -1142,9 +1176,15 @@ export class ImpactAnalyzer {
       // tried, so a fixture no module imports is claimed here (2026-11-05: LobeHub's
       // src/spawn/__fixtures__/copilotAcp/handshake.json beside the spawn tests).
       if (this.claimFixture(changedPath, graph, affectedTests, evidence)) return;
-      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)) return;
+      if (this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence)
+        && toolConfigurationSubject(changedPath) === undefined) return;
       if (covered) return;
-      const message = `Unknown changed file: ${changedPath}`;
+      // `.mocharc.json` is an asset by extension; it is still a runner configuration, so it keeps the
+      // reason that says so (issue #142).
+      const subject = toolConfigurationSubject(changedPath);
+      const message = subject
+        ? `Tool configuration changed: ${subject} (${changedPath}); full validation required`
+        : `Unknown changed file: ${changedPath}`;
       evidence.push(makeEvidence("UNKNOWN_FILE", changedPath, message));
       riskSignals.push({ level: "critical", reason: "UNKNOWN_FILE", message, paths: [changedPath] });
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);

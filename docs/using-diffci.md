@@ -479,6 +479,7 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | Yes: declare it in `inputs` |
 | `Database definition(s) changed; full validation required` | Add a file under `migrations/` | Yes: declare it in `inputs` |
 | `Language/framework configuration changed: …` | Edit `go.mod` or `pom.xml` | No |
+| `Tool configuration changed: … (…); full validation required` | Change `.nvmrc`, `.node-version` or `.npmrc` | No |
 | `Unknown changed file: …` | Change a file type no adapter models, such as `data.bin` read at runtime | Yes: declare it in `inputs` |
 | `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | Yes: declare it in `inputs` |
 | `Lockfile readers could not be resolved: …; full validation required` | Change `yarn.lock` while repository code reads it in a way DiffCI cannot trace | No |

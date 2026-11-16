@@ -240,6 +240,12 @@ export const CONFIG_PATTERNS = [
   /^Pipfile(?:\.lock)?$/,
   /^(?:poetry|uv|pdm)\.lock$/,
   /^\.python-version$/,
+  // Node version and package-manager settings (issue #142). Each decides how the suite is installed,
+  // so a change falls back to the full suite; the entries make the reason name the file instead of
+  // reporting it as unknown.
+  /^\.nvmrc$/,
+  /^\.node-version$/,
+  /^\.npmrc$/,
 ];
 
 // Stage 1B fix (2026-08-21, docs/research/2026-08-21-stage1b-*.md): root-caused in Stage 1A's fallback-

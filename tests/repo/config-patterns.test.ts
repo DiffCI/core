@@ -48,6 +48,9 @@ const EXAMPLES = [
   "Pipfile.lock",
   "uv.lock",
   ".python-version",
+  ".nvmrc",
+  ".node-version",
+  ".npmrc",
 ];
 
 test("every CONFIG_PATTERNS entry has one real file name in the table", () => {
