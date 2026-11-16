@@ -430,7 +430,10 @@ export type GitHubGet = (path: string) => Promise<{ status: number; body: unknow
 
 export class StopCollection extends Error {}
 
-/** Paced, read-only GitHub REST client: >= 1.2 s between calls, stops on Retry-After or a low quota. */
+/** Waits before each retry of a dropped connection or a GitHub 5xx (about 3.5 minutes in all). */
+const NETWORK_RETRY_MS = [10_000, 30_000, 60_000, 120_000];
+
+/** Paced, read-only GitHub REST client: >= 1.2 s between calls, stops on Retry-After, a low quota or a network that stays down. */
 export function githubClient(token: string, options: { minIntervalMs?: number; minRemaining?: number; fetchFn?: typeof fetch; sleep?: (ms: number) => Promise<void> } = {}): GitHubGet {
   const interval = options.minIntervalMs ?? 1200;
   const floor = options.minRemaining ?? 1000;
@@ -444,14 +447,21 @@ export function githubClient(token: string, options: { minIntervalMs?: number; m
     const request = () => fetchFn(`https://api.github.com/${path}`, {
       headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "User-Agent": "diffci-red-builds", "X-GitHub-Api-Version": "2022-11-28" },
     });
-    let res: Response;
-    try {
-      res = await request();
-    } catch {
-      // A dropped connection ("fetch failed"), not a GitHub answer: one slow retry, then give up.
-      await sleep(10_000);
+    // A dropped connection ("fetch failed") or a GitHub 5xx is not an answer: retry with growing waits, then stop
+    // and report what was read, as on a low quota. One bad minute of network must not discard an hour of calls.
+    let res: Response | undefined;
+    let failure = "";
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await request();
+        if (res.status < 500) break;
+        failure = `GitHub answered HTTP ${res.status}`;
+      } catch (error) {
+        failure = (error as Error)?.message || "the connection failed";
+      }
+      if (attempt === NETWORK_RETRY_MS.length) throw new StopCollection(`${failure} on ${path.split("?")[0]}, ${attempt + 1} times`);
+      await sleep(NETWORK_RETRY_MS[attempt]);
       last = Date.now();
-      res = await request();
     }
     if (res.headers.get("retry-after")) throw new StopCollection(`GitHub asked to slow down (Retry-After on ${path.split("?")[0]})`);
     const remaining = Number(res.headers.get("x-ratelimit-remaining") ?? "Infinity");

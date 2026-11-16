@@ -22,7 +22,8 @@ signed-in `gh` CLI), because unauthenticated access allows 60 calls an hour.
    (`Co-Authored-By: Claude …`, Codex, Cursor, Copilot, Devin and others) or agent branch prefixes.
 
 Calls are made one at a time, at least 1.2 seconds apart. It stops on `Retry-After` or when fewer than 1,000
-calls remain in your hour, and reports what it read so far. A 200-run report usually takes 100 to 300 calls.
+calls remain in your hour, and reports what it read so far. A dropped connection or a GitHub 5xx is retried four
+times over about three and a half minutes; if it persists, the command stops the same way instead of losing the run. A 200-run report usually takes 100 to 300 calls.
 
 ## How a red run is judged
 

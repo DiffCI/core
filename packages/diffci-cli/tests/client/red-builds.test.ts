@@ -253,6 +253,19 @@ describe("collectRedBuilds", () => {
     assert.match(formatReport(report), /Stopped early/);
   });
 
+  it("keeps the runs read before the network went down", async () => {
+    const github = fakeGitHub(routes);
+    let calls = 0;
+    const get: GitHubGet = async (path) => {
+      if (++calls > 2) throw new StopCollection("fetch failed on check-runs, 5 times");
+      return github(path);
+    };
+    const report = await collectRedBuilds({ repository: REPO, get, maxRuns: 10, workflow: "9" });
+    assert.match(report.stoppedEarly ?? "", /fetch failed/);
+    assert.equal(report.pullRequestRuns, 2);
+    assert.equal(report.redRuns, 1);
+  });
+
   it("names a missing repository instead of reporting zero", async () => {
     await assert.rejects(collectRedBuilds({ repository: REPO, get: fakeGitHub({}), maxRuns: 10 }), /not found/);
   });
@@ -275,6 +288,25 @@ describe("githubClient", () => {
     await assert.rejects(get("c"), StopCollection);
     const slow = githubClient("t", { fetchFn: (async () => response(403, { "retry-after": "60" })) as unknown as typeof fetch, sleep: async () => undefined });
     await assert.rejects(slow("d"), /slow down/);
+  });
+
+  it("retries a dropped connection or a 5xx, then stops so the partial report survives", async () => {
+    const sleeps: number[] = [];
+    const outcomes: Array<number | "drop"> = ["drop", 502, 200];
+    const flaky = githubClient("t", {
+      fetchFn: (async () => {
+        const next = outcomes.shift();
+        if (next === "drop") throw new TypeError("fetch failed");
+        return response(next ?? 200, { "x-ratelimit-remaining": "4000" });
+      }) as unknown as typeof fetch,
+      sleep: async (ms) => { sleeps.push(ms); },
+    });
+    assert.equal((await flaky("a")).status, 200);
+    assert.deepEqual(sleeps, [10_000, 30_000]);
+    let calls = 0;
+    const down = githubClient("t", { fetchFn: (async () => { calls++; throw new TypeError("fetch failed"); }) as unknown as typeof fetch, sleep: async () => undefined });
+    await assert.rejects(down("repos/o/r/jobs?page=2"), (error: unknown) => error instanceof StopCollection && /fetch failed on repos\/o\/r\/jobs, 5 times/.test((error as Error).message));
+    assert.equal(calls, 5);
   });
 });
 
