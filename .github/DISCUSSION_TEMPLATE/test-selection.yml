@@ -1,0 +1,27 @@
+title: "<your question about choosing tests for a change>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions about running the right tests for a change, with any tool: DiffCI, Nx affected,
+        Turborepo, Bazel, pytest-testmon, Jest `--changedSince`, Gradle, your own scripts.
+        Mark the answer that solved it.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Your setup
+      description: Language, test runner, monorepo tool and CI provider.
+      placeholder: "TypeScript, Vitest, pnpm workspaces, GitHub Actions"
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you tried
+      description: Commands, config or output. If you ran DiffCI, include the `verdict` and `selection` lines and the version.

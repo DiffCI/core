@@ -1,0 +1,35 @@
+title: "Setup: <agent> + <CI or runner>"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a setup that makes coding agents run the right checks before they push: `AGENTS.md`
+        or `CLAUDE.md` rules, hooks, MCP servers, pre-push scripts, CI gates. Setups that did not work
+        are useful too. Reusable ones may be linked from the DiffCI docs, with credit.
+  - type: input
+    id: agent
+    attributes:
+      label: Agent or agents
+      placeholder: "Claude Code, Codex CLI, Copilot coding agent"
+    validations:
+      required: true
+  - type: input
+    id: stack
+    attributes:
+      label: Stack
+      description: Language, test runner and CI provider.
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: The setup
+      description: The instructions, hook or config, and where it lives in the repository.
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: How well it works
+      description: What changed after you added it? Red builds, call rate, time, anything you measured.

@@ -1,0 +1,50 @@
+title: "Red build: <repository or alias>, <what failed>"
+labels: ["red build"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A CI run went red. Post what failed and why, especially when a coding agent wrote the change.
+        The goal is to learn which checks would have caught it before push, in any tool, not only DiffCI.
+        Do not paste secrets, tokens or private source code.
+  - type: input
+    id: repository
+    attributes:
+      label: Repository
+      description: A public URL, or a short description if it is private (for example "Python monorepo, pytest, GitHub Actions").
+      placeholder: https://github.com/owner/name
+    validations:
+      required: true
+  - type: input
+    id: run
+    attributes:
+      label: Failed run or pull request
+      description: A link if public, otherwise leave blank.
+  - type: dropdown
+    id: author
+    attributes:
+      label: Who wrote the change?
+      options:
+        - A coding agent (Claude Code, Codex, Copilot, Cursor, Devin or similar)
+        - A person with agent help
+        - A person
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: What failed
+      description: The job, the test or check, and the error. Trim long logs to the part that matters.
+    validations:
+      required: true
+  - type: textarea
+    id: cause
+    attributes:
+      label: Why it failed
+      description: Your best understanding of the cause. "Don't know yet" is fine.
+  - type: textarea
+    id: prevention
+    attributes:
+      label: What would have caught it before push?
+      description: A test that should have run locally, a hook, a type check, an agent instruction, nothing at all (flaky or infrastructure)?
