@@ -15,6 +15,7 @@ import { compileIgnoreRegexes, isIgnoredPath, isUnderRoots } from "./runner-univ
 import { defaultExcludesFor, defaultIncludesFor, detectDeclaredFrameworks } from "./test-framework.js";
 import { readRepositoryConfig } from "./repo-config.js";
 import { declaredWorkspaceRoots } from "./workspaces.js";
+import { LOCKFILE_NAMES } from "./lockfiles.js";
 
 const IGNORED_DIRS = new Set([
   "node_modules",
@@ -295,11 +296,8 @@ function discoverTests(
 function discoverConfigFiles(repoPath: string, excludeDirs: string[]): string[] {
   const configNames = new Set<string>([
     "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "bun.lock",
-    "bun.lockb",
+    // The shared lockfile names (issue #97): this list lacked npm-shrinkwrap.json.
+    ...LOCKFILE_NAMES,
     "tsconfig.json",
     "jsconfig.json",
     "next.config.js",

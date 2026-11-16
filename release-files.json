@@ -232,6 +232,7 @@
     "tests/release-surfaces.test.ts",
     "tests/credit-contributors.test.ts",
     "tests/repo/babel-config-change.test.ts",
+    "tests/repo/analyzer-lockfiles.test.ts",
     "tests/repo/analyzer.test.ts",
     "tests/repo/compiled-projects.test.ts",
     "tests/repo/config-patterns.test.ts",
