@@ -55,6 +55,22 @@ describe("bucketJob", () => {
     assert.equal(bucketJob(job(1, "test", ["Block untrusted lockfile edits"])), "ci-only");
   });
 
+  it("judges a failed job by its name when GitHub dropped its step data", () => {
+    // github/gh-aw runs seven months old came back with "steps": [] (2026-11-16).
+    const noSteps = (name: string, conclusion = "failure"): JobSummary => ({ ...job(1, name, [], conclusion), stepsKnown: false });
+    assert.equal(bucketJob(noSteps("test")), "check");
+    assert.equal(bucketJob(noSteps("policy")), "ci-only", "unknown names stay CI-only");
+    assert.equal(bucketJob(noSteps("Playwright (chromium)")), "ci-only");
+    assert.equal(bucketJob(noSteps("test", "cancelled")), "infra");
+    assert.equal(bucketJob(noSteps("test", "timed_out")), "infra");
+    assert.equal(bucketJob(job(1, "test", [])), "infra", "with step data, no failed step still means cancelled or timed out");
+  });
+
+  it("treats PR Gate and CI Gate as gate jobs, not CI-only failures", () => {
+    for (const name of ["PR Gate", "CI Gate", "CI / CI-Gate", "merge gate"]) assert.ok(isAggregateJob(job(1, name)), name);
+    assert.ok(!isAggregateJob(job(1, "Gatekeeper tests")));
+  });
+
   it("honours overriding patterns", () => {
     const patterns = { checkJob: /^policy$/i, ciOnlyJob: /^nothing$/ };
     assert.equal(bucketJob(job(1, "policy"), patterns), "check");

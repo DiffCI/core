@@ -78,6 +78,11 @@ export interface JobSummary {
   startedAt: string | null;
   completedAt: string | null;
   failedSteps: string[];
+  /**
+   * False when GitHub returned no step list for the job. It drops step data on old runs (seen on github/gh-aw
+   * runs seven months old, 2026-11-16), so "no failed step" then means "unknown", not "cancelled".
+   */
+  stepsKnown?: boolean;
 }
 
 export interface Annotation {
@@ -95,9 +100,12 @@ export interface Patterns {
 export const DEFAULT_PATTERNS: Patterns = { checkJob: CHECK_JOB, ciOnlyJob: CI_ONLY_JOB };
 
 export function bucketJob(job: JobSummary, patterns: Patterns = DEFAULT_PATTERNS, workflowName = ""): JobBucket {
-  if (job.failedSteps.length === 0) return "infra"; // cancelled, timed out or runner lost: no step failed
-  if (job.failedSteps.every((step) => INFRA_STEP.test(step))) return "infra";
-  if (job.failedSteps.every((step) => CI_ONLY_STEP.test(step))) return "ci-only";
+  if (job.stepsKnown === false) {
+    // No step data: a failed job is judged by its name alone; a cancelled or timed-out one stays infra.
+    if (job.conclusion !== "failure") return "infra";
+  } else if (job.failedSteps.length === 0) return "infra"; // cancelled, timed out or runner lost: no step failed
+  if (job.failedSteps.length > 0 && job.failedSteps.every((step) => INFRA_STEP.test(step))) return "infra";
+  if (job.failedSteps.length > 0 && job.failedSteps.every((step) => CI_ONLY_STEP.test(step))) return "ci-only";
   // The job's own name, without a "Workflow / " prefix, decides. CI-only wins so "e2e tests" is not a check.
   const name = jobName(job);
   // A --ci-only-jobs override wins outright; by default only the strong CI-only words beat a check word.
@@ -115,8 +123,12 @@ function jobName(job: JobSummary): string {
 
 export function isAggregateJob(job: JobSummary): boolean {
   const name = jobName(job).replace(/[()]/g, "").trim();
-  return AGGREGATE_JOB.test(name) || AGGREGATE_SUFFIX.test(name);
+  return AGGREGATE_JOB.test(name) || AGGREGATE_SUFFIX.test(name) || GATE_JOB.test(name);
 }
+
+/** Gate jobs named "PR Gate", "CI Gate" (microsoft/vscode, microsoft/typespec, 2026-11-16): they only report
+ * that another job failed. Read as CI-only, they made every red run on those repositories CI-only. */
+const GATE_JOB = /^(pr|ci|merge|build|test|checks?)[- ]?gate$/i;
 
 /** Failure signatures of one job: annotation path, title and first message line, with volatile parts blurred. */
 export function signatures(annotations: Annotation[]): Set<string> {
@@ -678,6 +690,7 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
           list.push({
             id: j.id, name: String(j.name ?? ""), conclusion: j.conclusion ?? null, startedAt: j.started_at ?? null, completedAt: j.completed_at ?? null,
             failedSteps: (j.steps ?? []).filter((s: any) => s.conclusion === "failure").map((s: any) => String(s.name ?? "")),
+            stepsKnown: Array.isArray(j.steps) && j.steps.length > 0,
           });
         }
         if (batch.length < 100) break;
