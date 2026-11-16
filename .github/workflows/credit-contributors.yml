@@ -1,11 +1,12 @@
 name: Credit contributors
 
 # Adds an outside contributor to the README's Contributors list when their pull request merges.
-# pull_request_target runs this workflow from main, never the pull request's code: the job only reads
-# PR metadata through the API, so it is safe for pull requests from forks.
+# A merge is a push to main, and the script reads every merged pull request through the API, so this runs on
+# push rather than pull_request_target: no fork's pull request ever gets a write token, and nothing depends on
+# GitHub's pull_request_target policy (restricted on public repositories by default from 2 December 2026).
+# The README commit below is pushed with GITHUB_TOKEN, which does not trigger this workflow again.
 on:
-  pull_request_target:
-    types: [closed]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -18,7 +19,6 @@ concurrency:
 
 jobs:
   credit:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.merged }}
     runs-on: ubuntu-26.04
     permissions:
       contents: write
