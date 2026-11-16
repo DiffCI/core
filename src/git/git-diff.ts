@@ -207,6 +207,7 @@ export const CONFIG_PATTERNS = [
   /^\.prettier/,
   /^prettier\.config\./,
   /^vitest\.config\./,
+  /^vitest\.(?:workspace|projects)\./,
   /^jest\.config\./,
   // babel-jest transforms every test file with these; without this a .js/.ts babel.config or .babelrc.js was
   // classified as source with no importers and selected no tests (2026-11-11, #99).
@@ -533,7 +534,7 @@ function readRootPathsAtSha(sha: string, repoPath: string | undefined): Readonly
  * (issue #117). `CONFIG_PATTERNS` is anchored at the repository root; without this a lone
  * `packages/web/jest.config.js` or `packages/web/babel.config.js` change gave a SELECTIVE plan with no tests.
  */
-const NESTED_TEST_CONFIG = /^(?:jest\.config\.|vitest\.config\.|babel\.config\.|\.babelrc)/;
+const NESTED_TEST_CONFIG = /^(?:jest\.config\.|vitest\.config\.|vitest\.workspace\.|vitest\.projects\.|babel\.config\.|\.babelrc)/;
 
 /** Exported for tests only: a test-runner or transform configuration below the repository root. */
 export function isNestedTestConfig(path: string): boolean {

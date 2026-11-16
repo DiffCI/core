@@ -72,11 +72,11 @@ for (const [file, content, before, after] of CASES) {
 }
 
 test("only test-runner and transform configurations below the root count as nested test configuration", () => {
-  for (const path of ["packages/web/jest.config.ts", "packages/web/vitest.config.mts", "apps/a/b/babel.config.cjs", "packages/web/.babelrc", "packages/web/.babelrc.json"]) {
+  for (const path of ["packages/web/jest.config.ts", "packages/web/vitest.config.mts", "apps/a/b/babel.config.cjs", "packages/web/.babelrc", "packages/web/.babelrc.json", "packages/web/vitest.workspace.ts", "packages/web/vitest.workspace.mts", "packages/web/vitest.workspace.json", "apps/a/vitest.projects.js"]) {
     assert.equal(isNestedTestConfig(path), true, path);
   }
   // Root files stay with CONFIG_PATTERNS; vendored copies and look-alike names are not configuration.
-  for (const path of ["jest.config.js", "babel.config.js", "node_modules/pkg/jest.config.js", "packages/web/node_modules/pkg/.babelrc", "packages/web/src/jest.setup.js", "packages/web/my-babel.config.js"]) {
+  for (const path of ["jest.config.js", "babel.config.js", "vitest.workspace.ts", "node_modules/pkg/jest.config.js", "packages/web/node_modules/pkg/.babelrc", "packages/web/src/jest.setup.js", "packages/web/vitest.setup.ts", "packages/web/my-babel.config.js", "packages/web/my-vitest.workspace.js"]) {
     assert.equal(isNestedTestConfig(path), false, path);
   }
 });
@@ -87,4 +87,48 @@ test("a nested test configuration sets the config signal and names its path", ()
   assert.deepEqual(analysis.signalPaths?.config, ["packages/web/jest.config.js"]);
   const source = computeAnalysis([{ path: "packages/web/src/math.js", changeType: "modified" }]);
   assert.equal(source.configChanged, false);
+});
+
+/**
+ * Issue #140: `vitest.workspace.*` and `vitest.projects.*` decide which projects, environments and
+ * include globs Vitest runs, so changing only one of them must run every Vitest test - the same as a
+ * `vitest.config.*` change - at the repository root and inside a workspace package.
+ */
+const WORKSPACE_CONFIG_EXTS = ["ts", "mts", "js", "mjs", "json"];
+const workspaceList = (env: string) => `export default [{ test: { environment: "${env}" } }];\n`;
+
+function rootVitest(configFile: string, configContent: string): Record<string, string> {
+  return {
+    "package.json": JSON.stringify({ name: "fixture-root", private: true, scripts: { test: "vitest run" }, devDependencies: { vitest: "2.1.9" } }),
+    [configFile]: configContent,
+    "src/math.js": "export const add = (a, b) => a + b;\n",
+    "src/math.test.js": "import { add } from './math';\ntest('add', () => expect(add(1, 2)).toBe(3));\n",
+    "src/text.js": "export const shout = (s) => s.toUpperCase();\n",
+    "src/text.test.js": "import { shout } from './text';\ntest('shout', () => expect(shout('a')).toBe('A'));\n",
+  };
+}
+
+const ROOT_VITEST_TESTS = ["src/math.test.js", "src/text.test.js"];
+
+for (const configName of ["vitest.workspace", "vitest.projects"]) {
+  for (const ext of WORKSPACE_CONFIG_EXTS) {
+    const file = `${configName}.${ext}`;
+    test(`a change to only ${file} runs every Vitest test`, async () => {
+      const plan = await planForChange(rootVitest(file, workspaceList("node")), file, workspaceList("jsdom"));
+      assert.equal(plan.mode, "FULL");
+      assert.equal(plan.safety.fallbackRequired, true);
+      assert.deepEqual([...plan.selectedTests].sort(), ROOT_VITEST_TESTS);
+      assert.ok(plan.fallbackReasons.some((reason) => reason.includes(file)), plan.fallbackReasons.join("; "));
+    });
+  }
+}
+
+test("a root or nested Vitest workspace file sets the config signal and names its path", () => {
+  for (const path of ["vitest.workspace.ts", "vitest.projects.mts", "packages/web/vitest.workspace.json"]) {
+    const analysis = computeAnalysis([{ path, changeType: "modified" }]);
+    assert.equal(analysis.configChanged, true, path);
+    assert.deepEqual(analysis.signalPaths?.config, [path], path);
+  }
+  const lookAlike = computeAnalysis([{ path: "packages/web/vitest.setup.ts", changeType: "modified" }]);
+  assert.equal(lookAlike.configChanged, false);
 });
