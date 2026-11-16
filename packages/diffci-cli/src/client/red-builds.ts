@@ -29,7 +29,7 @@ import { writeFileSync } from "node:fs";
  * 2 (2026-11-16): rows carry `branchAgent`, the report adds `byBranchAgent`, and an agent
  * found by its branch prefix is named (`"copilot"`) with `source: "branch"` instead of `"branch prefix"`.
  */
-export const RED_BUILDS_SCHEMA = 2;
+export const RED_BUILDS_SCHEMA = 3;
 
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 
@@ -67,6 +67,8 @@ export interface RunSummary {
   headRepo: string;
   conclusion: string | null;
   createdAt: string;
+  /** Who triggered the run. Used only to count distinct authors; never written to the report. */
+  actor?: string;
 }
 
 export interface JobSummary {
@@ -169,10 +171,18 @@ export interface ClassifyInput {
 }
 
 /** Pure: sorts every red run whose jobs were read into one verdict. */
+/**
+ * One key per pull request: its head repository and branch. GitHub links no pull request to runs from forks,
+ * so the branch is the one identity every run has.
+ */
+export function pullRequestKey(run: RunSummary): string {
+  return `${run.headRepo}:${run.headBranch}`;
+}
+
 export function classify(input: ClassifyInput): RedRun[] {
   const patterns = input.patterns ?? DEFAULT_PATTERNS;
   const passed = new Set(input.runs.filter((r) => r.conclusion === "success").map((r) => `${r.workflowId}:${r.headSha}`));
-  const prKey = (r: RunSummary) => `${r.headRepo}:${r.headBranch}`;
+  const prKey = pullRequestKey;
   const failingOf = (jobs: JobSummary[]) => jobs.filter((j) => j.conclusion === "failure" || j.conclusion === "timed_out");
 
   // Which PRs each failure signature, and each failing check job, appeared on across the whole window.
@@ -291,7 +301,17 @@ export interface RedBuildsReport {
   neverStarted: number;
   analysed: number;
   unreadable: number;
-  verdicts: Record<Verdict, { runs: number; runnerMinutes: number }>;
+  /** Per verdict: red runs, their runner-minutes, and the distinct pull requests they came from. */
+  verdicts: Record<Verdict, { runs: number; runnerMinutes: number; pullRequests: number }>;
+  /** Distinct pull requests among the analysed red runs. */
+  redPullRequests: number;
+  /**
+   * The most preventable runs from any one pull request. Every push to a branch whose checks fail is another
+   * red run, so one long-lived branch (often a maintainer letting CI run the tests) can dominate the run count.
+   */
+  largestPreventablePullRequest: number;
+  /** Distinct people who triggered the preventable runs: a count only, no names. */
+  preventableAuthors: number;
   agentWrittenPreventable: number;
   /**
    * The same counts split by the coding agent each run's head branch is named after (`copilot`, `claude`...),
@@ -331,12 +351,28 @@ function sliceByBranchAgent(runs: RunSummary[], rows: RedRun[], neverStartedIds:
 export function summarise(repository: string, runs: RunSummary[], rows: RedRun[], stoppedEarly: string | null, neverStarted: number | ReadonlySet<number> = 0): RedBuildsReport {
   const neverStartedIds = typeof neverStarted === "number" ? new Set<number>() : neverStarted;
   const neverStartedCount = typeof neverStarted === "number" ? neverStarted : neverStarted.size;
-  const verdicts = Object.fromEntries(VERDICTS.map((v) => [v, { runs: 0, runnerMinutes: 0 }])) as RedBuildsReport["verdicts"];
+  const verdicts = Object.fromEntries(VERDICTS.map((v) => [v, { runs: 0, runnerMinutes: 0, pullRequests: 0 }])) as RedBuildsReport["verdicts"];
+  const byId = new Map(runs.map((run) => [run.id, run]));
+  const pullRequestsOf = Object.fromEntries(VERDICTS.map((v) => [v, new Set<string>()])) as Record<Verdict, Set<string>>;
+  const redPullRequests = new Set<string>();
+  const preventablePerPullRequest = new Map<string, number>();
+  const preventableAuthors = new Set<string>();
   for (const row of rows) {
     verdicts[row.verdict].runs++;
     verdicts[row.verdict].runnerMinutes += row.runnerMinutes;
+    const run = byId.get(row.run);
+    const key = run ? pullRequestKey(run) : `run:${row.run}`;
+    pullRequestsOf[row.verdict].add(key);
+    redPullRequests.add(key);
+    if (row.verdict === "preventable") {
+      preventablePerPullRequest.set(key, (preventablePerPullRequest.get(key) ?? 0) + 1);
+      preventableAuthors.add(run?.actor || key);
+    }
   }
-  for (const v of VERDICTS) verdicts[v].runnerMinutes = Math.round(verdicts[v].runnerMinutes);
+  for (const v of VERDICTS) {
+    verdicts[v].runnerMinutes = Math.round(verdicts[v].runnerMinutes);
+    verdicts[v].pullRequests = pullRequestsOf[v].size;
+  }
   const times = runs.map((r) => r.createdAt).sort();
   const red = runs.filter((r) => r.conclusion === "failure").length - neverStartedCount;
   return {
@@ -351,6 +387,9 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
     analysed: rows.length,
     unreadable: red - rows.length,
     verdicts,
+    redPullRequests: redPullRequests.size,
+    largestPreventablePullRequest: Math.max(0, ...preventablePerPullRequest.values()),
+    preventableAuthors: preventableAuthors.size,
     agentWrittenPreventable: rows.filter((r) => r.verdict === "preventable" && r.agent?.written).length,
     byBranchAgent: sliceByBranchAgent(runs, rows, neverStartedIds),
     stoppedEarly,
@@ -401,6 +440,12 @@ function formatBranchAgents(report: RedBuildsReport): string[] {
   return lines;
 }
 
+/** One pull request holds most of the preventable runs (at least 3, and more than half). */
+export function dominated(report: RedBuildsReport): boolean {
+  const largest = report.largestPreventablePullRequest;
+  return largest >= 3 && largest * 2 > report.verdicts.preventable.runs;
+}
+
 export function formatReport(report: RedBuildsReport): string {
   const lines: string[] = [`DiffCI red-build check: ${report.repository}${report.workflow ? ` · workflow "${report.workflow}"` : ""}`];
   if (!report.window) {
@@ -416,12 +461,12 @@ export function formatReport(report: RedBuildsReport): string {
     lines.push("", "No red runs to analyse.");
     return lines.join("\n");
   }
-  lines.push("", `${"Red runs by cause".padEnd(38)}${"runs".padStart(6)}${"runner-min".padStart(12)}`);
+  lines.push("", `${"Red runs by cause".padEnd(38)}${"runs".padStart(6)}${"PRs".padStart(6)}${"runner-min".padStart(12)}`);
   for (const v of VERDICTS) {
-    const { runs, runnerMinutes } = report.verdicts[v];
+    const { runs, runnerMinutes, pullRequests } = report.verdicts[v];
     if (runs === 0 && v !== "preventable") continue;
     const note = NOTES[v] ? `  ${NOTES[v]}` : "";
-    lines.push(`  ${LABELS[v].padEnd(36)}${String(runs).padStart(6)}${runnerMinutes.toLocaleString("en-US").padStart(12)}${note}`);
+    lines.push(`  ${LABELS[v].padEnd(36)}${String(runs).padStart(6)}${String(pullRequests).padStart(6)}${runnerMinutes.toLocaleString("en-US").padStart(12)}${note}`);
     if (v === "preventable" && runs > 0) lines.push(`    ${"written by a coding agent".padEnd(34)}${String(report.agentWrittenPreventable).padStart(6)}`);
   }
   const p = report.verdicts.preventable.runs;
@@ -430,6 +475,11 @@ export function formatReport(report: RedBuildsReport): string {
     "",
     `Up to ${p} of ${report.analysed} red runs (${pct(p, report.analysed)}) failed only on checks the author could have run before pushing.`,
     ...(likely ? [`${likely} more failed on such checks without annotations, so whose failure it was is unconfirmed.`] : []),
+    ...(p ? [`By pull request: ${report.verdicts.preventable.pullRequests} of ${report.redPullRequests} red pull requests (${pct(report.verdicts.preventable.pullRequests, report.redPullRequests)}), from ${report.preventableAuthors} ${report.preventableAuthors === 1 ? "author" : "authors"}.`] : []),
+    ...(dominated(report) ? [
+      `One pull request accounts for ${report.largestPreventablePullRequest} of the ${p} preventable runs. Every push to a branch whose checks fail counts again,`,
+      "so a long-lived branch where someone lets CI run the tests (often a maintainer's) can dominate: read the pull request count first.",
+    ] : []),
     "That is an upper bound: it assumes the check ran and covered the failing test. CI history only; nothing was run.",
     ...formatBranchAgents(report),
     "",
@@ -609,6 +659,7 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
           id: r.id, workflowId: r.workflow_id, workflowName: String(r.name ?? ""), attempt: r.run_attempt ?? 1,
           headSha: r.head_sha, headBranch: String(r.head_branch ?? ""), headRepo: String(r.head_repository?.full_name ?? ""),
           conclusion: r.conclusion ?? null, createdAt: r.created_at,
+          actor: String(r.triggering_actor?.login ?? r.actor?.login ?? ""),
         });
       }
       if (batch.length < 100) break;

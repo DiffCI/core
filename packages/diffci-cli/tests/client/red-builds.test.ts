@@ -139,6 +139,38 @@ describe("agentMarker", () => {
   });
 });
 
+describe("pull request counts", () => {
+  it("counts pull requests and authors, and warns when one branch's pushes dominate", () => {
+    // One maintainer pushes the same red branch four times; two other people each have one red run.
+    const wip = { headBranch: "release-2", actor: "maintainer" };
+    const runs = [run(1, wip), run(2, wip), run(3, wip), run(4, wip), run(5, { actor: "a" }), run(6, { actor: "b" })];
+    const jobs = new Map<number, JobSummary[]>(runs.map((r) => [r.id, [job(r.id * 10, "lint")]]));
+    const annotations = new Map<number, Annotation[]>(runs.map((r) => [r.id * 10, [fail(`src/${r.id > 4 ? ["", "", "", "", "", "alpha", "beta"][r.id] : "release"}.ts`, "unused variable")]]));
+    const rows = classify({ repository: REPO, runs, jobs, annotations });
+    assert.deepEqual(rows.map((r) => r.verdict), Array(6).fill("preventable"), "a failure repeated on its own branch is still that PR's own");
+    const report = summarise(REPO, runs, rows, null);
+    assert.equal(report.verdicts.preventable.runs, 6);
+    assert.equal(report.verdicts.preventable.pullRequests, 3);
+    assert.equal(report.redPullRequests, 3);
+    assert.equal(report.largestPreventablePullRequest, 4);
+    assert.equal(report.preventableAuthors, 3);
+    assert.doesNotMatch(JSON.stringify(report.rows), /maintainer/, "authors are counted, never written");
+    const text = formatReport(report);
+    assert.match(text, /Preventable before the push\s+6\s+3/);
+    assert.match(text, /By pull request: 3 of 3 red pull requests \(100%\), from 3 authors/);
+    assert.match(text, /One pull request accounts for 4 of the 6 preventable runs/);
+  });
+
+  it("does not warn when the preventable runs are spread out", () => {
+    const runs = [run(1, { actor: "a" }), run(2, { actor: "b" }), run(3, { actor: "a" })];
+    const jobs = new Map<number, JobSummary[]>(runs.map((r) => [r.id, [job(r.id * 10, "lint")]]));
+    const annotations = new Map<number, Annotation[]>(runs.map((r) => [r.id * 10, [fail(`src/${["", "alpha", "beta", "gamma"][r.id]}.ts`, "unused variable")]]));
+    const report = summarise(REPO, runs, classify({ repository: REPO, runs, jobs, annotations }), null);
+    assert.equal(report.preventableAuthors, 2);
+    assert.doesNotMatch(formatReport(report), /One pull request accounts/);
+  });
+});
+
 describe("byBranchAgent", () => {
   it("splits runs, red runs and verdicts by the agent the branch is named after", () => {
     const runs = [
@@ -160,7 +192,7 @@ describe("byBranchAgent", () => {
     assert.deepEqual(rows.map((r) => [r.run, r.branchAgent]), [[1, "copilot"], [4, null]]);
     assert.doesNotMatch(JSON.stringify(rows), /fix-1|feature-4/, "rows carry the agent, never the branch name");
     const report = summarise(REPO, runs, rows, null, new Set([3]));
-    assert.equal(report.schemaVersion, 2);
+    assert.equal(report.schemaVersion, 3);
     assert.equal(report.neverStarted, 1);
     assert.equal(report.redRuns, 2);
     const copilot = report.byBranchAgent.copilot!;

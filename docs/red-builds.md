@@ -66,6 +66,11 @@ workflow called "CI" it stays CI-only. Gate jobs that only report other jobs' re
 
 ## Reading the result
 
+- **Read the pull request count first.** Every push to a branch whose checks fail is another red run, so one
+  long-lived branch can dominate the run count: in elysia, 23 of 24 preventable runs were one maintainer's release
+  branch, where CI was doing the testing on purpose. The report gives the number of pull requests and authors next
+  to each run count, and says so when one pull request holds most of the preventable runs. A pull request is its
+  head repository and branch; authors are counted, never named.
 - **Every number is an upper bound.** It assumes the author ran the check before pushing and that the check
   covered the failing test. CI history can't show either.
 - **It is a sample, not a trend.** Busy repositories cover a few hours with 200 runs; quiet ones cover weeks.
