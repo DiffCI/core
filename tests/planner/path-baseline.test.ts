@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { runPathBaseline } from "../../src/planner/path-baseline.js";
 import type { ChangedFile } from "../../src/git/types.js";
+import { LOCKFILE_NAMES } from "../../src/repo/lockfiles.js";
 import type { RepositoryProfile, SourceRoot } from "../../src/repo/types.js";
 
 describe("runPathBaseline", () => {
@@ -24,6 +25,15 @@ describe("runPathBaseline", () => {
     assert.deepEqual(result.selectedTests, ALL);
     assert.ok(result.fallbackRequired);
   });
+
+  for (const name of LOCKFILE_NAMES) {
+    it(`falls back to all tests when only ${name} changes (issue #97)`, () => {
+      const result = runPathBaseline(ALL, changed(name));
+      assert.deepEqual(result.selectedTests, ALL);
+      assert.ok(result.fallbackRequired);
+      assert.deepEqual(result.matchedRules, ["config/dependency -> full fallback"]);
+    });
+  }
 
   it("falls back on workflow changes", () => {
     const result = runPathBaseline(ALL, changed(".github/workflows/ci.yml"));

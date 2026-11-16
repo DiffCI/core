@@ -40,6 +40,7 @@ import type { ChangedFile } from "../git/types.js";
 import { isConventionalCiConfigPath } from "../git/ci-config-paths.js";
 import type { RepositoryProfile } from "../repo/types.js";
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT } from "../repo/layout.js";
+import { LOCKFILE } from "../repo/lockfiles.js";
 
 export interface PathBaselineResult {
   strategy: "PATH_BASELINE";
@@ -143,7 +144,7 @@ export function runPathBaseline(
     return { strategy: "PATH_BASELINE", selectedTests: allTestPaths, fallbackRequired: true, fallbackReasons: [reason], matchedRules };
   };
 
-  if (changedPaths.some((p) => p === "package.json" || p === "package-lock.json" || /^(yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)$/.test(p))) {
+  if (changedPaths.some((p) => p === "package.json" || LOCKFILE.test(p))) {
     return runEverything("config/dependency -> full fallback", "config/dependency change triggers full fallback");
   }
   if (changedPaths.some(isConventionalCiConfigPath)) {
