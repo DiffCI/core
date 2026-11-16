@@ -282,6 +282,18 @@ test("Rust runtime reads of another crate become dependencies; non-rs included c
     assert.deepEqual(reads('fn all() { let _ = std::fs::read_dir(".."); }'), ["other/Cargo.toml", "third/Cargo.toml"]);
     assert.deepEqual(reads('fn build() { std::process::Command::new("cargo").arg("build").status().unwrap(); }'), ["other/Cargo.toml", "third/Cargo.toml"]);
     assert.deepEqual(reads('fn build() { std::process::Command::new(env!("CARGO")).status().unwrap(); }'), ["other/Cargo.toml", "third/Cargo.toml"]);
+    // Paths built in code that climb out of the crate can reach any crate without a literal naming it
+    // (review on #92): they depend on every workspace crate, like code that runs Cargo.
+    for (const source of [
+      'use std::path::Path; fn scan() { let p = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("other").join("src").join("lib.rs"); std::fs::read_to_string(p).unwrap(); }',
+      'use std::path::Path; fn scan() { let p = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("other/src/lib.rs"); std::fs::read_to_string(p).unwrap(); }',
+      'use std::path::Path; fn scan() { let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(1).unwrap(); for entry in std::fs::read_dir(root).unwrap() { let _ = entry; } }',
+      'fn scan(name: &str) { std::fs::read_to_string(format!("{}/../{}/src/lib.rs", env!("CARGO_MANIFEST_DIR"), name)).unwrap(); }',
+      'use std::path::PathBuf; fn scan() { let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR")); p.pop(); p.push("other"); let _ = std::fs::read_dir(p); }',
+    ]) assert.deepEqual(reads(source), ["other/Cargo.toml", "third/Cargo.toml"], source);
+    // Crate-local paths built from the manifest directory, and tree `parent()` without paths, still narrow.
+    assert.deepEqual(reads('use std::path::Path; fn fixture() { std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("data.bin")).unwrap(); }'), []);
+    assert.deepEqual(reads('struct Node; impl Node { fn parent(&self) -> Option<&Node> { None } } fn up(n: &Node) { let _ = n.parent(); let mut v = vec![1]; v.pop(); }'), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
