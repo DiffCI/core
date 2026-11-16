@@ -197,7 +197,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -277,10 +277,18 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
     inputs.push({ path: literal, code: tokens[i]!.value === "include" });
     includeArguments.add(i + 3);
   }
+  let documentation = false;
   tokens.forEach((token, index) => {
-    if (token.literal !== undefined && !includeArguments.has(index) && pathLike(token.literal)) paths.push(token.literal);
+    if (token.literal === undefined || includeArguments.has(index)) return;
+    if (pathLike(token.literal)) paths.push(token.literal);
+    // A test that checks README or docs content at run time (version-sync, link checks and the like):
+    // a Markdown name or bare extension (`"md"` in an extension check), or a documentation directory
+    // anywhere in the path (`../docs`, `concat!(env!("CARGO_MANIFEST_DIR"), "/../docs")`).
+    if (/(?:^|\.)mdx?$|(?:^|[\\/])(?:docs?|documentation)(?:[\\/]|$)/i.test(token.literal)) documentation = true;
   });
-  return { inputs, paths, compiles, navigates: navigatesUpward(tokens) };
+  const navigates = navigatesUpward(tokens);
+  // Code that climbs out of its crate can walk to README or docs without naming them.
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates };
 }
 
 /** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,
@@ -346,7 +354,14 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     const manifests = new Set(packages.map(pkg => pkg.manifest));
     const unmodeledManifests = context.files.filter(file => /(?:^|\/)Cargo\.toml$/.test(file)
       && file !== "Cargo.toml" && !manifests.has(file));
-    if (unmodeledManifests.length) result.blockers.push(`Cargo manifests outside workspace membership require full validation: ${unmodeledManifests.join(", ")}`);
+    // Cargo metadata resolves every path dependency (all features, all platforms), so when no local
+    // package outside the workspace appears, no member depends on these crates: they are fixtures or
+    // excluded crates. Their files stay unmodelled, so changing one keeps the full suite (impact.ts)
+    // without blocking changes elsewhere. Otherwise the repository-wide fallback stays.
+    const localDependencyOutside = metadata.packages.some(pkg => !metadata.workspace_members.includes(pkg.id) && (pkg.source === undefined || pkg.source === null));
+    const unmodeledBoundary = (file: string) => !localDependencyOutside
+      && unmodeledManifests.some(manifest => under(file, manifest.slice(0, -"/Cargo.toml".length)));
+    if (unmodeledManifests.length && localDependencyOutside) result.blockers.push(`Cargo manifests outside workspace membership require full validation: ${unmodeledManifests.join(", ")}`);
     if (manifests.size !== packages.length) result.blockers.push("Cargo packages share a manifest; ownership is ambiguous");
     const owner = (file: string) => {
       const candidate = packages.find(pkg => under(file, pkg.directory));
@@ -357,6 +372,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       return candidate;
     };
     for (const file of context.files.filter(file => file.endsWith(".rs"))) {
+      if (!owner(file) && unmodeledBoundary(file)) continue;
       if (!owner(file) || !repositoryPath(root, resolve(root, file), known)) {
         result.blockers.push(`Rust file has no verified Cargo package: ${file}`);
       } else result.sourcePaths.push(file);
@@ -375,6 +391,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           // The build script is the crate's own source; what it reads is modelled below.
           result.sourcePaths.push(path);
           buildScriptCrates.add(pkg.id);
+          (result.rustDocumentationReaders ??= []).push(path);
           continue;
         }
         const kind = target.kind.includes("test") ? "test"
@@ -468,6 +485,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // crate's sources at run or build time (relative to the crate, as under `cargo test`, or to the
       // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
       // Model these as dependencies of this crate instead of blocking the repository.
+      if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
       const reached = new Set<string>();
       if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);
       for (const literal of scanned.paths) {

@@ -13,7 +13,8 @@ import type { DependencyGraphResult } from "../repo/types.js";
 // 12: bindings mark computed loads that run when a module loads (2026-11-10).
 // 13: tsd and tstyche scope type edges to their own files (typeTestGlobs) (2026-11-10).
 // 14: path-literal edges from strings naming code files (2026-11-10).
-export const GRAPH_CACHE_SCHEMA_VERSION = "14";
+// 15: registered Rust graph, target ownership and conservative runtime-input inventory (2026-11-15).
+export const GRAPH_CACHE_SCHEMA_VERSION = "15";
 
 export interface GraphCacheKeyInputs {
   commitSha: string;

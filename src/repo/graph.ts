@@ -4,6 +4,8 @@ import { isBuiltin } from "node:module";
 import { dirname, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
+import { rustAdapter } from "./adapters/rust.js";
+import { rustTestInvocation } from "./adapters/rust-invocation.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
 import { applyVueScope, inVuePackage } from "./vue-scope.js";
@@ -620,7 +622,13 @@ class DependencyGraphImpl implements DependencyGraph {
 export function hydrateDependencyGraph(graph: DependencyGraph, repoPath: string, testPatterns?: readonly string[]): DependencyGraph {
   const sourcePaths = new Set(graph.nodes.filter((n) => n.isSource).map((n) => n.path));
   const assetPaths = new Set(graph.nodes.filter((n) => n.isAsset).map((n) => n.path));
-  return new DependencyGraphImpl(sourcePaths, assetPaths, graph.edges, repoPath, testPatterns ? createTestFileMatcher(testPatterns) : DEFAULT_TEST_FILE_MATCHER);
+  // Cargo target roots such as src/lib.rs are tests by metadata, not by file name. Only Rust nodes
+  // are added here so other languages keep their pattern-based test identity.
+  const declaredTests = new Set(graph.nodes.filter(node => node.isTest && node.path.endsWith(".rs")).map(node => node.path));
+  const baseMatcher = testPatterns ? createTestFileMatcher(testPatterns) : DEFAULT_TEST_FILE_MATCHER;
+  const matcher = ((path: string) => declaredTests.has(path) || baseMatcher(path)) as TestFileMatcher;
+  Object.defineProperty(matcher, "patterns", { value: baseMatcher.patterns });
+  return new DependencyGraphImpl(sourcePaths, assetPaths, graph.edges, repoPath, matcher);
 }
 
 /**
@@ -1076,8 +1084,12 @@ export async function buildDependencyGraph(
   if (contributions.some((item) => item.id === "go") && files.some((file) => /\.(?:[cm]?[jt]sx?|vue)$/.test(file))) {
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
+  const rustModeled = contributions.some((item) => item.id === "rust");
+  if (rustModeled && files.some(file => /\.(?:[cm]?[jt]sx?|vue|go|py|java|kt|cs|svelte|astro|c|h|cpp|cc|cxx)$/.test(file))) {
+    adapterBlockers.push("Mixed Rust/language repositories require explicit cross-language dependencies; full validation required");
+  }
   const pythonModeled = contributions.some((item) => item.id === "python");
-  const unmodeledLanguageFiles = contributions.length ? files.filter((file) => (!pythonModeled && /\.py$/.test(file)) || /\.(?:rs|cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file)) : [];
+  const unmodeledLanguageFiles = contributions.length ? files.filter((file) => (!pythonModeled && /\.py$/.test(file)) || (!rustModeled && /\.rs$/.test(file)) || /\.(?:cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file)) : [];
   if (unmodeledLanguageFiles.length) {
     const reason = "Unmodeled languages alongside an adapter require full validation";
     adapterBlockers.push(reason);
@@ -1086,7 +1098,8 @@ export async function buildDependencyGraph(
     for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : ""));
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
-  profile.goTestPackages = Object.assign({}, ...contributions.map((item) => item.testPackages));
+  // Rust test targets are not Go packages; other adapters keep their existing routing here.
+  profile.goTestPackages = Object.assign({}, ...contributions.filter((item) => item.id !== "rust").map((item) => item.testPackages));
   profile.goTestEnvironment = contributions.find((item) => item.id === "go")?.executionEnv;
   const goContribution = contributions.find((item) => item.id === "go");
   profile.goDependencyPaths = goContribution ? {
@@ -1094,6 +1107,16 @@ export async function buildDependencyGraph(
     embeds: [...new Set(goContribution.assetPaths)].sort(),
   } : undefined;
   profile.mavenTestModules = Object.assign({}, ...contributions.filter((item) => item.id === "maven").map((item) => item.testPackages));
+  const rustContribution = contributions.find(item => item.id === "rust");
+  if (rustContribution) {
+    profile.rustTestPackages = { ...rustContribution.testPackages };
+    profile.rustTestTargets = { ...rustContribution.rustTestTargets };
+    profile.rustSources = [...new Set(rustContribution.sourcePaths)].sort();
+    profile.rustAssets = [...new Set(rustContribution.assetPaths)].sort();
+    profile.rustTestInvocation = rustTestInvocation(repoPath, files);
+    if (rustContribution.rustFeatureCoverage) profile.rustFeatureCoverage = rustContribution.rustFeatureCoverage;
+    profile.rustDocumentationReaders = [...new Set(rustContribution.rustDocumentationReaders ?? [])].sort();
+  }
   const pythonContribution = contributions.find((item) => item.id === "python");
   if (pythonContribution) {
     profile.pythonSources = [...new Set(pythonContribution.sourcePaths)].sort();
@@ -1104,7 +1127,7 @@ export async function buildDependencyGraph(
   profile.testFilePaths = [...new Set([...profile.testFilePaths, ...adapterTests])].sort();
   if (profile.testUniverse) {
     profile.testUniverse.discoveredTestFiles = profile.testFilePaths.length;
-    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || contributions.some((item) => item.id === "go" || item.id === "maven" || item.id === "python")) && profile.testFilePaths.length === 0;
+    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || contributions.some((item) => item.id === "go" || item.id === "maven" || item.id === "python" || item.id === "rust")) && profile.testFilePaths.length === 0;
   }
   const entryPointPaths = new Set(profile.entryPoints.map((e) => e.path));
 
@@ -1760,8 +1783,9 @@ export function classifyRepositoryProject(repoPath: string): { capable: boolean;
   if (files.includes("go.mod")) return { capable: true, reason: "Go module (package-level analysis)" };
   if (files.some((file) => file.endsWith(".vue"))) return { capable: true, reason: "Vue single-file components" };
   if (files.includes("pom.xml") && files.some((file) => file.endsWith(".java") || file.endsWith(".kt"))) return { capable: true, reason: "Maven reactor (module-level Java analysis)" };
+  if (rustAdapter.detect({ repoPath, files, profile: {} as RepositoryProfile })) return { capable: true, reason: "Cargo workspace (crate-level Rust analysis)" };
   if (pythonAdapter.detect({ repoPath, files, profile: {} as RepositoryProfile })) return { capable: true, reason: "Python project tested with pytest (file-level import analysis)" };
-  return { capable: false, reason: "No TypeScript project, Vue components, root Go module, Maven reactor, or Python project found" };
+  return { capable: false, reason: "No TypeScript project, Vue components, root Go module, Maven reactor, Python project, or Cargo workspace found" };
 }
 
 export interface TypeScriptProjectCapability {
