@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root=$(mktemp -d "$RUNNER_TEMP/diffci-rust-replay.XXXXXX")
+          root=$(mktemp -d "$RUNNER_TEMP/rust-replay.XXXXXX")
           echo "RUST_REPLAY_ROOT=$root" >> "$GITHUB_ENV"
           git clone https://github.com/rust-lang/glob.git "$root/glob"
           git -C "$root/glob" checkout --detach 057cef2824f5a96f738e52d7d8ca3e024381bcc6
