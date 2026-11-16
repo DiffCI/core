@@ -547,7 +547,7 @@ Usage counting is **on by default**. After each `plan`, `check`, `observe` and `
 - `--mode count-only`: drops the name and deletes the saved installation ID.
 - `--internal-usage`: labels your runs as internal (tests, development).
 
-The choice is saved in `~/.diffci/telemetry.json` (or under `$DIFFCI_TELEMETRY_HOME`). Older saved choices carry over: `off` and `anonymous` become `count-only`, and `installations` becomes `repo`. On the command line, `--mode` takes only `repo` or `count-only`; anything else exits 1.
+The choice is saved in `~/.diffci/telemetry.json` (or under `$DIFFCI_TELEMETRY_HOME`). Older saved choices carry over: `off` and `anonymous` become `count-only`, and `installations` becomes `repo`. On the command line, `--mode` takes `repo` or `count-only`; the older names are still accepted and mapped the same way, and any other value exits 1.
 
 To stop counting entirely, set `DO_NOT_TRACK=1`, `DIFFCI_NO_SEND=1` or `DIFFCI_SHARE_USAGE=0` in the environment. No flag can stop it. `--no-send` stops only report uploads to DiffCI Cloud, not the count. `diffci telemetry` itself sends nothing and exits 0.
 
