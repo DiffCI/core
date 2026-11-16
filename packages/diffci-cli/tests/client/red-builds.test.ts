@@ -147,6 +147,8 @@ describe("byBranchAgent", () => {
       run(3, { headBranch: "copilot/fix-3" }), // failed before any job started
       run(4, { headBranch: "feature-4" }), // CI-only
       run(5, { headBranch: "feature-5", conclusion: "success" }),
+      run(6, { headBranch: "copilot/fix-6", conclusion: "action_required" }), // waiting for approval: never ran
+      run(7, { headBranch: "copilot/fix-7", conclusion: null }), // still running
     ];
     const jobs = new Map<number, JobSummary[]>([
       [1, [job(11, "lint")]],
@@ -162,14 +164,16 @@ describe("byBranchAgent", () => {
     assert.equal(report.neverStarted, 1);
     assert.equal(report.redRuns, 2);
     const copilot = report.byBranchAgent.copilot!;
-    assert.deepEqual([copilot.pullRequestRuns, copilot.redRuns, copilot.analysed, copilot.verdicts.preventable], [3, 1, 1, 1]);
+    assert.deepEqual([copilot.pullRequestRuns, copilot.ranRuns, copilot.redRuns, copilot.analysed, copilot.verdicts.preventable], [5, 2, 1, 1, 1]);
     assert.equal(copilot.preventableRunnerMinutes, 10);
     const other = report.byBranchAgent[NO_AGENT_BRANCH]!;
-    assert.deepEqual([other.pullRequestRuns, other.redRuns, other.analysed, other.verdicts["ci-only"]], [2, 1, 1, 1]);
+    assert.deepEqual([other.pullRequestRuns, other.ranRuns, other.redRuns, other.analysed, other.verdicts["ci-only"]], [2, 2, 1, 1, 1]);
+    assert.equal(report.ranRuns, 4, "7 runs, less one waiting, one running and one that never started");
     const text = formatReport(report);
     assert.match(text, /By branch prefix/);
-    assert.match(text, /copilot\/\.\.\.\s+3\s+1 \(33%\)\s+1 of 1/);
-    assert.match(text, /other branches\s+2\s+1 \(50%\)\s+0 of 1/);
+    assert.match(text, /copilot\/\.\.\.\s+5\s+2\s+1 \(50%\)\s+1 of 1/);
+    assert.match(text, /other branches\s+2\s+2\s+1 \(50%\)\s+0 of 1/);
+    assert.match(text, /share of the runs that ran/);
   });
 
   it("leaves the table out when no branch names an agent", () => {
@@ -237,7 +241,8 @@ describe("collectRedBuilds", () => {
     assert.equal(report.unreadable, 0);
     assert.equal(report.verdicts.infra.runs, 0);
     const text = formatReport(report);
-    assert.match(text, /3 pull request runs, 1 red \(33%\)/);
+    assert.match(text, /3 pull request runs, 1 red \(50% of the 2 that ran\)/);
+    assert.equal(report.ranRuns, 2);
     assert.match(text, /1 more runs were marked failed although no job started/);
   });
 
@@ -394,6 +399,12 @@ describe("pickMainWorkflow", () => {
     ["gutenberg", [[1, "End-to-End Tests", "end2end-test.yml", 167], [2, "Performance Tests", "performance.yml", 153], [3, "Storybook Build and Smoke Tests", "storybook-check.yml", 131], [4, "Static Analysis (Linting, License, Type checks...)", "static-checks.yml", 125], [5, "iOS Tests", "ios-tests.yml", 119], [6, "Unit Tests", "unit-test.yml", 71]], "Unit Tests"],
     ["supabase", [[1, "Selfhosted Studio E2E Tests", "studio-e2e-test.yml", 16], [2, "Studio Unit Tests & Build Check", "studio-unit-tests.yml", 10], [3, "Check code with TypeScript & Lint", "typecheck.yml", 6], [4, "Check Code with Prettier", "prettier.yml", 5]], "Studio Unit Tests & Build Check"],
     ["PostHog", [[1, "Semgrep Package Managers", "semgrep-package-managers.yml", 4], [2, "PR housekeeping", "pr-housekeeping.yml", 3], [3, "Proto CI", "ci-proto.yml", 2]], "Proto CI"],
+    // Wrong picks in the Copilot sweep (2026-11-16): gh-aw agent workflows (.lock.yml) and link checkers.
+    ["gh-aw", [[1, "PR Code Quality Reviewer", "pr-code-quality-reviewer.lock.yml", 900], [2, "CI", "ci.yml", 300]], "CI"],
+    ["dotnet/sdk", [[1, "CI Quality Investigator", "ci-quality-monitor.lock.yml", 700], [2, "PR Build", "pr-build.yml", 100]], "PR Build"],
+    ["azure-sdk-for-net", [[1, "Re-review PR #63968 at f464603d", "pr-re-review.lock.yml", 500], [2, "Build", "build.yml", 60]], "Build"],
+    ["azure-sdk-for-js", [[1, "Verify Links", "verify-links.yml", 40], [2, "Unit tests", "unit-tests.yml", 30]], "Unit tests"],
+    ["aspnetcore", [[1, "Workflow tests", "workflow-tests.yml", 20], [2, "Build and test", "ci.yml", 15]], "Build and test"],
   ];
   for (const [repo, entries, expected] of cases) {
     it(`picks the test CI for ${repo}`, () => {

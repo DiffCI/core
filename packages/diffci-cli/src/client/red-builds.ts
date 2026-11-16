@@ -261,6 +261,8 @@ export function agentMarker(message: string, branch: string): { written: boolean
 /** Pull request runs and red-run verdicts for one group of branches. */
 export interface BranchAgentSlice {
   pullRequestRuns: number;
+  /** Runs that actually ran: not waiting for approval, skipped, still running, or failed before any job. */
+  ranRuns: number;
   redRuns: number;
   analysed: number;
   verdicts: Record<Verdict, number>;
@@ -277,6 +279,12 @@ export interface RedBuildsReport {
   workflow: string | null;
   window: { from: string; to: string } | null;
   pullRequestRuns: number;
+  /**
+   * Runs that actually ran, the denominator for red rates. Left out: runs waiting for approval
+   * (`action_required`, common on coding-agent pull requests), skipped, startup failures, still queued or
+   * running, and runs marked failed although no job started.
+   */
+  ranRuns: number;
   /** Red runs where at least one job ran. */
   redRuns: number;
   /** Runs GitHub marked failed although no job started (workflow startup failures); left out of redRuns. */
@@ -299,13 +307,14 @@ function sliceByBranchAgent(runs: RunSummary[], rows: RedRun[], neverStartedIds:
   const sliceOf = (agent: string | null) => {
     const key = agent ?? NO_AGENT_BRANCH;
     return slices[key] ??= {
-      pullRequestRuns: 0, redRuns: 0, analysed: 0, preventableRunnerMinutes: 0,
+      pullRequestRuns: 0, ranRuns: 0, redRuns: 0, analysed: 0, preventableRunnerMinutes: 0,
       verdicts: Object.fromEntries(VERDICTS.map((v) => [v, 0])) as Record<Verdict, number>,
     };
   };
   for (const run of runs) {
     const slice = sliceOf(branchAgent(run.headBranch));
     slice.pullRequestRuns++;
+    if (ran(run) && !neverStartedIds.has(run.id)) slice.ranRuns++;
     if (run.conclusion === "failure" && !neverStartedIds.has(run.id)) slice.redRuns++;
   }
   for (const row of rows) {
@@ -336,6 +345,7 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
     workflow: runs[0]?.workflowName ?? null,
     window: times.length ? { from: times[0]!, to: times.at(-1)! } : null,
     pullRequestRuns: runs.length,
+    ranRuns: runs.filter(ran).length - neverStartedCount,
     redRuns: red,
     neverStarted: neverStartedCount,
     analysed: rows.length,
@@ -368,19 +378,25 @@ function pct(part: number, whole: number): string {
   return whole ? `${Math.round((part / whole) * 100)}%` : "0%";
 }
 
+/** A run that finished after its jobs ran (pass or fail), as opposed to waiting, skipped or still running. */
+function ran(run: RunSummary): boolean {
+  return run.conclusion !== null && !IDLE_CONCLUSION.has(run.conclusion);
+}
+
 /** A table of the per-agent split, shown only when some branch is named after a coding agent. */
 function formatBranchAgents(report: RedBuildsReport): string[] {
   const agents = Object.keys(report.byBranchAgent).filter((key) => key !== NO_AGENT_BRANCH).sort();
   if (agents.length === 0) return [];
-  const lines = ["", `${"By branch prefix".padEnd(20)}${"PR runs".padStart(9)}${"red".padStart(12)}${"preventable".padStart(16)}`];
+  const lines = ["", `${"By branch prefix".padEnd(20)}${"PR runs".padStart(9)}${"ran".padStart(7)}${"red".padStart(12)}${"preventable".padStart(16)}`];
   for (const key of [...agents, NO_AGENT_BRANCH]) {
     const slice = report.byBranchAgent[key];
     if (!slice) continue;
     const label = key === NO_AGENT_BRANCH ? "other branches" : `${key}/...`;
-    const red = `${slice.redRuns} (${pct(slice.redRuns, slice.pullRequestRuns)})`;
+    const red = `${slice.redRuns} (${pct(slice.redRuns, slice.ranRuns)})`;
     const preventable = `${slice.verdicts.preventable} of ${slice.analysed}`;
-    lines.push(`  ${label.padEnd(18)}${String(slice.pullRequestRuns).padStart(9)}${red.padStart(12)}${preventable.padStart(16)}`);
+    lines.push(`  ${label.padEnd(18)}${String(slice.pullRequestRuns).padStart(9)}${String(slice.ranRuns).padStart(7)}${red.padStart(12)}${preventable.padStart(16)}`);
   }
+  lines.push("Red is a share of the runs that ran: runs waiting for approval, skipped or still running are left out.");
   lines.push("Agents that use ordinary branch names count under other branches.");
   return lines;
 }
@@ -392,7 +408,7 @@ export function formatReport(report: RedBuildsReport): string {
     return lines.join("\n");
   }
   lines.push(
-    `${report.window.from.slice(0, 16).replace("T", " ")} to ${report.window.to.slice(0, 16).replace("T", " ")} UTC · ${report.pullRequestRuns} pull request runs, ${report.redRuns} red (${pct(report.redRuns, report.pullRequestRuns)})`,
+    `${report.window.from.slice(0, 16).replace("T", " ")} to ${report.window.to.slice(0, 16).replace("T", " ")} UTC · ${report.pullRequestRuns} pull request runs, ${report.redRuns} red (${pct(report.redRuns, report.ranRuns)}${report.ranRuns === report.pullRequestRuns ? "" : ` of the ${report.ranRuns} that ran`})`,
   );
   if (report.neverStarted > 0) lines.push(`${report.neverStarted} more runs were marked failed although no job started (the workflow failed to start); they are not counted as red.`);
   if (report.unreadable > 0) lines.push(`${report.unreadable} red runs could not be read and are left out.`);
@@ -474,7 +490,13 @@ export function githubClient(token: string, options: { minIntervalMs?: number; m
 }
 
 /** Workflows that run on pull requests but are not the test CI: scanners, previews, benchmarks, bots. */
-const NOT_MAIN_WORKFLOW = /\b(preview|codeql|security|semgrep|sonar(qube|cloud)?|snyk|scorecard|bench(mark)?s?|size|label(er|s)?|stale|triage|greet(ings?)?|welcome|translations?|i18n|docs?|documentation|docker|image|deploy(ment)?|release|licen[cs]e|title|conventional|commits?|semantic|submodule|e2e|end ?(to|2) ?end|playwright|cypress|lighthouse|dependabot|renovate|cla|dco|changeset|storybook|chromatic|clean(up)?|caches?|housekeeping|perf(ormance)?|ios|android)\b/i;
+const NOT_MAIN_WORKFLOW = /\b(preview|codeql|security|semgrep|sonar(qube|cloud)?|snyk|scorecard|bench(mark)?s?|size|label(er|s)?|stale|triage|greet(ings?)?|welcome|translations?|i18n|docs?|documentation|docker|image|deploy(ment)?|release|licen[cs]e|title|conventional|commits?|semantic|submodule|e2e|end ?(to|2) ?end|playwright|cypress|lighthouse|dependabot|renovate|cla|dco|changeset|storybook|chromatic|clean(up)?|caches?|housekeeping|perf(ormance)?|ios|android|links?|link ?check(er)?|re ?reviews?|reviews?|reviewer|investigator|monitor|scanner|fixer|evals?|probe|workflows? tests?)\b/i;
+/**
+ * GitHub Agentic Workflows (gh-aw) compile each agent workflow to `<name>.lock.yml`. They run AI agents on
+ * pull requests (reviewers, CI investigators) for a long time, and were picked as "the main CI" on
+ * github/gh-aw, dotnet/sdk and Azure/azure-sdk-for-net (2026-11-16). They are never the test CI.
+ */
+const AGENTIC_WORKFLOW_FILE = /\.lock\.ya?ml$/i;
 /** Names and file names the main pull request CI usually has. */
 const MAIN_WORKFLOW = /\b(ci|cd|tests?|pipeline|pr|pull[-_ ]request|build|checks?|main|verify|validate|unit|unittests?|lint|quality)\b/i;
 /** Test words: a tie-breaker between two CI-looking workflows of about the same weight (unit tests over lint). */
@@ -493,7 +515,7 @@ function genericName(name: string): boolean {
 
 function workflowScore(name: string, path: string, minutes: number): { score: number; main: boolean } {
   const text = `${name} ${path.replace(/\.ya?ml$/, "").replace(/[-_.]/g, " ")}`;
-  const notMain = NOT_MAIN_WORKFLOW.test(text);
+  const notMain = NOT_MAIN_WORKFLOW.test(text) || AGENTIC_WORKFLOW_FILE.test(path);
   const main = MAIN_WORKFLOW.test(text) && !notMain;
   const score = (minutes + 0.01) * (notMain ? 0.05 : 1) * (MAIN_WORKFLOW.test(text) ? 2 : 1)
     * (main && TEST_WORKFLOW.test(text) ? 1.05 : 1) * (main && genericName(name) ? 1.5 : 1);

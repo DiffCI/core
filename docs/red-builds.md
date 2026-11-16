@@ -12,9 +12,12 @@ signed-in `gh` CLI), because unauthenticated access allows 60 calls an hour.
 
 1. The most recent pull request runs (`--runs`, default 200) of one workflow: by default the one that looks like the main
    pull request CI (most wall-clock time in a sample of 100 runs, favouring generic CI names like "PR Checks" or
-   "Unit Tests" and discounting scanners, previews, benchmarks, E2E, performance, cleanup and bot workflows; time a
+   "Unit Tests" and discounting scanners, previews, benchmarks, E2E, performance, cleanup, link-check, review and
+   bot workflows, and GitHub Agentic Workflows (`*.lock.yml`), which run AI agents rather than tests; time a
    run spent waiting for approval doesn't count). The report names it. If nothing in the sample looks like CI, it
    stops and suggests likely workflows instead of guessing. Pass `--workflow <id or file name>` to choose another.
+   Many large projects run their main CI outside GitHub Actions (Azure Pipelines, for example); for those the
+   result describes a side workflow, so check the workflow it names.
 2. The job list of the latest attempt of each red run.
 3. The failure annotations of each failing check job: the file and message your linter, type checker or test
    reporter attached.
@@ -80,6 +83,11 @@ When any pull request branch in the window starts with a coding agent's name (`c
 runs, red runs and preventable runs by that agent, with every other branch under "other branches". The JSON has
 the same split in `byBranchAgent` and names the agent on each red run as `branchAgent`. It records the agent,
 never the branch name.
+
+Red rates are a share of the runs that ran. Runs waiting for a maintainer's approval (`action_required`),
+skipped, still running, or failed before any job started are left out of the denominator. This matters for
+agents: on one sample page of dotnet/efcore, 9 of 12 Copilot runs were waiting for approval, which would
+otherwise have made Copilot's red rate look far lower.
 
 Every run in the window still feeds the shared-failure check, so a Copilot failure that also broke other pull
 requests counts as shared, not preventable. To get more agent runs, raise `--runs` (up to 1,000) rather than
