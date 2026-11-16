@@ -4,13 +4,13 @@
   "plugins": [
     {
       "name": "diffci",
-      "version": "0.3.46",
+      "version": "0.3.47",
       "install": {
         "transport": "local-path",
         "source": "integrations/muse-plugin"
       },
       "integrity": {
-        "digest": "sha256:eb02dfb2ce811e75339c73b1067bad0e9b3ae0ace2a1903226be45fc21ca91be"
+        "digest": "sha256:da0d433f54f1e29a4d7ec9c759e194224c9b3bfc3001e7d99220b008a5b03fbe"
       },
       "availability": {
         "status": "available"
