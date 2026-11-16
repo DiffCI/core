@@ -2,6 +2,7 @@
 import type { TaskRegistry } from "../../planner/task-registry.js";
 import { matchesAny } from "./matcher.js";
 import type { ChangedFile } from "../../git/types.js";
+import { LOCKFILE } from "../../repo/lockfiles.js";
 
 export interface GenericPathBaselineResult {
   selectedTaskIds: string[];
@@ -51,7 +52,8 @@ export function runGenericPathBaseline(taskRegistry: TaskRegistry, changedFiles:
 
 function globalFallbackPattern(path: string): boolean {
   const p = path.toLowerCase();
-  if (["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb", "go.mod", "go.sum", "requirements.txt", "setup.py", "pyproject.toml", "cargo.toml", "cargo.lock", "pom.xml", "build.gradle", "gradle.lockfile"].includes(p)) return true;
+  if (LOCKFILE.test(p)) return true;
+  if (["package.json", "go.mod", "go.sum", "requirements.txt", "setup.py", "pyproject.toml", "cargo.toml", "cargo.lock", "pom.xml", "build.gradle", "gradle.lockfile"].includes(p)) return true;
   if (p.startsWith(".github/workflows/")) return true;
   if (p.startsWith("database/") || p.startsWith("migrations/")) return true;
   if (p.startsWith("ops/") || p.startsWith("terraform/") || p.startsWith("docker") || p.includes("dockerfile")) return true;

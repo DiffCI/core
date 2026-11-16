@@ -268,6 +268,7 @@
     "tests/repo/vue-scope.test.ts",
     "tests/repo/workspaces.test.ts",
     "tests/research/baseline/matcher.test.ts",
+    "tests/research/baseline/path-baseline.test.ts",
     "tests/research/baseline/test-activity.test.ts",
     "tests/research/baseline/workflow-parser.test.ts",
     "tsconfig.check.json",
