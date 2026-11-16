@@ -451,6 +451,105 @@ When a changed file matches `files`, every test matching `tests` is selected, wi
 
 Some changes still run the full suite whatever `inputs` says, because they change how every test runs: test-runner and tool configuration, `package.json` and workspace manifests, lockfiles and CI workflows. So does a declaration whose `tests` match no test file, and so does any edit to `diffci.json` itself, so a change cannot narrow its own selection.
 
+## More commands
+
+`diffci --help` lists every command. This section covers four that aren't explained elsewhere: [`verify-workflow`](#verify-workflow-check-that-the-diffci-job-cant-affect-ci), [`pilot-packet`](#pilot-packet-a-shareable-compatibility-packet), [`validate-specs`](#validate-specs-block-specifications-that-change-the-same-target) and [`telemetry`](#telemetry-choose-what-usage-counting-sends).
+
+### verify-workflow: check that the DiffCI job can't affect CI
+
+```sh
+npx @diffci.com/diffci@latest verify-workflow --repo .
+```
+
+`verify-workflow` reads the YAML files in `.github/workflows` and finds the jobs that run the DiffCI action as an observer. It then checks that these jobs can't change what the rest of CI does. Findings are marked `[BLOCKING]` or `[WARNING]` and have stable codes. For example:
+
+- `JOB_IS_A_DEPENDENCY`: another job `needs:` it.
+- `JOB_NOT_CONTINUE_ON_ERROR`: it doesn't have `continue-on-error: true`, so a DiffCI failure fails the workflow run.
+- `JOB_NOT_DEDICATED`: it shares a job with build or test steps.
+- `JOB_HAS_WRITE_PERMISSIONS`: it has a `write` permission.
+- `ACTION_NOT_PINNED`: the action isn't pinned to a 40-character commit SHA.
+
+`check` prints `run diffci verify-workflow for details` when it finds a blocking problem.
+
+```text
+Scanned 1 workflow file(s).
+DiffCI runs in: .github/workflows/diffci.yml#diffci-observe
+  [BLOCKING] JOB_NOT_CONTINUE_ON_ERROR (.github/workflows/diffci.yml#diffci-observe)
+      job "diffci-observe" is missing continue-on-error: true - without it a DiffCI failure fails the whole workflow run, which a required status check or merge queue will read as a failed build.
+
+Blocking findings above: as written, this installation CAN change what the rest of CI does.
+```
+
+It exits 0 when there are no blocking findings; warnings alone still exit 0. It exits 1 in three cases: there's a blocking finding, there are no workflow files, or no job runs DiffCI as an observer. Jobs that run DiffCI as a gate (`verify`, `check-run` or `fail-on-error`) may fail on purpose, so they aren't counted as observers.
+
+`verify-workflow --enforce [--default-branch main] [--full-command "<cmd>"]` checks the opposite for enforce mode. It confirms three things:
+
+- a job runs `diffci verify --policy enforce` as a gate (a `continue-on-error` dry run doesn't count);
+- that job is switched on and off by the `vars.DIFFCI_ENFORCE` repository variable;
+- the full test command still runs on every push to the default branch.
+
+It exits 1 if any of these is missing.
+
+Without `--repo` it reads `$GITHUB_WORKSPACE` or the current directory. It only reads the workflow files: it writes nothing and sends nothing.
+
+### pilot-packet: a shareable compatibility packet
+
+```sh
+npx @diffci.com/diffci@latest pilot-packet --repo . --base HEAD~1 --head HEAD
+```
+
+`pilot-packet` runs the same analysis as `observe` on the range: the CI event range by default, or `--base`/`--head` when given. It runs no tests. It writes three files to `--out-dir`, which defaults to `../diffci-output` next to the checkout:
+
+- `pilot-packet.md`: a Markdown summary to share. It covers the revision, the result and proposed commands, the safety evidence, the workflow findings and a recommended next step.
+- `diffci-observe.json`: the raw observation report.
+- `diffci-observe.yml`: a non-blocking observation workflow for you to review. It isn't installed.
+
+`--label` names the repository in the packet (default: the checkout's folder name). `--repository-url` adds a link and must be `https://`. `--redact-paths` keeps file paths out of the report.
+
+It exits 0 when the observation is `OBSERVED`. It exits 1 when the observation was refused (for example, no supported project was found). It exits 2 when `--out-dir` is inside the checkout or `--repository-url` isn't https. It changes no file in the checkout and sends nothing.
+
+### validate-specs: block specifications that change the same target
+
+```sh
+npx @diffci.com/diffci@latest validate-specs --file specs.json
+```
+
+`validate-specs` reads a list of change specifications and blocks the list when two of them change the same logical target. For example, two agent tasks in one turn that both edit `/cart`. The file is a JSON array, or an object with a `specifications` array. Each entry needs a non-empty `id` and a `logicalTarget`, which is a string or a list of strings. Targets are compared after trimming whitespace.
+
+```json
+{"specifications": [
+  {"id": "checkout-coupon", "logicalTarget": ["/checkout", "/cart"]},
+  {"id": "cart-redesign", "logicalTarget": "/cart"},
+  {"id": "profile-avatar", "logicalTarget": "/settings/profile"}
+]}
+```
+
+```text
+DiffCI specification validation: BLOCKED (1 logical-target conflict)
+  logical target "/cart" is changed by specifications cart-redesign, checkout-coupon
+```
+
+`--json` prints the `diffci.specConflicts.v1` report instead. The report has `valid`, the counts, `conflicts` and `blockers`.
+
+It exits 0 when there are no conflicts. It exits 1 in two cases: there's a conflict, or the input is invalid (missing `--file`, a file that's neither shape, an entry without an `id` or target, or a duplicate `id`). It only reads the file: it doesn't look at the repository, and it writes and sends nothing.
+
+### telemetry: choose what usage counting sends
+
+```sh
+npx @diffci.com/diffci@latest telemetry                     # show the current choice
+npx @diffci.com/diffci@latest telemetry --mode count-only   # count runs without the repository name
+```
+
+Usage counting is **on by default**. After each `plan`, `check`, `observe` and `verify` run, DiffCI sends a small count. It includes the command, the outcome, the version, where it ran, a random installation ID and the repository name (host/owner/repo). It never sends code, paths, commits, test names or reports. [Usage counting](telemetry.md) has the full field list.
+
+- `--mode repo` (default): the count includes the repository name and the installation ID.
+- `--mode count-only`: drops both and deletes the local installation ID.
+- `--internal-usage`: labels your runs as internal (tests, development).
+
+The choice is saved in `~/.diffci/telemetry.json` (or under `$DIFFCI_TELEMETRY_HOME`). Older saved choices carry over: `off` and `anonymous` become `count-only`, and `installations` becomes `repo`. On the command line, `--mode` takes only `repo` or `count-only`; anything else exits 1.
+
+To stop counting entirely, set `DO_NOT_TRACK=1`, `DIFFCI_NO_SEND=1` or `DIFFCI_SHARE_USAGE=0` in the environment. No flag can stop it. `--no-send` stops only report uploads to DiffCI Cloud, not the count. `diffci telemetry` itself sends nothing and exits 0.
+
 ## Interpret the result
 
 - A full-validation fallback means DiffCI could not justify a smaller selection for that change. Run the repository's normal tests.
