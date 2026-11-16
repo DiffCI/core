@@ -65,8 +65,10 @@ function toolConfigurationSubject(filePath: string): string | undefined {
 }
 
 function isConfigFile(filePath: string): boolean {
-  const CONFIG_FILE_NAMES = new Set(["package.json","package-lock.json","yarn.lock","pnpm-lock.yaml","bun.lockb","bun.lock","tsconfig.json","tsconfig.base.json","tsconfig.build.json","jsconfig.json"]);
+  const CONFIG_FILE_NAMES = new Set(["package.json","tsconfig.json","tsconfig.base.json","tsconfig.build.json","jsconfig.json"]);
   const base = posix.basename(filePath);
+  // Every lockfile in the shared pattern (issue #97); the old copy here lacked npm-shrinkwrap.json.
+  if (LOCKFILE.test(base)) return true;
   if (["go.mod", "go.sum", "go.work", "go.work.sum"].includes(base)) return true;
   if (/^(?:vite|vue|nuxt)\.config\./.test(base)) return true;
   if (CONFIG_FILE_NAMES.has(base)) return true;
