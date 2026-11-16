@@ -301,6 +301,11 @@ export class ImpactAnalyzer {
   private unresolved: readonly UnresolvedDependency[] = [];
   /** Why each changed file the reference resolver could not narrow is unresolvable, for fallbackDetails. */
   private referenceBlockers = new Map<string, string[]>();
+  /** This analysis's fallback reasons so far. They are only ever added to, so once there is one the plan
+   * runs the full suite whatever else is found, and resolveByReference stops searching (2026-11-15). */
+  private fallbackSoFar: readonly string[] = [];
+  /** Changed files whose readers were not searched because the full suite was already required. */
+  private readersNotSearched = new Set<string>();
   private walkerTests: string[] | undefined;
   private knownTests: string[] | undefined;
   private declaredCovered = new Set<string>();
@@ -560,6 +565,8 @@ export class ImpactAnalyzer {
     }
     this.unresolved = graphResult.unresolved ?? [];
     this.referenceBlockers = new Map();
+    this.fallbackSoFar = [];
+    this.readersNotSearched = new Set();
     this.sortedRepositoryFiles = options.repositoryFiles ? [...options.repositoryFiles].sort() : [];
     this.compiledProjectCache = undefined;
     // One read per file per analysis, however many changed files ask who reads them.
@@ -674,6 +681,7 @@ export class ImpactAnalyzer {
     const affectedTests = new Map<string, TestImpact>();
     const affectedScripts = new Map<string, ImpactEvidence[]>();
 
+    this.fallbackSoFar = fallbackReasons;
     for (const changedImpact of changedImpacts) {
       for (const path of allChangePaths(changedImpact.file)) {
         this.processChangedPath(path, changedImpact, graph, profile, affectedSources, affectedAssets, affectedEntryPoints, affectedTests, affectedScripts, evidence, riskSignals, fallbackReasons);
@@ -730,6 +738,10 @@ export class ImpactAnalyzer {
       }
     }
 
+    if (this.readersNotSearched.size > 0) {
+      const paths = [...this.readersNotSearched].sort();
+      riskSignals.push({ level: "info", reason: "READERS_NOT_SEARCHED", message: `Readers of ${paths.length} changed file(s) were not searched because full validation was already required`, paths: paths.slice(0, 20) });
+    }
     const fallbackRequired = effectiveGraphConfidence === "UNSAFE" || fallbackReasons.length > 0;
     const analysisStatus: ImpactResult["analysisStatus"] = fallbackRequired ? "FALLBACK" : "SAFE_TO_PROPOSE";
     const dedupedRiskSignals = Array.from(
@@ -1277,6 +1289,16 @@ export class ImpactAnalyzer {
   ): boolean {
     if (!this.repositoryFiles || !this.readRepositoryFile) return false;
     if (isImplicitlyLoadedFile(changedPath) && !(isWorkerConfig(changedPath) && this.workerConfigsOutsideSuite())) return false;
+    // Searching who reads a file costs a pass over every repository file per reader followed. Once the full
+    // suite is already required, no answer changes the plan (2026-11-15: verify on diffci.com spent 15
+    // minutes resolving ~1,000 changed files after the first fallback reason had decided the run). The
+    // search is skipped and the file adds no reason of its own, since "could not be resolved" would be
+    // untrue; the full suite covers it. Only the affected tests verify runs ahead of the full suite lose
+    // the readers it would have added.
+    if (this.fallbackSoFar.length > 0) {
+      this.readersNotSearched.add(changedPath);
+      return true;
+    }
     const layout = this.layout;
     const scripts = profile.packageJson.scripts;
     const resolution = resolveFileReferences(changedPath, {

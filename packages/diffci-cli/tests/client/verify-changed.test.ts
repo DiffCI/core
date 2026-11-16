@@ -370,7 +370,43 @@ describe("verify commit range", () => {
       assert.equal(run.status, 2, run.stdout + run.stderr);
       const report = JSON.parse(run.stdout);
       assert.match(report.reason, /requires a clean checkout/);
-      assert.equal(report.snapshot.line_ending_only_changes, undefined);
+      assert.deepEqual(report.snapshot.line_ending_only_changes, ["src/beta.js"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves CRLF-only checkouts out of an uncommitted snapshot that has real changes", () => {
+    const dir = fixture();
+    try {
+      // diffci.com, 2026-11-15: 968 CRLF checkouts next to 52 real changes made every file "changed".
+      write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // edited\n");
+      const run = runVerify(dir);
+      assert.equal(run.status, 0, run.stdout + run.stderr);
+      const report = JSON.parse(run.stdout);
+      assert.equal(report.changed_files, 1);
+      assert.deepEqual(report.selected_tests, ["test/alpha.test.js"]);
+      assert.deepEqual(report.snapshot.line_ending_only_changes, ["src/beta.js"]);
+
+      // A file whose content changed as well as its line endings is a real change.
+      write(dir, "src/beta.js", "export const beta = () => 2; // edited\r\n");
+      const both = JSON.parse(runVerify(dir).stdout);
+      assert.equal(both.changed_files, 2);
+      assert.equal(both.snapshot.line_ending_only_changes, undefined);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a checkout that differs only by CRLF line endings as unchanged", () => {
+    const dir = fixture();
+    try {
+      write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
+      const report = JSON.parse(runVerify(dir).stdout);
+      assert.equal(report.verification, "passed");
+      assert.equal(report.changed_files, 0);
+      assert.deepEqual(report.snapshot.line_ending_only_changes, ["src/beta.js"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

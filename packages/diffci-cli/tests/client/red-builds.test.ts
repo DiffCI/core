@@ -3,7 +3,10 @@ import { describe, it } from "node:test";
 
 import {
   agentMarker,
+  branchAgent,
   bucketJob,
+  NO_AGENT_BRANCH,
+  summarise,
   DEFAULT_PATTERNS,
   isAggregateJob,
   classify,
@@ -121,10 +124,60 @@ describe("classify", () => {
 
 describe("agentMarker", () => {
   it("spots agent co-author trailers and agent branch prefixes", () => {
-    assert.deepEqual(agentMarker("fix\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", "main"), { written: true, marker: "claude" });
-    assert.deepEqual(agentMarker("feat\n\n🤖 Generated with [Claude Code](https://claude.com)", "x"), { written: true, marker: "claude code" });
-    assert.deepEqual(agentMarker("fix", "codex/fix-thing"), { written: true, marker: "branch prefix" });
-    assert.deepEqual(agentMarker("fix\n\nCo-authored-by: Jane <jane@example.com>", "jane/fix"), { written: false, marker: "" });
+    assert.deepEqual(agentMarker("fix\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", "main"), { written: true, marker: "claude", source: "trailer" });
+    assert.deepEqual(agentMarker("feat\n\n🤖 Generated with [Claude Code](https://claude.com)", "x"), { written: true, marker: "claude code", source: "trailer" });
+    assert.deepEqual(agentMarker("fix", "codex/fix-thing"), { written: true, marker: "codex", source: "branch" });
+    assert.deepEqual(agentMarker("fix", "Copilot/fix-12"), { written: true, marker: "copilot", source: "branch" });
+    assert.deepEqual(agentMarker("fix\n\nCo-authored-by: Jane <jane@example.com>", "jane/fix"), { written: false, marker: "", source: "" });
+  });
+
+  it("names the agent from the branch prefix alone", () => {
+    assert.equal(branchAgent("copilot/fix-123"), "copilot");
+    assert.equal(branchAgent("claude-refactor"), "claude");
+    assert.equal(branchAgent("feature/copilot-docs"), null, "only a prefix counts");
+    assert.equal(branchAgent("copilotx/thing"), null);
+  });
+});
+
+describe("byBranchAgent", () => {
+  it("splits runs, red runs and verdicts by the agent the branch is named after", () => {
+    const runs = [
+      run(1, { headBranch: "copilot/fix-1" }), // own lint failure -> preventable
+      run(2, { headBranch: "copilot/fix-2", conclusion: "success" }),
+      run(3, { headBranch: "copilot/fix-3" }), // failed before any job started
+      run(4, { headBranch: "feature-4" }), // CI-only
+      run(5, { headBranch: "feature-5", conclusion: "success" }),
+    ];
+    const jobs = new Map<number, JobSummary[]>([
+      [1, [job(11, "lint")]],
+      [3, []],
+      [4, [job(41, "playwright")]],
+    ]);
+    const annotations = new Map<number, Annotation[]>([[11, [fail("src/x.ts", "'y' is defined but never used")]]]);
+    const rows = classify({ repository: REPO, runs, jobs, annotations });
+    assert.deepEqual(rows.map((r) => [r.run, r.branchAgent]), [[1, "copilot"], [4, null]]);
+    assert.doesNotMatch(JSON.stringify(rows), /fix-1|feature-4/, "rows carry the agent, never the branch name");
+    const report = summarise(REPO, runs, rows, null, new Set([3]));
+    assert.equal(report.schemaVersion, 2);
+    assert.equal(report.neverStarted, 1);
+    assert.equal(report.redRuns, 2);
+    const copilot = report.byBranchAgent.copilot!;
+    assert.deepEqual([copilot.pullRequestRuns, copilot.redRuns, copilot.analysed, copilot.verdicts.preventable], [3, 1, 1, 1]);
+    assert.equal(copilot.preventableRunnerMinutes, 10);
+    const other = report.byBranchAgent[NO_AGENT_BRANCH]!;
+    assert.deepEqual([other.pullRequestRuns, other.redRuns, other.analysed, other.verdicts["ci-only"]], [2, 1, 1, 1]);
+    const text = formatReport(report);
+    assert.match(text, /By branch prefix/);
+    assert.match(text, /copilot\/\.\.\.\s+3\s+1 \(33%\)\s+1 of 1/);
+    assert.match(text, /other branches\s+2\s+1 \(50%\)\s+0 of 1/);
+  });
+
+  it("leaves the table out when no branch names an agent", () => {
+    const runs = [run(1), run(2, { conclusion: "success" })];
+    const rows = classify({ repository: REPO, runs, jobs: new Map([[1, [job(11, "lint")]]]), annotations: new Map() });
+    const report = summarise(REPO, runs, rows, null);
+    assert.deepEqual(Object.keys(report.byBranchAgent), [NO_AGENT_BRANCH]);
+    assert.doesNotMatch(formatReport(report), /By branch prefix/);
   });
 });
 
@@ -159,6 +212,9 @@ describe("collectRedBuilds", () => {
     assert.equal(report.redRuns, 1);
     assert.equal(report.verdicts.preventable.runs, 1);
     assert.equal(report.agentWrittenPreventable, 1);
+    assert.deepEqual(report.rows[0]!.agent, { written: true, marker: "claude", source: "trailer", commitRead: true });
+    assert.equal(report.rows[0]!.branchAgent, "claude");
+    assert.deepEqual(Object.keys(report.byBranchAgent).sort(), ["claude", NO_AGENT_BRANCH]);
     assert.equal(report.rows[0]!.fork, false);
     assert.equal(calls.length, 5, "workflow sample, its runs, one job list, one annotation list, one commit");
     assert.equal(report.workflow, "CI");
