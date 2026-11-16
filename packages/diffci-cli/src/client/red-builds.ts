@@ -25,7 +25,11 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 
-export const RED_BUILDS_SCHEMA = 1;
+/**
+ * 2 (2026-11-16): rows carry `branchAgent`, the report adds `byBranchAgent`, and an agent
+ * found by its branch prefix is named (`"copilot"`) with `source: "branch"` instead of `"branch prefix"`.
+ */
+export const RED_BUILDS_SCHEMA = 2;
 
 const REPOSITORY = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9._-]{1,100}$/;
 
@@ -145,7 +149,13 @@ export interface RedRun {
   verdict: Verdict;
   failingJobs: Array<{ name: string; bucket: JobBucket; ownership?: "own" | "shared" | "timeout" | "unknown" }>;
   runnerMinutes: number;
-  agent?: { written: boolean; marker: string; commitRead: boolean };
+  /**
+   * The coding agent the head branch is named after (`copilot/fix-123` -> "copilot"), or null. Free: no API
+   * call. The branch name itself is left out, since names such as `jane/fix` can carry a user name.
+   */
+  branchAgent: string | null;
+  /** Preventable runs only: agent co-author trailer or branch prefix, after reading the head commit. */
+  agent?: { written: boolean; marker: string; source: "trailer" | "branch" | ""; commitRead: boolean };
 }
 
 export interface ClassifyInput {
@@ -229,17 +239,36 @@ export function classify(input: ClassifyInput): RedRun[] {
       verdict,
       failingJobs: detail,
       runnerMinutes: Math.round(jobs.reduce((sum, job) => sum + minutes(job), 0) * 10) / 10,
+      branchAgent: branchAgent(run.headBranch),
     });
   }
   return rows;
 }
 
-export function agentMarker(message: string, branch: string): { written: boolean; marker: string } {
-  const trailer = AGENT_TRAILER.exec(message);
-  if (trailer) return { written: true, marker: (trailer[1] ?? trailer[2] ?? "agent").toLowerCase() };
-  if (AGENT_BRANCH.test(branch)) return { written: true, marker: "branch prefix" };
-  return { written: false, marker: "" };
+/** The coding agent a branch is named after: `copilot/fix-123` and `claude-fix` give "copilot" and "claude". */
+export function branchAgent(branch: string): string | null {
+  return AGENT_BRANCH.exec(branch)?.[1]?.toLowerCase() ?? null;
 }
+
+export function agentMarker(message: string, branch: string): { written: boolean; marker: string; source: "trailer" | "branch" | "" } {
+  const trailer = AGENT_TRAILER.exec(message);
+  if (trailer) return { written: true, marker: (trailer[1] ?? trailer[2] ?? "agent").toLowerCase(), source: "trailer" };
+  const fromBranch = branchAgent(branch);
+  if (fromBranch) return { written: true, marker: fromBranch, source: "branch" };
+  return { written: false, marker: "", source: "" };
+}
+
+/** Pull request runs and red-run verdicts for one group of branches. */
+export interface BranchAgentSlice {
+  pullRequestRuns: number;
+  redRuns: number;
+  analysed: number;
+  verdicts: Record<Verdict, number>;
+  preventableRunnerMinutes: number;
+}
+
+/** Key in `byBranchAgent` for runs whose branch names no coding agent. */
+export const NO_AGENT_BRANCH = "other";
 
 export interface RedBuildsReport {
   schemaVersion: typeof RED_BUILDS_SCHEMA;
@@ -256,11 +285,43 @@ export interface RedBuildsReport {
   unreadable: number;
   verdicts: Record<Verdict, { runs: number; runnerMinutes: number }>;
   agentWrittenPreventable: number;
+  /**
+   * The same counts split by the coding agent each run's head branch is named after (`copilot`, `claude`...),
+   * with every other branch under `other`. Branch prefixes undercount agents that use ordinary branch names.
+   */
+  byBranchAgent: Record<string, BranchAgentSlice>;
   stoppedEarly: string | null;
   rows: RedRun[];
 }
 
-export function summarise(repository: string, runs: RunSummary[], rows: RedRun[], stoppedEarly: string | null, neverStarted = 0): RedBuildsReport {
+function sliceByBranchAgent(runs: RunSummary[], rows: RedRun[], neverStartedIds: ReadonlySet<number>): Record<string, BranchAgentSlice> {
+  const slices: Record<string, BranchAgentSlice> = {};
+  const sliceOf = (agent: string | null) => {
+    const key = agent ?? NO_AGENT_BRANCH;
+    return slices[key] ??= {
+      pullRequestRuns: 0, redRuns: 0, analysed: 0, preventableRunnerMinutes: 0,
+      verdicts: Object.fromEntries(VERDICTS.map((v) => [v, 0])) as Record<Verdict, number>,
+    };
+  };
+  for (const run of runs) {
+    const slice = sliceOf(branchAgent(run.headBranch));
+    slice.pullRequestRuns++;
+    if (run.conclusion === "failure" && !neverStartedIds.has(run.id)) slice.redRuns++;
+  }
+  for (const row of rows) {
+    const slice = sliceOf(row.branchAgent);
+    slice.analysed++;
+    slice.verdicts[row.verdict]++;
+    if (row.verdict === "preventable") slice.preventableRunnerMinutes += row.runnerMinutes;
+  }
+  for (const slice of Object.values(slices)) slice.preventableRunnerMinutes = Math.round(slice.preventableRunnerMinutes);
+  return slices;
+}
+
+/** `neverStarted`: the runs marked failed although no job started, as ids (for the per-agent split) or a count. */
+export function summarise(repository: string, runs: RunSummary[], rows: RedRun[], stoppedEarly: string | null, neverStarted: number | ReadonlySet<number> = 0): RedBuildsReport {
+  const neverStartedIds = typeof neverStarted === "number" ? new Set<number>() : neverStarted;
+  const neverStartedCount = typeof neverStarted === "number" ? neverStarted : neverStarted.size;
   const verdicts = Object.fromEntries(VERDICTS.map((v) => [v, { runs: 0, runnerMinutes: 0 }])) as RedBuildsReport["verdicts"];
   for (const row of rows) {
     verdicts[row.verdict].runs++;
@@ -268,7 +329,7 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
   }
   for (const v of VERDICTS) verdicts[v].runnerMinutes = Math.round(verdicts[v].runnerMinutes);
   const times = runs.map((r) => r.createdAt).sort();
-  const red = runs.filter((r) => r.conclusion === "failure").length - neverStarted;
+  const red = runs.filter((r) => r.conclusion === "failure").length - neverStartedCount;
   return {
     schemaVersion: RED_BUILDS_SCHEMA,
     repository,
@@ -276,11 +337,12 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
     window: times.length ? { from: times[0]!, to: times.at(-1)! } : null,
     pullRequestRuns: runs.length,
     redRuns: red,
-    neverStarted,
+    neverStarted: neverStartedCount,
     analysed: rows.length,
     unreadable: red - rows.length,
     verdicts,
     agentWrittenPreventable: rows.filter((r) => r.verdict === "preventable" && r.agent?.written).length,
+    byBranchAgent: sliceByBranchAgent(runs, rows, neverStartedIds),
     stoppedEarly,
     rows,
   };
@@ -304,6 +366,23 @@ const NOTES: Partial<Record<Verdict, string>> = {
 
 function pct(part: number, whole: number): string {
   return whole ? `${Math.round((part / whole) * 100)}%` : "0%";
+}
+
+/** A table of the per-agent split, shown only when some branch is named after a coding agent. */
+function formatBranchAgents(report: RedBuildsReport): string[] {
+  const agents = Object.keys(report.byBranchAgent).filter((key) => key !== NO_AGENT_BRANCH).sort();
+  if (agents.length === 0) return [];
+  const lines = ["", `${"By branch prefix".padEnd(20)}${"PR runs".padStart(9)}${"red".padStart(12)}${"preventable".padStart(16)}`];
+  for (const key of [...agents, NO_AGENT_BRANCH]) {
+    const slice = report.byBranchAgent[key];
+    if (!slice) continue;
+    const label = key === NO_AGENT_BRANCH ? "other branches" : `${key}/...`;
+    const red = `${slice.redRuns} (${pct(slice.redRuns, slice.pullRequestRuns)})`;
+    const preventable = `${slice.verdicts.preventable} of ${slice.analysed}`;
+    lines.push(`  ${label.padEnd(18)}${String(slice.pullRequestRuns).padStart(9)}${red.padStart(12)}${preventable.padStart(16)}`);
+  }
+  lines.push("Agents that use ordinary branch names count under other branches.");
+  return lines;
 }
 
 export function formatReport(report: RedBuildsReport): string {
@@ -336,6 +415,7 @@ export function formatReport(report: RedBuildsReport): string {
     `Up to ${p} of ${report.analysed} red runs (${pct(p, report.analysed)}) failed only on checks the author could have run before pushing.`,
     ...(likely ? [`${likely} more failed on such checks without annotations, so whose failure it was is unconfirmed.`] : []),
     "That is an upper bound: it assumes the check ran and covered the failing test. CI history only; nothing was run.",
+    ...formatBranchAgents(report),
     "",
     "Catch these inside your coding agent's loop, before the push: npx @diffci.com/diffci init",
     "Method: https://github.com/DiffCI/core/blob/main/docs/red-builds.md",
@@ -552,7 +632,7 @@ export async function collectRedBuilds(options: CollectOptions): Promise<RedBuil
       stoppedEarly = error.message;
     }
   }
-  const neverStarted = runs.filter((r) => r.conclusion === "failure" && jobs.has(r.id) && nothingRan(jobs.get(r.id)!)).length;
+  const neverStarted = new Set(runs.filter((r) => r.conclusion === "failure" && jobs.has(r.id) && nothingRan(jobs.get(r.id)!)).map((r) => r.id));
   const report = summarise(repository, runs, rows, stoppedEarly, neverStarted);
   report.workflow = workflowLabel || runs[0]?.workflowName || null;
   return report;
@@ -571,7 +651,8 @@ export const RED_BUILDS_USAGE = `Usage: diffci red-builds <owner/repo> [--runs <
 How many of a repository's red pull request builds failed on checks the author could have run before
 pushing. Reads GitHub Actions history (read-only, paced) and runs nothing. Needs a GitHub token:
 GITHUB_TOKEN, GH_TOKEN, or a signed-in gh CLI. --runs: most recent pull request runs to read (default 200,
-max 1000). --check-jobs / --ci-only-jobs: regexes that override which job names count as local checks.`;
+max 1000). --check-jobs / --ci-only-jobs: regexes that override which job names count as local checks.
+Runs on branches named after a coding agent (copilot/, claude/, codex/...) are also counted per agent.`;
 
 /** Entry point for `diffci red-builds`. Returns the exit code: 0 on a report, 2 on bad input or errors. */
 export async function runRedBuildsCommand(args: string[], env: NodeJS.ProcessEnv = process.env, deps: { get?: GitHubGet } = {}): Promise<number> {

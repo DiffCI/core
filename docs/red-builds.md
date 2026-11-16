@@ -72,6 +72,19 @@ workflow called "CI" it stays CI-only. Gate jobs that only report other jobs' re
 `--json <file>` writes the full report: every red run's verdict, failing jobs and runner-minutes. It contains no
 branch names, user names or commit messages.
 
+## Coding-agent branches
+
+When any pull request branch in the window starts with a coding agent's name (`copilot/`, `claude/`, `codex/`,
+`cursor/`, `devin/`, `jules/`, or the same followed by `-`), the report adds a table that splits pull request
+runs, red runs and preventable runs by that agent, with every other branch under "other branches". The JSON has
+the same split in `byBranchAgent` and names the agent on each red run as `branchAgent`. It records the agent,
+never the branch name.
+
+Every run in the window still feeds the shared-failure check, so a Copilot failure that also broke other pull
+requests counts as shared, not preventable. To get more agent runs, raise `--runs` (up to 1,000) rather than
+filtering the window down to one agent. Agents that push to ordinary branch names count under "other branches",
+so the agent figures are a lower bound on agent activity.
+
 ## Where DiffCI comes in
 
 DiffCI runs the affected tests and checks of a change inside your coding agent's loop, before it pushes:

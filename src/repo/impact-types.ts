@@ -35,6 +35,7 @@ export type ImpactReason =
   | "TEST_SELECTION_INVARIANT"
   | "TEST_UNIVERSE_EMPTY"
   | "WORKSPACE_TEST_UNIVERSE_EMPTY"
+  | "READERS_NOT_SEARCHED"
   | "EMPTY_DELTA";
 
 export interface ImpactEvidencePath {

@@ -288,6 +288,7 @@ const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
 
 /** Keys whose list names files a tool skips: tsconfig and Vitest `exclude`, knip `ignore`, ESLint-style
  * `ignores` and `ignorePatterns`, Jest `testPathIgnorePatterns` and its siblings. */
+const EXCLUSION_LOOKBACK = 4096;
 const EXCLUSION_KEY = /^(?:ignored?|ignores|excluded?|excludes|ignorePatterns|\w*PathIgnorePatterns)$/;
 
 /**
@@ -302,7 +303,11 @@ function inExclusionList(content: string, index: number): boolean {
   // Closers seen so far, so a balanced `{x,}` or `[!d]` in an earlier glob of the same list is skipped.
   const open: Record<string, number> = { "[": 0, "{": 0, "(": 0 };
   const opener: Record<string, string> = { "]": "[", "}": "{", ")": "(" };
-  for (let i = index - 1; i >= 0; i--) {
+  // Bounded (2026-11-15): scanning back to the start for every matching word was quadratic in large
+  // JSON files. A list opened further back than this is not recognised, so the word still counts as a
+  // reference, the conservative answer.
+  const stop = Math.max(0, index - EXCLUSION_LOOKBACK);
+  for (let i = index - 1; i >= stop; i--) {
     const char = content[i]!;
     if (char in opener) { open[opener[char]!]!++; continue; }
     if (!(char in open)) continue;
@@ -548,6 +553,39 @@ function packageJsonNames(content: string, pattern: RegExp, target: string, ance
   return "no";
 }
 
+/**
+ * Searches already made in this analysis, keyed by the analysis's `read` function (2026-11-15). On
+ * diffci.com, 55 changed research files each followed up to 50 readers through the same handful of
+ * manifests, and every hop re-read all ~2,800 repository files: verify spent 6-25 minutes here while the
+ * full suite takes under 2. Which files name a target depends only on the target and the repository at
+ * HEAD, so each target is searched once per analysis.
+ */
+const namerCache = new WeakMap<(path: string) => string | undefined, Map<string, Set<string>>>();
+
+/** Files whose content names `target` (contentNamesPath), among those resolveFileReferences reads as text. */
+function namersOf(target: string, ancestors: boolean, input: ReferenceResolutionInput, read: (path: string) => string | undefined): Set<string> {
+  let cache = namerCache.get(input.read);
+  if (!cache) namerCache.set(input.read, cache = new Map());
+  const key = `${ancestors ? "a" : "f"}:${target}`;
+  const cached = cache.get(key);
+  if (cached) return cached;
+  const pattern = referencePattern(referenceTokens(target, { ancestors }));
+  const targetIsCode = input.isCodeFile(target);
+  const found = new Set<string>();
+  for (const candidate of input.files) {
+    const base = posix.basename(candidate);
+    if (candidate === target || LOCKFILES.has(base) || base === "package.json" || PATH_LIST_CONFIG.test(base) || input.isDocumentation(candidate)) continue;
+    const content = read(candidate);
+    // A test runner's include and exclude globs select test files, so one matching a data file does not
+    // make the runner read it; an exact path in the config still counts (2026-11-05: LobeHub's
+    // packages/alint/vitest.config.mts excludes fixture directories under scripts/).
+    const globsSelectTests = loadsWithoutNaming(candidate) && !targetIsCode;
+    if (content !== undefined && contentNamesPath(content, candidate, target, pattern, ancestors, !globsSelectTests)) found.add(candidate);
+  }
+  cache.set(key, found);
+  return found;
+}
+
 /** Resolves who reads `filePath`. See the module comment for the rule and its limits. */
 export function resolveFileReferences(filePath: string, input: ReferenceResolutionInput): ReferenceResolution {
   const resolution: ReferenceResolution = { tests: [], code: [], unresolvable: [], blockers: [], readers: [], phases: [] };
@@ -565,6 +603,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
   let transitiveCount = 0;
   const contents = new Map<string, string | undefined>();
   const read = (path: string) => { if (!contents.has(path)) contents.set(path, input.read(path)); return contents.get(path); };
+  const namers = (target: string, ancestors: boolean) => namersOf(target, ancestors, input, read);
 
   for (let depth = 0; depth < MAX_DEPTH && frontier.length > 0; depth++) {
     const next: Array<{ path: string; via: string; lint?: boolean }> = [];
@@ -608,11 +647,7 @@ export function resolveFileReferences(filePath: string, input: ReferenceResoluti
           block(`${candidate} could not be read`, target.path);
           continue;
         }
-        // A test runner's include and exclude globs select test files, so one matching a data file does not
-        // make the runner read it; an exact path in the config still counts (2026-11-05: LobeHub's
-        // packages/alint/vitest.config.mts excludes fixture directories under scripts/).
-        const globsSelectTests = loadsWithoutNaming(candidate) && !input.isCodeFile(target.path);
-        if (content === undefined || !contentNamesPath(content, candidate, target.path, pattern, ancestors, !globsSelectTests)) continue;
+        if (content === undefined || !namers(target.path, ancestors).has(candidate)) continue;
         visited.add(candidate);
         if (input.allowNoReaders && /^dockerfile/i.test(base) && copiesOnly(content, target.path)) {
           // The caller modelled what the file does when installed (dependency selection); a Dockerfile
