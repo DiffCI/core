@@ -15,6 +15,7 @@ import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
 import { isPlaywrightSpec, nextAppRoute, routeMatches, visitedRoutes } from "./route-visits.js";
 import { exportLevelReach } from "./export-reach.js";
 import { LOCKFILE } from "./lockfiles.js";
+import { runnerSetupFiles } from "./runner-setup-files.js";
 
 const SOURCE_EXTENSIONS = new Set([".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",".vue",".go",".java",".kt"]);
 const ASSET_EXTENSIONS = new Set([".css",".scss",".sass",".less",".json",".jsonc",".svg",".png",".jpg",".jpeg",".gif",".webp",".ico",".bmp",".woff",".woff2",".ttf",".otf",".eot",".wasm",".md",".txt"]);
@@ -61,7 +62,7 @@ function isConfigFile(filePath: string): boolean {
   if (base.startsWith("postcss.config")) return true;
   if (base.startsWith("eslint.config")) return true;
   if (base.startsWith(".eslintrc")) return true;
-  if (base.startsWith("vitest.config")) return true;
+  if (base.startsWith("vitest.config") || base.startsWith("vitest.workspace") || base.startsWith("vitest.projects")) return true;
   if (base.startsWith("jest.config")) return true;
   if (base.startsWith("babel.config") || base.startsWith(".babelrc")) return true;
   if (base.startsWith("prettier.config")) return true;
@@ -591,6 +592,27 @@ export class ImpactAnalyzer {
       if (delta.files.some(file => allChangePaths(file).some(path => !inVuePackage(path, scope.packageRoot)))) fallbackReasons.push("Changes outside the declared Vue package require full validation");
       const setupDependencies = new Set((profile.vueSetupPaths ?? []).flatMap(path => [path, ...graph.transitiveDependenciesOf(path)]));
       if (delta.files.some(file => allChangePaths(file).some(path => setupDependencies.has(path)))) fallbackReasons.push("Vue suite configuration or shared setup dependency changed; full validation required");
+    }
+    // A file a Jest or Vitest configuration runs around every test, or one it imports, reaches every test
+    // that configuration covers; nothing imports it, so the graph alone selected no tests (issue #139).
+    if (this.readRepositoryFile && this.sortedRepositoryFiles.length > 0) {
+      const changedPaths = [...new Set(delta.files.flatMap(allChangePaths))];
+      const setup = runnerSetupFiles([...new Set([...this.sortedRepositoryFiles, ...changedPaths])], this.readRepositoryFile);
+      let imported: Map<string, string> | undefined;
+      const importedBySetup = () => imported ??= new Map([...setup.named].flatMap(([file, config]) =>
+        graph.transitiveDependenciesOf(file).map((dependency) => [dependency, config] as const)).reverse());
+      for (const path of changedPaths) {
+        const config = setup.named.get(path) ?? importedBySetup().get(path);
+        const message = config !== undefined
+          ? `Test setup file or a module it imports changed: ${path} (setup from ${config}); full validation required`
+          : setup.unreadable.length > 0 && isSourceFilePath(path) && !this.isTestFile(path)
+            ? `Test setup files in ${setup.unreadable.join(", ")} could not be read statically, so ${path} may be one; full validation required`
+            : undefined;
+        if (message === undefined || fallbackReasons.includes(message)) continue;
+        evidence.push(makeEvidence("CONFIG_GLOBAL", path, message));
+        riskSignals.push({ level: "critical", reason: "CONFIG_GLOBAL", message, paths: [path] });
+        fallbackReasons.push(message);
+      }
     }
     if (profile.adapters?.some(adapter => adapter.id === "rust")) {
       const modeledPaths = new Set([...(profile.rustSources ?? []), ...(profile.rustAssets ?? [])]);

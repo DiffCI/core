@@ -468,7 +468,9 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
-| `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts`, `babel.config.js` or `.babelrc`, or a package's `packages/web/jest.config.js` | No |
+| `Configuration file(s) changed; full validation required` | Edit `vitest.config.ts`, `vitest.workspace.ts`, `babel.config.js` or `.babelrc`, or a package's `packages/web/jest.config.js` | No |
+| `Test setup file or a module it imports changed: … (setup from …); full validation required` | Edit a file a Jest or Vitest configuration lists in `setupFiles`, `setupFilesAfterEnv`, `globalSetup`, `globalTeardown`, `testEnvironment` or a similar key, or a module that file imports | No |
+| `Test setup files in … could not be read statically, so … may be one; full validation required` | Edit any source file while a runner configuration builds a setup value without a string literal (`setupFiles: files`) | Fix: list setup files as string literals |
 | `Dependency manifest changed; full validation required` | Add `peerDependencies` or `engines` to `package.json` | No |
 | `Workspace package manifest changed dependencies, scripts or resolution fields: …; full validation required` | Bump a dependency in `packages/a/package.json` while a lockfile governs it, edit its `scripts`, or change `exports` to a `*` pattern (a `version` bump, a dependency bump in a repository that commits no lockfile, and an `exports` remap between files are narrowed) | No |
 | `… remaps an export to …, which is outside the dependency graph; full validation required` | Point an `exports` subpath at a file DiffCI does not analyse, such as a `.d.ts` outside every tsconfig | No |

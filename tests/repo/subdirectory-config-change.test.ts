@@ -72,7 +72,7 @@ for (const [file, content, before, after] of CASES) {
 }
 
 test("only test-runner and transform configurations below the root count as nested test configuration", () => {
-  for (const path of ["packages/web/jest.config.ts", "packages/web/vitest.config.mts", "apps/a/b/babel.config.cjs", "packages/web/.babelrc", "packages/web/.babelrc.json"]) {
+  for (const path of ["packages/web/jest.config.ts", "packages/web/vitest.config.mts", "packages/web/vitest.workspace.ts", "packages/web/vitest.projects.mjs", "apps/a/b/babel.config.cjs", "packages/web/.babelrc", "packages/web/.babelrc.json"]) {
     assert.equal(isNestedTestConfig(path), true, path);
   }
   // Root files stay with CONFIG_PATTERNS; vendored copies and look-alike names are not configuration.

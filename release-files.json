@@ -254,6 +254,8 @@
     "tests/repo/rust-integration.test.ts",
     "tests/repo/scoped-adapter-blockers.test.ts",
     "tests/repo/subdirectory-config-change.test.ts",
+    "src/repo/runner-setup-files.ts",
+    "tests/repo/runner-setup-change.test.ts",
     "tests/repo/script-universe.test.ts",
     "tests/repo/test-discovery.test.ts",
     "tests/repo/test-fixture-ownership.test.ts",

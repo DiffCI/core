@@ -23,6 +23,7 @@ const EXAMPLES = [
   ".prettierrc",
   "prettier.config.js",
   "vitest.config.ts",
+  "vitest.workspace.ts",
   "jest.config.js",
   "babel.config.js",
   "playwright.config.ts",
