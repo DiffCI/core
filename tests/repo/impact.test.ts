@@ -651,6 +651,18 @@ describe("lockfiles in impact analysis (issue #97)", () => {
         assert.ok(result.riskSignals.some((s) => s.reason === "LOCKFILE_GLOBAL"), path);
         assert.deepStrictEqual(result.riskSignals.filter((s) => s.reason === "UNKNOWN_FILE"), [], path);
       });
+
+      it(`classifies ${path} as a config change, like every other lockfile`, () => {
+        const delta = makeDelta("base", "head", [{ path, changeType: "modified" }], { lockfileChanged: true, signalPaths: { lockfile: [path] } }, { modified: 1 });
+        const result = analyzer.analyze(delta, makeDependencyGraphResult(makeGraph([], [])), makeProfile());
+        assert.strictEqual(result.changedFiles[0]?.category, "config", path);
+      });
     }
   }
+
+  it("does not classify a lockfile lookalike as config", () => {
+    const delta = makeDelta("base", "head", [{ path: "package-lock.json.bak", changeType: "modified" }], {}, { modified: 1 });
+    const result = analyzer.analyze(delta, makeDependencyGraphResult(makeGraph([], [])), makeProfile());
+    assert.notStrictEqual(result.changedFiles[0]?.category, "config");
+  });
 });
