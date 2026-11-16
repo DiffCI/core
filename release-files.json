@@ -201,6 +201,7 @@
     "tests/action-verify.test.ts",
     "tests/gitlab-component.test.ts",
     "tests/fallback-reasons-docs.test.ts",
+    "tests/source-text.test.ts",
     "tests/cli-command-batches.test.ts",
     "tests/cli-failure-baseline.test.ts",
     "tests/cli-workflow-templates.test.ts",
