@@ -56,6 +56,29 @@ export function fallbackReasons() {
   return reasons;
 }
 
+// A literal that is a "no runnable command" reason in src/planner/test-command.ts (#127): a `refusalReason`
+// (also when its literal starts the next line), a `refuse(...)` call, a `refusalReason ?? "..."` default, or a
+// `return "..."` from a helper whose string result becomes the refusal (projectGroups).
+const NO_COMMAND_SITE = /(?:refusalReason:\s*|refuse\(|refusalReason \?\? |\breturn )("(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)/g;
+
+/** Each literal reason `planSelectiveTestCommands` gives when it cannot write a command, mapped to its `file:line`. */
+export function noCommandReasons() {
+  const file = join(root, 'src', 'planner', 'test-command.ts');
+  const lines = readFileSync(file, 'utf8').split('\n');
+  const reasons = new Map();
+  lines.forEach((line, index) => {
+    if (/^\s*(?:\/\/|\*)/.test(line)) return;
+    // `refusalReason:` at the end of a line takes the literal on the next one.
+    const source = /refusalReason:\s*$/.test(line) ? `refusalReason: ${(lines[index + 1] ?? '').trim()}` : line;
+    for (const match of source.matchAll(NO_COMMAND_SITE)) {
+      const text = match[1].slice(1, -1).replace(/\$\{[^}]*\}/g, '…');
+      if (/[a-z]{3,} [a-z]{2,}/i.test(text) && !reasons.has(text)) reasons.set(text, `${relative(root, file).replaceAll('\\', '/')}:${index + 1}`);
+    }
+  });
+  return reasons;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   for (const [text, where] of fallbackReasons()) console.log(`${where}\t${text}`);
+  if (process.argv.includes('--no-command')) for (const [text, where] of noCommandReasons()) console.log(`${where}\t${text}`);
 }
