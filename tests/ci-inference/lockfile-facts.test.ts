@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { lockfileFacts } from "../../src/ci-inference/evidence.js";
-import { LOCKFILE } from "../../src/repo/lockfiles.js";
+import { LOCKFILE, LOCKFILE_NAMES } from "../../src/repo/lockfiles.js";
 
 const NAMES = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
 
@@ -35,6 +35,19 @@ test("lockfileFacts reports nothing without a lockfile", () => {
   try {
     writeFileSync(join(dir, "package.json"), "{}");
     assert.deepEqual(lockfileFacts(dir), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("lockfileFacts reports every name in the shared LOCKFILE_NAMES list (issue #97)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-lockfile-"));
+  try {
+    for (const name of LOCKFILE_NAMES) writeFileSync(join(dir, name), "");
+    assert.deepEqual(
+      lockfileFacts(dir).map((fact) => fact.value),
+      [...LOCKFILE_NAMES],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
