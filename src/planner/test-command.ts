@@ -30,6 +30,7 @@ import { matchesGlob, testDiscoveryErrors } from "../repo/test-discovery.js";
 import { compileIgnoreRegexes, isIgnoredPath, isUnderRoots } from "../repo/runner-universe.js";
 import { END_TO_END_FRAMEWORKS, type KnownTestFramework } from "../repo/test-framework.js";
 import type { CommandSpec } from "./types.js";
+import { planRustTestCommands } from "./rust-command.js";
 
 export interface SelectiveTestCommandGroup {
   /** Stable identifier for the group - the runner, plus the config file when one applies. */
@@ -282,6 +283,7 @@ export function planSelectiveTestCommands(
 ): SelectiveTestCommandPlan {
   const blockers = [...(profile.adapterBlockers ?? profile.adapters?.flatMap((adapter) => adapter.blockers) ?? []), ...testDiscoveryErrors(profile)];
   if (blockers.length) return { commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: blockers.join("; ") };
+  if (selectedPaths.some(path => path.endsWith(".rs"))) return planRustTestCommands(profile, selectedPaths);
   if (profile.workspaceTestPackages?.length) {
     const suites = profile.workspaceTestPackages;
     const refuse = (reason: string): SelectiveTestCommandPlan => ({ commands: [], groups: [], unroutedPaths: [...selectedPaths], refusalReason: reason });

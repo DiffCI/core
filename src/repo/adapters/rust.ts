@@ -26,6 +26,8 @@ export interface CargoPackage {
 export interface CargoMetadata {
   packages: CargoPackage[];
   workspace_members: string[];
+  /** The members plain `cargo test` at the root builds and tests (root package or `default-members`). */
+  workspace_default_members?: string[];
   workspace_root: string;
   resolve?: { nodes: Array<{ id: string; dependencies: string[] }> } | null;
 }
@@ -140,6 +142,8 @@ export function parseCargoMetadata(output: string): CargoMetadata {
   const ids = value.packages.map(pkg => (pkg as CargoPackage).id);
   if (new Set(ids).size !== ids.length || new Set(value.workspace_members).size !== value.workspace_members.length
     || value.workspace_members.some(id => !ids.includes(id))) throw new Error("Incomplete Cargo workspace membership");
+  if (value.workspace_default_members !== undefined && (!strings(value.workspace_default_members)
+    || value.workspace_default_members.some(id => !(value.workspace_members as string[]).includes(id)))) throw new Error("Invalid Cargo default members");
   return value as unknown as CargoMetadata;
 }
 
@@ -316,6 +320,12 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     }
     const known = new Set(context.files);
     const members = metadata.packages.filter(pkg => metadata.workspace_members.includes(pkg.id));
+    // Plain `cargo test` tests only the root package of a non-virtual workspace, or `default-members`.
+    // Selecting another member would run tests the full invocation never runs, so only these crates'
+    // targets are tests; other members stay sources whose changes reach their tested dependents.
+    const defaults = metadata.workspace_default_members;
+    if (!defaults) result.blockers.push("Cargo metadata without default workspace members requires full validation; use Cargo 1.71 or later");
+    const tested = new Set(defaults ?? []);
     if (new Set(members.map(pkg => pkg.name)).size !== members.length) {
       result.blockers.push("Ambiguous Cargo workspace package names require full validation");
       return result;
@@ -379,7 +389,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
         result.sourcePaths.push(path);
         // Cargo's test/doctest flags are authoritative. A crate's lib/bin root
         // represents its unit tests, including #[cfg(test)] modules in other files.
-        if (!target.test && !target.doctest) continue;
+        if ((!target.test && !target.doctest) || !tested.has(pkg.id)) continue;
         if (Object.hasOwn(result.rustTestTargets, path)) {
           result.blockers.push(`Multiple Cargo test targets share a source path: ${path}`);
           continue;
@@ -495,7 +505,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     // planner checks each selected set against those units.
     if (!cargoFeaturesVary(metadata)) result.rustFeatureCoverage = { deficits: {}, units: [] };
     else {
-      const tested = packages.map(({ pkg }) => pkg.name);
+      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => pkg.name);
       const dependents = new Map<string, string[]>();
       for (const edge of result.edges) {
         if (edge.from.endsWith("Cargo.toml") && edge.to.endsWith("Cargo.toml") && edge.from !== edge.to) {
@@ -505,14 +515,14 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, pkg.name]));
       const units = new Map<string, string[]>();
       for (const { pkg, manifest } of packages) {
-        units.set(pkg.name, [pkg.name]);
+        if (tested.has(pkg.id)) units.set(pkg.name, [pkg.name]);
         const seen = new Set([manifest]); const pending = [manifest];
         while (pending.length) for (const next of dependents.get(pending.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); pending.push(next); }
-        const closure = [...seen].map(path => byManifest.get(path)).filter((name): name is string => name !== undefined && tested.includes(name)).sort();
-        units.set(closure.join(" "), closure);
+        const closure = [...seen].map(path => byManifest.get(path)).filter((name): name is string => name !== undefined && testedNames.includes(name)).sort();
+        if (closure.length) units.set(closure.join(" "), closure);
       }
       const evidence = resolveFeatures?.([...units.values()]);
-      const coverage = evidence && rustFeatureCoverage(evidence, tested);
+      const coverage = evidence && rustFeatureCoverage(evidence, testedNames);
       if (coverage) result.rustFeatureCoverage = coverage;
       else result.blockers.push("Cargo feature resolution is unavailable; full validation required");
     }
