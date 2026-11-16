@@ -197,7 +197,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; documentation: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -281,10 +281,30 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   tokens.forEach((token, index) => {
     if (token.literal === undefined || includeArguments.has(index)) return;
     if (pathLike(token.literal)) paths.push(token.literal);
-    // A test that checks README or docs content at run time (version-sync and the like).
-    if (/\.(?:md|mdx)$|^(?:\.\/)?(?:docs?|documentation)(?:\/|$)/i.test(token.literal)) documentation = true;
+    // A test that checks README or docs content at run time (version-sync, link checks and the like):
+    // a Markdown name or bare extension (`"md"` in an extension check), or a documentation directory
+    // anywhere in the path (`../docs`, `concat!(env!("CARGO_MANIFEST_DIR"), "/../docs")`).
+    if (/(?:^|\.)mdx?$|(?:^|[\\/])(?:docs?|documentation)(?:[\\/]|$)/i.test(token.literal)) documentation = true;
   });
-  return { inputs, paths, compiles, documentation };
+  const navigates = navigatesUpward(tokens);
+  // Code that climbs out of its crate can walk to README or docs without naming them.
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates };
+}
+
+/** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,
+ * or a formatted path with a `..` segment) can reach any crate without a literal naming it. Tests
+ * that check every crate's files (license headers, generated code) are written this way. Only fires
+ * where the file also works with paths, so `node.parent()` in a parser does not count. */
+function navigatesUpward(tokens: ReadonlyArray<{ value: string; literal?: string }>): boolean {
+  const pathContext = tokens.some(token => ["Path", "PathBuf", "current_dir", "current_exe"].includes(token.value)
+    || ["CARGO_MANIFEST_DIR", "CARGO_WORKSPACE_DIR"].includes(token.literal ?? ""));
+  if (!pathContext) return false;
+  const pathBuf = tokens.some(token => token.value === "PathBuf");
+  return tokens.some((token, index) => {
+    if (token.literal !== undefined) return /\{[^}]*\}/.test(token.literal) && /(?:^|[\\/}])\.\.(?:[\\/{]|$)/.test(token.literal);
+    if (tokens[index - 1]?.value !== "." || tokens[index + 1]?.value !== "(") return false;
+    return token.value === "parent" || token.value === "ancestors" || (pathBuf && token.value === "pop");
+  });
 }
 
 /** A string that names a file or directory rather than ordinary text. */
@@ -463,10 +483,11 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       }
       // Code that runs Cargo or rustc can build any workspace crate; a literal path can reach another
       // crate's sources at run or build time (relative to the crate, as under `cargo test`, or to the
-      // file). Model both as dependencies of this crate instead of blocking the repository.
+      // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
+      // Model these as dependencies of this crate instead of blocking the repository.
       if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
       const reached = new Set<string>();
-      if (scanned.compiles) for (const other of packages) reached.add(other.manifest);
+      if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);
       for (const literal of scanned.paths) {
         const clean = literal.replace(/\\/g, "/").replace(/^(?:[A-Za-z]:)?\/+/, "");
         const glob = clean.search(/[*?[{]/);
