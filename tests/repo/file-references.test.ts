@@ -365,6 +365,18 @@ describe("end to end on a temporary repository", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  it("stops searching for readers once the full suite is already required", async () => {
+    const dir = repo(base);
+    try {
+      // orphan/notes.txt has no reader, so the run is full before site/index.html is reached.
+      const impact = await analyze(dir, { "orphan/notes.txt": "y\n", "site/index.html": "<html>2</html>\n" });
+      assert.ok(impact.fallbackRequired);
+      assert.deepEqual(impact.fallbackReasons, ["Unknown changed file: orphan/notes.txt"]);
+      assert.deepEqual(impact.riskSignals.find((signal) => signal.reason === "READERS_NOT_SEARCHED")?.paths, ["site/index.html"]);
+      assert.deepEqual(impact.affectedTests.map((t) => t.path), []);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it("selects tests that read package.json for a version bump", async () => {
     const dir = repo(base);
     try {
@@ -538,5 +550,34 @@ describe("end to end on a temporary repository", () => {
       assert.match(caught.stdout, /tests 2/);
       assert.match(caught.stdout, /fail 1/);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe("reference search cost", () => {
+  it("searches each target once per analysis, with the same answers as separate searches", () => {
+    const files: Record<string, string> = {
+      "research/index.json": `{"runs": ["research/a.json", "research/b.json"]}`,
+      "scripts/report.sh": `cat research/index.json`,
+      "tests/report.test.ts": `spawnSync("sh", ["scripts/report.sh"]);`,
+      "research/a.json": "{}",
+      "research/b.json": "{}",
+    };
+    for (let i = 0; i < 200; i++) files[`site/page-${i}.html`] = `<a href="/p/${i}">page</a>`;
+    const shared = input(files);
+    const first = resolveFileReferences("research/a.json", shared);
+    const second = resolveFileReferences("research/b.json", shared);
+    for (const [path, resolution] of [["research/a.json", first], ["research/b.json", second]] as const) {
+      assert.deepEqual(resolution, resolveFileReferences(path, input(files)));
+      assert.deepEqual(resolution.tests, ["tests/report.test.ts"]);
+    }
+  });
+
+  it("stays linear on a large file full of matching words, and an ignore list far back still counts as a reference", () => {
+    const words = Array.from({ length: 40_000 }, () => `"data/x.json"`).join(",");
+    const content = `{"exclude": [${words}]}`;
+    const started = Date.now();
+    assert.equal(contentNamesPath(content, "tool.json", "data/x.json", referencePattern(referenceTokens("data/x.json")), true), true);
+    assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
+    assert.equal(contentNamesPath(`{"exclude": ["data/x.json"]}`, "tool.json", "data/x.json", referencePattern(referenceTokens("data/x.json")), true), false);
   });
 });
