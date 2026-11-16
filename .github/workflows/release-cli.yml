@@ -245,7 +245,11 @@ jobs:
             --title "$release_tag" \
             --latest \
             --notes-file "$notes_file" \
-            --generate-notes
+            --generate-notes || {
+            # The job token cannot create a tag on a commit whose workflow files differ from main's.
+            echo "::error::Could not create the $release_tag release. If main has moved past this commit with a workflow change, push the release tags from the release commit yourself (npm run release:tag) and rerun the failed jobs."
+            exit 1
+          }
 
       - name: Tag the matching observer Action release
         working-directory: packages/diffci-cli
@@ -266,13 +270,17 @@ jobs:
             echo "Tag $action_tag already targets this release commit"
             exit 0
           fi
+          cannot_tag() {
+            echo "::error::Could not create $action_tag. If main has moved past this commit with a workflow change, push the release tags from the release commit yourself (npm run release:tag) and rerun the failed jobs."
+            exit 1
+          }
           tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
             -f tag="$action_tag" \
             -f message="Release DiffCI observer Action ${action_tag#action-}" \
             -f object="$GITHUB_SHA" \
             -f type=commit \
-            --jq .sha)
-          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$action_tag" -f sha="$tag_object" >/dev/null
+            --jq .sha) || cannot_tag
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$action_tag" -f sha="$tag_object" >/dev/null || cannot_tag
 
       - name: Verify npm, GitHub Release and tags agree
         env:
