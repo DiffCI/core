@@ -312,6 +312,7 @@
     "packages/diffci-cli/tests/client/enforce-policy.test.ts",
     "packages/diffci-cli/tests/client/enforce-workflow-guard.test.ts",
     "packages/diffci-cli/tests/client/feedback-prompt.test.ts",
+    "packages/diffci-cli/tests/client/full-command-tooling-package-json.test.ts",
     "packages/diffci-cli/tests/client/gate-checks.test.ts",
     "packages/diffci-cli/tests/client/gate.test.ts",
     "packages/diffci-cli/tests/client/job-summary.test.ts",
