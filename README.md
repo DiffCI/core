@@ -11,7 +11,7 @@
 [![GitLab CI/CD Catalog](https://img.shields.io/badge/GitLab%20CI%2FCD%20Catalog-diffci-FC6D26?logo=gitlab)](https://gitlab.com/explore/catalog/diffci/diffci)
 [![Sponsor](https://img.shields.io/badge/sponsor-DiffCI-ea4aaa?logo=githubsponsors)](https://github.com/sponsors/DiffCI)
 
-**Verification for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, runs them before the push instead of letting them fail at the full CI gate afterwards, and leaves a receipt of what ran and what was skipped. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
+**Verification for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, runs them before the push instead of letting them fail at the full CI gate afterwards, and leaves a receipt of what ran and what was skipped. MIT licensed, runs locally, never uploads your code or reports unless you configure it (it does count runs by default: [usage counting](docs/telemetry.md)), and falls back to the full suite whenever the evidence is incomplete.
 
 ```sh
 npx "@diffci.com/diffci@latest" check
@@ -62,7 +62,8 @@ This repository contains DiffCI's MCP server. It is implemented in
 and published as the `diffci-mcp` binary of `@diffci.com/diffci`: a local
 stdio server speaking JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`)
 that runs against the checkout it is pointed at. It needs no account and sends
-nothing by default.
+no code or reports; like the CLI, it counts runs by default
+([usage counting](docs/telemetry.md)).
 
 ```sh
 npx -y -p @diffci.com/diffci@latest diffci-mcp
@@ -148,7 +149,7 @@ The [v0.3.10 corresponding source](https://github.com/DiffCI/core/tree/4c76be14c
 remains publicly available at tagged Core commit `4c76be14` (`cli-v0.3.10-source`)
 while distribution migrates to the Core-native CLI package.
 
-`diffci check` compares full and selected runtime when safe to measure, writes reports outside the checkout, and sends nothing by default. Test commands can generate files; keep required CI authoritative.
+`diffci check` compares full and selected runtime when safe to measure, writes reports outside the checkout, and uploads no report by default; it does send a usage count ([usage counting](docs/telemetry.md)). Test commands can generate files; keep required CI authoritative.
 
 **Measured example:** one controlled Cal.com sandbox replay measured **44.2% net reduction** in install + pretest + test runtime including analysis overhead. This is a job-equivalent comparison, not production savings or a forecast for your repository. [Method and limitations](https://diffci.com/case-studies/calcom).
 

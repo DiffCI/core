@@ -14,7 +14,7 @@ On Windows PowerShell, quote the package name:
 npx '@diffci.com/diffci@latest' check
 ```
 
-`check` analyzes the checkout, infers the repository's full test command, and runs the full and proposed selected commands when safe to compare. It reports measured paired runtime only when both commands pass. Test commands may write generated files into your checkout. DiffCI writes its reports outside the repository and sends nothing by default. Keep existing required CI checks in place.
+`check` analyzes the checkout, infers the repository's full test command, and runs the full and proposed selected commands when safe to compare. It reports measured paired runtime only when both commands pass. Test commands may write generated files into your checkout. DiffCI writes its reports outside the repository and uploads none of them by default. It does send a usage count with the repository name ([usage counting](telemetry.md)); `DO_NOT_TRACK=1` stops it. Keep existing required CI checks in place.
 
 ## Analyze without running tests
 
