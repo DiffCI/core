@@ -20,29 +20,35 @@ function expandBraces(pattern: string): string[] {
 }
 
 /**
- * A task input glob as an anchored regex. `**\/` is any number of leading directories, a trailing `/**` is
- * anything below, and any other `**` (`**.js`, a bare `**`) is any run of characters including `/`, as in
- * GitHub's path filters. `*` stays within one segment. Characters that only mean something to a regex
- * (`( ) $ ^ |`) are literal, so route directories like `app/(marketing)` and `routes/$id.tsx` match
- * themselves. `?`, `+` and `[...]` keep their filter meaning.
+ * A task input glob as an anchored regex, with the same reading as the research matcher (#178/#179). `**\/`
+ * is any number of leading directories, a trailing `/**` is anything below, and any other `**` (`**.js`, a
+ * bare `**`) is any run of characters including `/`, as in GitHub's path filters. `*` and `?` stay within one
+ * segment, `[...]`/`[!...]` is a character class, `\` escapes the next character, and every other character
+ * is literal, so route directories like `app/(marketing)`, `routes/$id.tsx` and `c++/` match themselves.
  */
 function regexFrom(pattern: string): RegExp {
+  const literal = (character: string): string => character.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
   let source = "";
   for (let index = 0; index < pattern.length; index++) {
     const character = pattern[index]!;
-    if (character === "/" && pattern.startsWith("**", index + 1) && index + 3 === pattern.length) {
-      source += "(?:/.*)?";
-      index += 2;
-    } else if (character === "*" && pattern[index + 1] === "*") {
-      if (pattern[index + 2] === "/") { source += "(?:.*/)?"; index += 2; }
-      else { source += ".*"; index += 1; }
-    } else if (character === "*") {
-      source += "[^/]*";
-    } else if (/[\\.()$^|]/.test(character)) {
-      source += `\\${character}`;
-    } else {
-      source += character;
+    if (pattern.startsWith("**/", index)) { source += "(?:.*/)?"; index += 2; continue; }
+    if (pattern.startsWith("/**", index) && index + 3 === pattern.length) { source += "(?:/.*)?"; index += 2; continue; }
+    if (pattern.startsWith("**", index)) { source += ".*"; index += 1; continue; }
+    if (character === "*") { source += "[^/]*"; continue; }
+    if (character === "?") { source += "[^/]"; continue; }
+    if (character === "\\" && index + 1 < pattern.length) { source += literal(pattern[++index]!); continue; }
+    if (character === "[") {
+      const close = pattern.indexOf("]", index + 2);
+      if (close > index) {
+        let body = pattern.slice(index + 1, close);
+        const negated = body.startsWith("!") || body.startsWith("^");
+        if (negated) body = body.slice(1);
+        source += `[${negated ? "^/" : ""}${body.replace(/[\\\]^[]/g, "\\$&")}]`;
+        index = close;
+        continue;
+      }
     }
+    source += literal(character);
   }
   return new RegExp(`^${source}$`);
 }

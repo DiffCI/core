@@ -30,8 +30,18 @@ test("regex-only characters in a pattern match themselves", () => {
   assert.equal(decide("app/(marketing)/**", "app/marketing/about/page.tsx").status, "SKIP_CANDIDATE");
 });
 
-test("a pattern that is not a valid filter triggers the task instead of throwing", () => {
+test("`+` is literal, `?` is one character, and classes and escapes work as in the research matcher (#178)", () => {
   assert.equal(decide("c++/**", "c++/main.cc").status, "RUN");
+  assert.equal(decide("c++/**", "src/main.cc").status, "SKIP_CANDIDATE");
+  assert.equal(decide("src/?.ts", "src/a.ts").status, "RUN");
+  assert.equal(decide("src/?.ts", "src/ab.ts").status, "SKIP_CANDIDATE");
+  assert.equal(decide("src/v[0-9].ts", "src/v2.ts").status, "RUN");
+  assert.equal(decide("src/v[!0-9].ts", "src/v2.ts").status, "SKIP_CANDIDATE");
+  assert.equal(decide("app/\\[id\\]/*", "app/[id]/page.tsx").status, "RUN");
+});
+
+test("a pattern that is not a valid filter triggers the task instead of throwing", () => {
+  assert.equal(decide("src/[z-a].ts", "docs/readme.md").status, "RUN");
 });
 
 test("existing globstar forms are unchanged", () => {
