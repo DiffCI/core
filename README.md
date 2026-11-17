@@ -1,9 +1,14 @@
 # DiffCI Core
 
+[![Core CI](https://github.com/DiffCI/core/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DiffCI/core/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/DiffCI/core/badge)](https://scorecard.dev/viewer/?uri=github.com/DiffCI/core)
+[![npm provenance](https://img.shields.io/badge/npm-SLSA%20provenance-brightgreen?logo=npm)](https://www.npmjs.com/package/@diffci.com/diffci#provenance)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 [![npm](https://img.shields.io/npm/v/@diffci.com/diffci)](https://www.npmjs.com/package/@diffci.com/diffci)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-DiffCI%20change%20impact-blue?logo=github)](https://github.com/marketplace/actions/diffci-change-impact)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/DiffCI/core/badge)](https://scorecard.dev/viewer/?uri=github.com/DiffCI/core)
+[![GitLab CI/CD Catalog](https://img.shields.io/badge/GitLab%20CI%2FCD%20Catalog-diffci-FC6D26?logo=gitlab)](https://gitlab.com/explore/catalog/diffci/diffci)
+[![Sponsor](https://img.shields.io/badge/sponsor-DiffCI-ea4aaa?logo=githubsponsors)](https://github.com/sponsors/DiffCI)
 
 **Verification for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, runs them before the push instead of letting them fail at the full CI gate afterwards, and leaves a receipt of what ran and what was skipped. MIT licensed, runs locally, sends nothing by default, and falls back to the full suite whenever the evidence is incomplete.
 
