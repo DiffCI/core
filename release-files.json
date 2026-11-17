@@ -265,6 +265,7 @@
     "tests/repo/lockfiles.test.ts",
     "tests/repo/mocharc-config-fallback.test.ts",
     "tests/repo/orphan-tool-config.test.ts",
+    "tests/repo/python-testpaths-globs.test.ts",
     "tests/repo/removed-files.test.ts",
     "tests/repo/repo-config.test.ts",
     "tests/repo/runner-universe.test.ts",
