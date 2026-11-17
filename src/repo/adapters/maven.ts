@@ -23,10 +23,24 @@ function tags(xml: string, name: string): string[] {
 
 function first(xml: string, name: string): string | undefined { return tags(xml, name)[0]; }
 
+/** Drops `<!-- ... -->` comments in one left-to-right pass. An unterminated comment is kept, as before. */
+function stripXmlComments(source: string): string {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const start = source.indexOf("<!--", i);
+    if (start === -1) return out + source.slice(i);
+    const end = source.indexOf("-->", start + 4);
+    if (end === -1) return out + source.slice(start);
+    out += source.slice(i, start);
+    i = end + 3;
+  }
+}
+
 function parsePom(path: string, source: string): Pom {
   // Commented-out elements are not part of the model: an old <artifactId> in a comment must not
   // become the module's identity.
-  const xml = source.replace(/<!--[\s\S]*?-->/g, "");
+  const xml = stripXmlComments(source);
   const dir = posix.dirname(path) === "." ? "" : posix.dirname(path);
   const parent = first(xml, "parent");
   const own = xml.replace(/<parent\b[^>]*>[\s\S]*?<\/parent>/, "");
