@@ -177,9 +177,19 @@ interface ResolvedSelection {
   observerVersion?: string;
 }
 
+/**
+ * At most the last `bytes` bytes of `value`, cut at a character boundary. `bytes` 0 keeps nothing:
+ * `value.slice(-0)` is the whole string, so `--tail-bytes 0` used to keep the entire output, and a
+ * multi-byte tail was cut by characters, not bytes.
+ */
 function tail(value: string, bytes: number): string {
-  if (Buffer.byteLength(value, "utf8") <= bytes) return value;
-  return value.slice(-bytes);
+  if (!(bytes > 0)) return "";
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.length <= bytes) return value;
+  let start = buffer.length - Math.floor(bytes);
+  // Skip UTF-8 continuation bytes so the tail never starts inside a character.
+  while (start < buffer.length && (buffer[start]! & 0xc0) === 0x80) start++;
+  return buffer.subarray(start).toString("utf8");
 }
 
 function readSelectionFromObservation(path: string, override?: string): ResolvedSelection {
