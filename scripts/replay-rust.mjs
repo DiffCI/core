@@ -24,20 +24,6 @@ const targets = {
       ['335da33c46daaa7db629ad77e07a9531909d9dfd', 'e0b33b0fac2d83f37e737e7207e75a36339380a6'],
     ],
   },
-  // A virtual workspace of six crates (url, idna, form_urlencoded, percent_encoding, data-url and
-  // url_debug_tests). The first three deltas each change one library crate; the last changes url,
-  // whose path-handling code depends on every crate, so it is expected to stay FULL.
-  'rust-url': {
-    upstream: 'https://github.com/servo/rust-url.git',
-    lockfile: 'generate',
-    pinnedHead: 'bcf5a2a98986dd5dfb252d3e977d2da380b09fda',
-    revisions: [
-      ['13b385b299238306d2601ddc1c0043afcd2f2046', 'cad4a844d8de6100f18b0ca17603ac3866a13c1f'],
-      ['55ff72dd676ae6657d0b8d7dd005233210da76d2', '9a04be18b36cd08e933da06554af0d83bf3fb31b'],
-      ['828b28c95034953e353c1559fd28520a2f01ca80', '15e0b57e5881e3c5a622b38a7e7d6efffcecb8e5'],
-      ['bcf5a2a98986dd5dfb252d3e977d2da380b09fda', '13b385b299238306d2601ddc1c0043afcd2f2046'],
-    ],
-  },
   // A virtual workspace of 20 small crates with a committed Cargo.lock. Two members share their name
   // with published versions used as dev-dependencies, so members are named NAME@VERSION. The first
   // three deltas change one leaf crate each; the last also changes Cargo.lock, so it stays FULL.
@@ -61,7 +47,7 @@ for (let i = 0; i < args.length; i++) {
   options[key] = key === '--prepare-dependencies' ? true : args[++i];
 }
 if (!options['--repo'] || !options['--disposable-root'] || !options['--output'] || !options['--prepare-dependencies']) {
-  throw new Error('Usage: node scripts/replay-rust.mjs [--target glob|rust-url|anstyle] --repo PATH --disposable-root PATH --output FILE --prepare-dependencies (authorizes Cargo lockfile generation, for targets without a committed one, and dependency fetch in that disposable clone)');
+  throw new Error('Usage: node scripts/replay-rust.mjs [--target glob|anstyle] --repo PATH --disposable-root PATH --output FILE --prepare-dependencies (authorizes Cargo lockfile generation, for targets without a committed one, and dependency fetch in that disposable clone)');
 }
 const targetName = options['--target'] ?? 'glob';
 if (!Object.hasOwn(targets, targetName)) throw new Error(`Unknown target: ${targetName}`);

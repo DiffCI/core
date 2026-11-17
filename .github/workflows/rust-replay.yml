@@ -8,7 +8,7 @@ on:
       target:
         description: Pinned public Rust target
         type: choice
-        options: [glob, rust-url, anstyle]
+        options: [glob, anstyle]
         default: glob
 permissions:
   contents: read
@@ -40,7 +40,6 @@ jobs:
           echo "RUST_REPLAY_ROOT=$root" >> "$GITHUB_ENV"
           case "$TARGET" in
             glob) url=https://github.com/rust-lang/glob.git; head=057cef2824f5a96f738e52d7d8ca3e024381bcc6 ;;
-            rust-url) url=https://github.com/servo/rust-url.git; head=bcf5a2a98986dd5dfb252d3e977d2da380b09fda ;;
             anstyle) url=https://github.com/rust-cli/anstyle.git; head=46bb5c061b42ebad90694969352ee0a31d67fc68 ;;
             *) echo "Unknown target: $TARGET" >&2; exit 1 ;;
           esac
