@@ -95,11 +95,13 @@ export function expandMatrix(matrix: unknown, evidence?: EvidenceRef): MatrixExp
     axes.push([key, values]);
   }
 
-  // Cartesian product, in declaration order so expansion is deterministic across runs.
-  let instances: MatrixAssignment[] = [{}];
+  // Cartesian product, in declaration order so expansion is deterministic across runs. A matrix with no
+  // axes has no original combinations: every `include` entry then becomes its own cell.
+  let instances: MatrixAssignment[] = axes.length > 0 ? [{}] : [];
   for (const [key, values] of axes) {
     instances = instances.flatMap((base) => values.map((v) => ({ ...base, [key]: v })));
   }
+  const originalKeys = new Set(axes.map(([key]) => key));
 
   const excludeRaw = Array.isArray(source.exclude) ? source.exclude : [];
   for (const entry of excludeRaw) {
@@ -117,6 +119,8 @@ export function expandMatrix(matrix: unknown, evidence?: EvidenceRef): MatrixExp
   }
 
   const includeRaw = Array.isArray(source.include) ? source.include : [];
+  let original = instances;
+  const appended: MatrixAssignment[] = [];
   for (const entry of includeRaw) {
     if (!entry || typeof entry !== "object") {
       unsupported.push({ what: JSON.stringify(entry), why: "an include entry must be an object" });
@@ -128,14 +132,17 @@ export function expandMatrix(matrix: unknown, evidence?: EvidenceRef): MatrixExp
       if (s === undefined) unsupported.push({ what: `include ${k}`, why: "non-scalar include value" });
       else addition[k] = s;
     }
-    // GitHub: an include that matches existing combinations EXTENDS them; otherwise it appends a cell.
-    const extended = instances.filter((i) => matches(i, addition));
-    if (extended.length > 0) {
-      instances = instances.map((i) => (matches(i, addition) ? { ...i, ...addition } : i));
-    } else if (!instances.some((i) => sameAssignment(i, addition))) {
-      instances.push(addition);
+    // GitHub: an include is added to every ORIGINAL combination whose original values it does not
+    // overwrite; values an earlier include added can be overwritten. When it fits no original
+    // combination it becomes a new one, and later includes never extend such an appended cell.
+    const fits = (i: MatrixAssignment) => Object.entries(addition).every(([k, v]) => !originalKeys.has(k) || i[k] === v);
+    if (original.some(fits)) {
+      original = original.map((i) => (fits(i) ? { ...i, ...addition } : i));
+    } else if (![...original, ...appended].some((i) => sameAssignment(i, addition))) {
+      appended.push(addition);
     }
   }
+  instances = [...original, ...appended];
 
   return { instances, unsupported, ...(evidence ? { evidence } : {}) };
 }
