@@ -9,6 +9,7 @@ import type { AdapterContext } from "../../src/repo/adapters/types.js";
 import { rustTestInvocation } from "../../src/repo/adapters/rust-invocation.js";
 import { buildDependencyGraph, classifyRepositoryProject, hydrateDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
+import { repositoryFileReader } from "../../src/repo/file-references.js";
 import { testFileMatcherForProfile } from "../../src/repo/test-discovery.js";
 import type { GitDelta, ChangedFile } from "../../src/git/types.js";
 
@@ -166,6 +167,66 @@ test("registered Rust graph propagates crate roots and manifests and fails close
     writeFileSync(join(root, "foreign.js"), "export const value = 1;");
     const mixed = await buildDependencyGraph({ repoPath: root });
     assert.ok(mixed.adapterBlockers?.some(reason => reason.includes("Mixed Rust")));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("tool configuration and GitHub metadata select nothing unless Rust code may read them", async t => {
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers=["core", "app"]\n', ".github/workflows/test.yml": workflow() };
+  for (const name of ["core", "app"]) {
+    files[`${name}/Cargo.toml`] = `[package]\nname="${name}"\nversion="0.1.0"\n`;
+    files[`${name}/src/lib.rs`] = "#[test] fn value() {}";
+  }
+  const metadataPaths = ["rustfmt.toml", ".rustfmt.toml", "clippy.toml", "deny.toml", "_typos.toml", "release.toml", ".editorconfig", "core/rustfmt.toml", "app/clippy.toml",
+    ".github/dependabot.yml", ".github/CODEOWNERS", ".github/FUNDING.yml", ".github/ISSUE_TEMPLATE/bug.yml", ".github/PULL_REQUEST_TEMPLATE.md", ".github/renovate.json5"];
+  const otherPaths = [".github/actions/setup/action.yml", ".github/scripts/test.sh", ".cargo/config.toml", "rust-toolchain.toml",
+    ".gitattributes", "core/tests/ui/clippy.toml", "fixtures/rustfmt.toml", "insta.yaml", ".config/nextest.toml"];
+  for (const path of [...metadataPaths, ...otherPaths]) files[path] = "# config\n";
+  const root = fixture(files);
+  const inventory = { repositoryFiles: new Set(Object.keys(files)), readRepositoryFile: repositoryFileReader(root) };
+  const packages = ["core", "app"].map(name => ({ id: name, name, manifest_path: join(root, name, "Cargo.toml"), dependencies: [], features: {}, targets: [
+    { name, kind: ["lib"], src_path: join(root, name, "src/lib.rs"), test: true, doctest: true },
+  ] }));
+  let extraTargets: object[] = [];
+  const metadata = () => JSON.stringify({ packages: packages.map(p => p.id === "core" ? { ...p, targets: [...p.targets, ...extraTargets] } : p), workspace_members: packages.map(p => p.id),
+    workspace_default_members: packages.map(p => p.id), workspace_root: root, resolve: { nodes: packages.map(p => ({ id: p.id, dependencies: [] })) } });
+  t.mock.method(rustAdapter, "analyze", (context: AdapterContext) => analyzeRustMetadata(context, metadata()));
+  const full = (graph: Awaited<ReturnType<typeof buildDependencyGraph>>, path: string) => {
+    const impact = new ImpactAnalyzer().analyze(delta(path), graph, graph.profile, inventory);
+    return impact.fallbackRequired && impact.fallbackReasons.some(reason => reason.startsWith("Rust runtime inputs"));
+  };
+  try {
+    let graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.profile.rustMetadataReaders, []);
+    for (const path of metadataPaths) {
+      const impact = new ImpactAnalyzer().analyze(delta(path), graph, graph.profile, inventory);
+      assert.equal(impact.fallbackRequired, false, `${path}: ${impact.fallbackReasons}`);
+      assert.deepEqual(impact.affectedTests, [], path);
+    }
+    // CI, Cargo and toolchain configuration, files a workflow could run, and tool names outside a crate
+    // root (a UI-test fixture's clippy.toml) are still unmodelled inputs.
+    for (const path of [".github/workflows/test.yml", ...otherPaths]) {
+      const impact = new ImpactAnalyzer().analyze(delta(path), graph, graph.profile, inventory);
+      assert.ok(impact.fallbackRequired, path);
+    }
+    // An older cached profile has no metadata readers: nothing is assumed.
+    const cached = { ...graph.profile };
+    delete cached.rustMetadataReaders;
+    assert.ok(new ImpactAnalyzer().analyze(delta("rustfmt.toml"), graph, cached, inventory).fallbackRequired);
+    // Rust code that names such a file, a matching extension or `.github`, or climbs out of its crate,
+    // may read it at run time; so may a build script.
+    for (const body of ['let _ = std::fs::read_to_string("rustfmt.toml");', 'let _ = "../.github/dependabot.yml";', 'let ok = |p: &std::path::Path| p.extension().map_or(false, |x| x == "toml");',
+      'let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent();', 'let _ = ".editorconfig";']) {
+      writeFileSync(join(root, "core/src/lib.rs"), `#[test] fn reads() { ${body} }`);
+      graph = await buildDependencyGraph({ repoPath: root });
+      assert.deepEqual(graph.profile.rustMetadataReaders, ["core/src/lib.rs"], body);
+      for (const path of ["rustfmt.toml", ".github/dependabot.yml"]) assert.ok(full(graph, path), `${body}: ${path}`);
+    }
+    writeFileSync(join(root, "core/src/lib.rs"), "#[test] fn value() {}");
+    writeFileSync(join(root, "core/build.rs"), "fn main() {}");
+    extraTargets = [{ name: "build-script-build", kind: ["custom-build"], src_path: join(root, "core/build.rs"), test: false, doctest: false }];
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.profile.rustMetadataReaders, ["core/build.rs"]);
+    assert.ok(full(graph, "clippy.toml"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

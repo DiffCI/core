@@ -55,6 +55,22 @@ type IsTestFile = (filePath: string) => boolean;
 // exact directories.
 function isScriptFile(filePath: string, layout: RepositoryLayout): boolean { return layout.isScriptPath(filePath); }
 function isDocumentationFile(filePath: string, layout: RepositoryLayout): boolean { return layout.isDocumentationPath(filePath); }
+
+/** Formatter, linter, spelling, coverage and release-tool configuration that plain `cargo test` never
+ * reads. Not `.cargo/config.toml`, `rust-toolchain(.toml)`, `.gitattributes` (line endings of checked-out
+ * fixtures) or test-tool configuration such as insta's or nextest's. */
+const RUST_TOOL_CONFIG = /^(?:\.?rustfmt\.toml|\.?clippy\.toml|deny\.toml|_?typos\.toml|\.typos\.toml|committed\.toml|release\.toml|cliff\.toml|\.?taplo\.toml|\.pre-commit-config\.ya?ml|\.?codecov\.ya?ml|\.editorconfig|\.markdownlint(?:-cli2)?\.(?:jsonc?|ya?ml)|CODEOWNERS|renovate\.json5?|\.renovaterc(?:\.json)?)$/;
+
+/** GitHub's own repository metadata: templates, owners, funding, Dependabot, Renovate, release notes,
+ * labels and bots. Not workflows, composite actions or scripts a workflow could run. */
+const GITHUB_METADATA = /^\.github\/(?:(?:ISSUE_TEMPLATE|DISCUSSION_TEMPLATE|PULL_REQUEST_TEMPLATE)\/[^/]+\.(?:md|ya?ml)|[^/]+\.md|CODEOWNERS|(?:FUNDING|dependabot|release|labeler|labels|stale|settings|codecov|config)\.ya?ml|renovate\.json5?)$/;
+
+/** A Rust repository's tool configuration at its root or a crate root, or GitHub metadata. */
+export function rustToolMetadataPath(path: string, crateRoots: ReadonlySet<string>): boolean {
+  if (path.startsWith(".github/")) return GITHUB_METADATA.test(path);
+  const slash = path.lastIndexOf("/");
+  return crateRoots.has(path.slice(0, slash + 1)) && RUST_TOOL_CONFIG.test(path.slice(slash + 1));
+}
 /**
  * What a tool configuration file controls, when that is worth naming in the fallback reason
  * (issue #142). A change to one of these falls back to the full suite either way; "Unknown changed
@@ -307,6 +323,8 @@ export class ImpactAnalyzer {
   private sortedRepositoryFiles: string[] = [];
   private compiledProjectCache: CompiledProject[] | undefined;
   private goEmbedPaths = new Set<string>();
+  /** Changed Rust tool configuration and GitHub metadata that no test reads (rustToolMetadataPath). */
+  private rustToolMetadata = new Set<string>();
   private selectTestPhases = false;
   private testPhases = new Set<string>();
   private workersOutsideSuite: boolean | undefined;
@@ -635,14 +653,25 @@ export class ImpactAnalyzer {
         fallbackReasons.push(message);
       }
     }
+    this.rustToolMetadata = new Set();
     if (profile.adapters?.some(adapter => adapter.id === "rust")) {
       const modeledPaths = new Set([...(profile.rustSources ?? []), ...(profile.rustAssets ?? [])]);
       // Documentation follows the shared classification (as for the other adapters) unless Rust code
       // includes it (then it is a modelled asset), names it, or a workspace build script could read it.
       const documentation = (path: string) => !profile.rustDocumentationReaders?.length
         && (this.layout.isDocumentationPath(path) || isAgentConfigurationPath(path));
+      // Plain `cargo test` never reads formatter, linter or release-tool configuration, or the GitHub
+      // metadata beside workflows (templates, CODEOWNERS, Dependabot). Such a file at the repository
+      // root or a crate root is not a test input unless Rust code may read it (rustMetadataReaders).
+      const crateRoots = new Set(["", ...[...modeledPaths].filter(path => /(?:^|\/)Cargo\.toml$/.test(path)).map(path => path.slice(0, path.lastIndexOf("/") + 1))]);
+      // Only for a Rust-only repository: another language's tools (Prettier, a JavaScript test runner)
+      // may read `.editorconfig` or a `.github` file.
+      const metadata = (path: string) => profile.adapters!.every(adapter => adapter.id === "rust")
+        && profile.rustMetadataReaders !== undefined && profile.rustMetadataReaders.length === 0
+        && rustToolMetadataPath(path, crateRoots);
       const unmodeledPaths = [...new Set(delta.files.flatMap(allChangePaths))]
-        .filter(path => path === "Cargo.toml" || /(?:^|\/)Cargo\.lock$/.test(path) || (!modeledPaths.has(path) && !documentation(path)));
+        .filter(path => path === "Cargo.toml" || /(?:^|\/)Cargo\.lock$/.test(path) || (!modeledPaths.has(path) && !documentation(path) && !metadata(path)));
+      this.rustToolMetadata = new Set([...new Set(delta.files.flatMap(allChangePaths))].filter(path => !modeledPaths.has(path) && metadata(path)));
       if (unmodeledPaths.length) fallbackReasons.push(`Rust runtime inputs outside crate metadata or workspace configuration require full validation: ${unmodeledPaths.slice(0, 20).join(", ")}`);
     }
     const hasGoAdapter = profile.adapters?.some(adapter => adapter.id === "go");
@@ -1098,6 +1127,7 @@ export class ImpactAnalyzer {
       if (this.isTestFile(changedPath)) this.addAffectedTest(changedPath, changedPath, graph, affectedTests, "DIRECT_CHANGE", evidence);
       return;
     }
+    if (this.rustToolMetadata.has(changedPath)) return;
     // Go's embed metadata is ownership evidence regardless of suffix or documentation naming.
     // Traverse it before generic unknown/docs classification can discard the dependency.
     if (this.goEmbedPaths.has(changedPath)) {

@@ -25,6 +25,9 @@ export interface AdapterContribution {
   /** Rust files that may read documentation: workspace build scripts, and sources naming a
    * documentation path in a string literal. */
   rustDocumentationReaders?: string[];
+  /** Rust files that may read tool configuration or repository metadata: workspace build scripts, and
+   * sources naming a `.github`, TOML, YAML, JSON or dotfile path in a string literal. */
+  rustMetadataReaders?: string[];
   /** Packages whose Cargo features change when a tested crate runs without the rest of the full invocation. */
   rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
   executionEnv?: Record<string, string>;

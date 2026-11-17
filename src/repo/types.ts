@@ -58,6 +58,9 @@ export interface RepositoryProfile {
   /** Rust files that may read documentation (adapters/rust.ts). While one exists, documentation
    * changes keep the full suite; otherwise they follow the shared documentation classification. */
   rustDocumentationReaders?: string[];
+  /** Rust files that may read tool configuration or repository metadata (adapters/rust.ts). Absent
+   * (an older cached profile) or non-empty, those changes keep the full suite. */
+  rustMetadataReaders?: string[];
   /** Cargo feature resolution per tested crate (adapters/rust.ts). Absent means a selective command
    * cannot be shown to keep the full invocation's features. */
   rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
