@@ -449,6 +449,9 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     const moduleTrees = packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path)))
       .filter((path): path is string => path !== undefined).map(path => dirname(path) === "." ? "" : dirname(path));
     if (!completeRustInventory(root, known, moduleTrees)) result.blockers.push("Incomplete Rust source inventory or symlinked inputs require full validation");
+    // Crate roots, for `#[path]` inside inline modules; directories of `#[path]` modules, checked below.
+    const targetRoots = new Set(packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path))));
+    const pathModuleTrees: string[] = [];
     result.sourcePaths = [...new Set(result.sourcePaths)].sort();
     result.testFiles.sort();
     if (!result.testFiles.length) result.blockers.push("Cargo metadata found no supported test targets");
@@ -503,8 +506,6 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     if (packages.some(({ pkg }) => pkg.targets.some(target => target["required-features"]?.length))) {
       result.blockers.push("Cargo targets requiring features need an explicitly supported test invocation; full validation required");
     }
-    const targetRoots = new Set(packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path))));
-    const pathModuleTrees: string[] = [];
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
       if (!sourceOwner) continue;
