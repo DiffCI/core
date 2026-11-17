@@ -265,6 +265,27 @@ test("Rust includes model literal crate-local inputs and reject external or comp
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("byte and C raw strings cannot hide an include or path attribute", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers = ["app", "other"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "",
+    "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]);
+    // A raw string takes no escapes, so its closing quote follows the backslash. The trailing comment
+    // keeps the quote count even, as an editor or rustfmt would leave it.
+    for (const prefix of ["br", "cr", "br#", "cr#"]) {
+      const close = prefix.endsWith("#") ? '"#' : '"';
+      for (const hidden of ['include!(concat!(env!("OUT_DIR"), "/generated.rs"));', '#[path = "../../other/src/lib.rs"] mod external;']) {
+        writeFileSync(join(root, "app/src/lib.rs"), `pub const P: &[u8] = ${prefix}"\\${close};\n${hidden}\n// "\n`);
+        assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => reason.includes("Rust computed includes or path attributes")), `${prefix}: ${hidden}`);
+      }
+    }
+    writeFileSync(join(root, "app/src/lib.rs"), 'pub const P: &[u8] = br#"include_str!("missing") and \\"#;\npub const C: &core::ffi::CStr = cr"\\";\n');
+    assert.deepEqual(analyzeRustMetadata(context, output).blockers, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Rust runtime reads of another crate become dependencies; non-rs included code still falls back", () => {
   const files = { "Cargo.toml": '[workspace]\nmembers=["app", "other", "third"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "",
     "app/src/body.inc": 'const VALUE: &str = include_str!("../../other/src/lib.rs");', "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "",
