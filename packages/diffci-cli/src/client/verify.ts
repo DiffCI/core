@@ -7,7 +7,7 @@ import type { DependencyGraphResult } from "@diffci.com/core/repo/types";
 
 import { appendToCommand, batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
 import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
-import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
+import { checkAtBaseline, compareWithBaseline, type CheckBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
@@ -405,13 +405,22 @@ async function executeWithPolicy(
     };
   }
   const checkBaseline = options.baselineOnFailure && checkBase && checkHead
-    ? (check: { command: string }, remainingMs: number) => checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: Math.max(remainingMs, 0) })
+    // With no time left the base rerun would get a 0ms limit, which means none: report it as unknown instead.
+    ? (check: { command: string }, remainingMs: number): CheckBaseline => remainingMs <= 0
+      ? { status: "unknown", base_sha: checkBase, reason: "the time limit ran out before the base run" }
+      : checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: remainingMs })
     : undefined;
   const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes, baseline: checkBaseline });
   const checks = checkRun?.results.length ? checkRun.results : undefined;
   const failedCheck = checkRun?.failure?.check;
   // Checks the time limit left no room for were never run, so the tests must not run (with no limit) either.
   const unrunChecks = checkRun?.outOfTime ? checkRun.results.filter((check) => check.status === "not_run") : [];
+  // Every check can run and still use the whole budget (a slow last check, or a base rerun after a
+  // failure that also fails at the base). The tests would then get a 0ms limit, which means none.
+  const testBudgetMs = options.timeoutMs - (checkRun?.wallMs ?? 0);
+  const budgetUsedByChecks = Boolean(checkRun && !checkRun.failure && !unrunChecks.length && testBudgetMs <= 0
+    && checkRun.results.some((check) => check.status !== "skipped" && check.status !== "not_run"));
+  const testsOutOfTime = unrunChecks.length > 0 || budgetUsedByChecks;
   // Checks that also fail at the base: still a failed verdict (required CI fails either way), but they
   // no longer stop the run before the change's own failures.
   const preexistingChecks = checkRun?.preexisting ?? [];
@@ -421,15 +430,15 @@ async function executeWithPolicy(
   // Every test run goes under a probe that records which `node --test` files started (selected ones must)
   // and each one's duration and result for the outcome log (2026-11-06). Outside node:test it does nothing.
   const expectedNodeTests = selection === "selected" && result ? selectedNodeTests(command, result.selectedTests) : [];
-  const trace = !checkRun?.failure && !unrunChecks.length ? traceNodeTestFiles(options.repoPath) : undefined;
+  const trace = !checkRun?.failure && !testsOutOfTime ? traceNodeTestFiles(options.repoPath) : undefined;
   let startedNodeTests: string[] | undefined;
   let execution: CommandMeasurement;
   try {
     execution = checkRun?.failure
       ? checkRun.failure.measurement
-      : unrunChecks.length
+      : testsOutOfTime
       ? checksOutOfTime(command, checkRun?.wallMs ?? 0)
-      : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
+      : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: testBudgetMs, tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
     startedNodeTests = trace?.read();
     const nodeResults = trace?.results() ?? [];
     if (nodeResults.length) execution = { ...execution, testResults: mergeTestFileResults(execution.testResults, nodeResults) };
@@ -491,6 +500,8 @@ async function executeWithPolicy(
       ? checks ? `${reason}; ${checkSummary(checks)}` : reason
       : unrunChecks.length
         ? `gate check(s) ${unrunChecks.map((check) => check.id).join(", ")} did not run within the ${options.timeoutMs}ms time limit; tests were not run`
+      : budgetUsedByChecks
+        ? `gate checks used the whole ${options.timeoutMs}ms time limit (${String(checkRun?.wallMs ?? 0)}ms); tests were not run`
       : failedCheck
         ? `gate check ${failedCheck.id} ${failedCheck.status === "timed_out" ? "timed out" : `failed with exit code ${String(failedCheck.exit_code)}`}; tests were not run (${failedCheck.command})`
       : execution.timedOut
@@ -499,7 +510,7 @@ async function executeWithPolicy(
           ? `${preexistingChecks.length} gate check(s) failed that also fail at the base commit; nothing this change introduced failed (${preexistingChecks.map((check) => check.id).join(", ")})`
           : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
-  const failureBaseline = verification === "failed" && !failedCheck && !unrunChecks.length && !execution.timedOut && options.baselineOnFailure && baselineSha
+  const failureBaseline = verification === "failed" && !failedCheck && !testsOutOfTime && !execution.timedOut && options.baselineOnFailure && baselineSha
     // The base reruns only the parts that ran here: a first-pass failure is compared without the full suite.
     ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands: stoppedInFirstPass ? firstPass.parts : commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
     : undefined;
