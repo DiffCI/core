@@ -32,17 +32,17 @@ const NON_TEST_ACTIONS = [
 /** DiffCI subcommands that run no tests. `verify`, `check`, `pilot` and `enforce-misses` do, so `diffci`
  * followed by anything else stays a test runner (2026-10-29: DiffCI's own observation workflows were
  * 60 of 65 workflow-triggered fallbacks in one dogfood repository's telemetry). */
-const DIFFCI_NON_TEST_COMMAND = /\bdiffci["']?(?:\s+--?[\w-]+(?:=\S+)?)*\s+(?:observe|init|version|telemetry|pilot-packet|verify-workflow|validate-specs|mcp)\b/g;
+const DIFFCI_NON_TEST_COMMAND = /\bdiffci["']?(?:\s+-\S*)*\s+(?:observe|init|version|telemetry|pilot-packet|verify-workflow|validate-specs|mcp)\b/g;
 
 /** `diffci` invoked with a subcommand still present after removing the non-test ones. */
-const DIFFCI_COMMAND = /\bdiffci["']?(?:\s+--?[\w-]+(?:=\S+)?)*\s+[a-z][\w-]*/;
+const DIFFCI_COMMAND = /\bdiffci["']?(?:\s+-\S*)*\s+[a-z][\w-]*/;
 
 /** A job whose `if` is the literal false never runs (a retired workflow kept for its history). */
 function jobDisabled(job: object): boolean {
   const condition = (job as { if?: unknown }).if;
   return condition === false || (typeof condition === "string" && /^\s*(?:\$\{\{\s*)?false(?:\s*\}\})?\s*$/.test(condition));
 }
-const TEST_RUNNERS = /(?:^|[\s/"'`(;&|])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine|pytest|tox|nox|phpunit|rspec|ctest)(?=$|[\s"'`);&|])|(?:node|tsx|bun|deno)(?:\s+--?[\w-]+(?:=\S+)?)*\s+--?test\b|\b(?:go|cargo|dotnet|swift|mix|zig)\s+test\b|\b(?:mvn|mvnw|gradle|gradlew|sbt|bazel|make|just)\b/;
+const TEST_RUNNERS = /(?:^|[\s/"'`(;&|])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine|pytest|tox|nox|phpunit|rspec|ctest)(?=$|[\s"'`);&|])|(?:node|tsx|bun|deno)(?:\s+-\S*)*\s+--?test\b|\b(?:go|cargo|dotnet|swift|mix|zig)\s+test\b|\b(?:mvn|mvnw|gradle|gradlew|sbt|bazel|make|just)\b/;
 const PACKAGE_SCRIPT = /\b(?:npm|pnpm|yarn|bun)\s+(?:(?:run|run-script|-w\s+\S+|--workspace[= ]\S+|--prefix[= ]\S+|--if-present|-r|--recursive|--silent|-s)\s+)*([\w:.-]+)/g;
 const INTERPRETER_FILE = /\b(?:node|tsx|ts-node|bash|sh|zsh|pwsh|powershell|python3?|ruby|perl|deno\s+run|bun(?:\s+run)?|npx\s+(?:--\S+\s+)*tsx)\s+(?:-{1,2}[\w-]+(?:=\S+)?\s+)*\.{0,2}\/?[\w./-]+\.(?:m?[jt]s|c[jt]s|sh|ps1|py|rb|pl)\b|(?:^|[\s;&|])\.{1,2}\/[\w./-]+/;
 const PACKAGE_MANAGER_BUILTINS = new Set(["ci", "install", "i", "add", "remove", "uninstall", "publish", "pack", "version", "view", "info", "whoami", "login", "config", "cache", "audit", "outdated", "ls", "list", "exec", "dlx", "init", "create", "link", "prune", "dedupe", "rebuild", "set-script", "pkg", "fund", "doctor", "help", "--version", "-v"]);

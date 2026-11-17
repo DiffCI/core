@@ -67,9 +67,13 @@ export function impactOutputs(report) {
   };
 }
 
-/** The first line of every DiffCI comment, so a rerun finds and updates its own instead of adding one. */
+/**
+ * The first line of every DiffCI comment, so a rerun finds and updates its own instead of adding one. The key is
+ * the workflow and job name, which a pull request can set; every way to end an HTML comment (`-->`, `--!>`) needs a
+ * `>`, so dropping `>` keeps the key inside the comment (CodeQL alert 31).
+ */
 export function commentMarker(key) {
-  return `<!-- diffci-change-impact:${String(key).replace(/-->/g, "")} -->`;
+  return `<!-- diffci-change-impact:${String(key).replace(/>/g, "")} -->`;
 }
 
 /** A short PR comment: the headline and why, with the full detail one click away in the job summary. */

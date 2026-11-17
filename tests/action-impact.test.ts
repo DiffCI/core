@@ -80,7 +80,9 @@ test("the comment leads with the answer and cannot mention anyone", () => {
   const full = formatComment(report({}, { mode: "FULL", fallbackReasons: ["@acme/config changed"] }), { marker });
   assert.match(full, /The full test suite is needed/);
   assert.doesNotMatch(full, /@acme/, "an @ in prose would notify a user or team");
-  assert.equal(commentMarker("a-->b"), "<!-- diffci-change-impact:ab -->");
+  assert.equal(commentMarker("a-->b"), "<!-- diffci-change-impact:a--b -->");
+  assert.equal(commentMarker("a--!>b"), "<!-- diffci-change-impact:a--!b -->");
+  assert.equal(commentMarker("CI/diffci"), "<!-- diffci-change-impact:CI/diffci -->", "existing markers keep matching");
 });
 
 type Call = { method: string; url: string; body?: string };

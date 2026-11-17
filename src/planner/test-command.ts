@@ -141,9 +141,24 @@ function configAllowsPath(config: TestRunnerConfig, path: string): boolean {
 const PATTERN_CHARACTERS = /[[\]*?{}()+^$|]/;
 const LITERAL_PATH_FRAMEWORKS: ReadonlySet<KnownTestFramework> = new Set(["vitest", "bun:test"]);
 
+/**
+ * Whether `path` has a `{...,...}` or `{...}` range with `..`, as `/\{[^}]*(?:,|\.\.)[^}]*\}/` tests, in linear
+ * time (that regex is quadratic on a long run of `{`, CodeQL alert 14). The widest candidate before each `}` starts
+ * at the first `{` after the previous `}`, so checking that one per segment is enough.
+ */
+function hasBraceExpansion(path: string): boolean {
+  const segments = path.split("}");
+  return segments.slice(0, -1).some((segment) => {
+    const open = segment.indexOf("{");
+    if (open === -1) return false;
+    const body = segment.slice(open + 1);
+    return body.includes(",") || body.includes("..");
+  });
+}
+
 /** `path` as a `node --test` glob that matches only itself, or undefined when none can. */
 export function nodeTestGlobForPath(path: string): string | undefined {
-  if (/\{[^}]*(?:,|\.\.)[^}]*\}/.test(path)) return undefined;
+  if (hasBraceExpansion(path)) return undefined;
   return path.replace(/[[\]*?{}()]/g, (character) => `@([${character}])`);
 }
 
@@ -234,7 +249,7 @@ function runsOnlyDefaultVitest(scripts: Readonly<Record<string, string>>, name =
   const script = scripts[name];
   if (script === undefined) return depth > 0;
   if (depth > 5 || !script.trim() || scripts[`pre${name}`] || scripts[`post${name}`]) return false;
-  return script.split(/\s*&&\s*/).every((phase) => {
+  return script.split("&&").every((phase) => {
     const run = /^(?:npm|pnpm|yarn|bun) (?:run )?([\w:-]+)$/.exec(phase.trim());
     if (run) return runsOnlyDefaultVitest(scripts, run[1]!, depth + 1);
     const words = phase.trim().split(/\s+/);

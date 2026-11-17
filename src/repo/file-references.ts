@@ -36,6 +36,26 @@ import { join, posix } from "node:path";
 import { matchesGlob } from "./test-discovery.js";
 import { LOCKFILE_NAMES } from "./lockfiles.js";
 
+/** Trailing slashes. The lookbehind starts a match only at the first slash of a run; `/\/+$/` alone retries from every
+ * slash of a run that is not at the end, which is quadratic on long runs (CodeQL alerts 16, 17). */
+const TRAILING_SLASHES = /(?<!\/)\/+$/;
+
+/**
+ * `glob` with each `[...]` (up to the next `]`) replaced by `?`, as `/\[[^\]]*\]/g` would, in linear time: that
+ * regex rescans to the end from every `[` of a line with no `]`, quadratic on a long run of `[` (CodeQL alert 18).
+ */
+export function widenCharacterClasses(glob: string): string {
+  let out = "";
+  let from = 0;
+  for (let open = glob.indexOf("["); open !== -1; open = glob.indexOf("[", from)) {
+    const close = glob.indexOf("]", open + 1);
+    if (close === -1) break;
+    out += `${glob.slice(from, open)}?`;
+    from = close + 1;
+  }
+  return out + glob.slice(from);
+}
+
 const MAX_READ_BYTES = 1_048_576;
 
 /** Reads repo-relative text files from a checkout at HEAD, the same tree the dependency graph reads.
@@ -269,11 +289,11 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
         if (posix.basename(candidate) === targetBase || pattern.test(` ${candidate} `)) return true;
         continue;
       }
-      const resolved = posix.normalize(posix.join(cwd || ".", candidate)).replace(/\/+$/, "");
+      const resolved = posix.normalize(posix.join(cwd || ".", candidate)).replace(TRAILING_SLASHES, "");
       if (GLOB_CHARS.test(candidate)) {
         // Character classes are widened to any character, so an unsupported class syntax can only
         // over-match. A glob naming a directory (`ops/*`) reaches the files inside it.
-        const widened = resolved.replace(/\[[^\]]*\]/g, "?");
+        const widened = widenCharacterClasses(resolved);
         if ([target, ...dirs].some((path) => matchesGlob(path, widened))) return true;
         continue;
       }
@@ -335,7 +355,8 @@ function namesDirectoryOf(content: string, readerPath: string, target: string): 
   const dir = posix.dirname(target);
   if (dir === "." || posix.dirname(readerPath) === dir) return true;
   const names = dir.split("/").filter(Boolean);
-  return names.some((name) => new RegExp(`(?:^|["'\`/\s(])${escape(name)}(?=$|["'\`/\s),])`, "m").test(content));
+  // `\\s`, not `\s`: in a template literal `\s` is just `s` (CodeQL alerts 27, 28).
+  return names.some((name) => new RegExp(`(?:^|["'\`/\\s(])${escape(name)}(?=$|["'\`/\\s),])`, "m").test(content));
 }
 
 /**
@@ -364,7 +385,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
     // an unknown directory (2026-11-04: a LobeHub composite action blocked every changed file under scripts/).
     const variable = /^\$(?:\{[\w.]+\}|\w+)\/(.+)$/.exec(word);
     if (variable && !/[*?{}[\]!$]/.test(variable[1]!)) {
-      const rest = variable[1]!.replace(/^(?:\.\.?\/)+/, "").replace(/\/+$/, "");
+      const rest = variable[1]!.replace(/^(?:\.\.?\/)+/, "").replace(TRAILING_SLASHES, "");
       if (names.some((name) => name === rest || name.endsWith(`/${rest}`) || rest.endsWith(`/${name}`))) return true;
       continue;
     }
@@ -380,7 +401,7 @@ export function contentNamesPath(content: string, readerPath: string, target: st
       if (names.some((name) => globs.some((glob) => matchesGlob(name, glob)))) return true;
       continue;
     }
-    const trimmed = word.replace(/\/+$/, "");
+    const trimmed = word.replace(TRAILING_SLASHES, "");
     const resolved = [posix.normalize(posix.join(readerDir, trimmed))];
     if (!trimmed.startsWith("../")) resolved.push(posix.normalize(trimmed.replace(/^\/+/, "")));
     if (resolved.some((path) => names.includes(path))) return true;

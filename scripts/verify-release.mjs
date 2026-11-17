@@ -51,7 +51,7 @@ async function tagCommit(tag) {
 const observed = {};
 
 if (surfaces.includes("npm")) {
-  const packument = await getJson(`https://registry.npmjs.org/${cli.name.replace("/", "%2f")}`);
+  const packument = await getJson(`https://registry.npmjs.org/${cli.name.replaceAll("/", "%2f")}`);
   observed.npm = { latest: packument?.["dist-tags"]?.latest, versions: Object.keys(packument?.versions ?? {}) };
 }
 

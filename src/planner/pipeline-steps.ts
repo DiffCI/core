@@ -64,7 +64,7 @@ const CONCURRENTLY = /^(?:npx\s+(?:--no-install\s+)?)?concurrently\b(.*)$/;
 const REPO_RUNNER = /^(?:node|tsx|bun)\s+(\.{0,2}\/?[\w./-]+\.(?:m?[jt]s|c[jt]s))((?:\s+[\w:.@/-]+)+)$/;
 /** Shell syntax whose meaning changes when the script is split into parts or run outside its shell. */
 const UNSPLITTABLE = /\|\||[|<>`$()\\]|^\s*\w+=|\s\w+=\S/;
-const TEST_RUNNER = /(?:^|[\s/])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine)(?:\s|$)|(?:node|tsx|bun|deno)(?:\s+--?[\w-]+(?:=\S+)?)*\s+--test\b|^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\s|$)/;
+const TEST_RUNNER = /(?:^|[\s/])(?:vitest|jest|mocha|ava|tap|playwright|cypress|karma|jasmine)(?:\s|$)|(?:node|tsx|bun|deno)(?:\s+-\S*)*\s+--test\b|^(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test(?:\s|$)/;
 
 function kindOf(command: string): GateCheckKind {
   if (/(?:^|[\s/])(?:tsc|vue-tsc|svelte-check|tsgo)(?:\s|$)/.test(command)) return "typecheck";

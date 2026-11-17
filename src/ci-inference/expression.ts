@@ -81,7 +81,27 @@ export function resolveExpression(expression: string, context: ExpressionContext
   return { expression: trimmed, kind: value === "" ? "DEFINED_EMPTY" : "DEFINED", value };
 }
 
-const EXPRESSION = /\$\{\{([^}]*)\}\}/g;
+/**
+ * Replaces each `${{ body }}` whose body has no `}`, as `/\$\{\{([^}]*)\}\}/g` would, in linear time: the
+ * regex rescans to the next `}` from every `${{`, which is quadratic on a line of repeated `${{` (CodeQL alert 12).
+ */
+function replaceExpressions(line: string, replace: (body: string) => string): string {
+  let out = "";
+  let from = 0;
+  for (let start = line.indexOf("${{"); start !== -1; start = line.indexOf("${{", from)) {
+    const close = line.indexOf("}", start + 3);
+    if (close === -1) break;
+    if (line[close + 1] === "}") {
+      out += line.slice(from, start) + replace(line.slice(start + 3, close));
+      from = close + 2;
+    } else {
+      // Every `${{` before this `}` stops at the same `}`, so none of them can match either.
+      out += line.slice(from, close + 1);
+      from = close + 1;
+    }
+  }
+  return out + line.slice(from);
+}
 
 export interface RenderedCommand {
   /** The line with every expression substituted as GitHub would substitute it. */
@@ -101,7 +121,7 @@ export interface RenderedCommand {
 /** Substitutes every expression in a line, applying GitHub's coercion at the boundary. */
 export function renderCommand(line: string, context: ExpressionContext): RenderedCommand {
   const resolutions: Resolution[] = [];
-  const rendered = line.replace(EXPRESSION, (_match, body: string) => {
+  const rendered = replaceExpressions(line, (body) => {
     const resolution = resolveExpression(body, context);
     resolutions.push(resolution);
     return resolution.value;
@@ -121,13 +141,20 @@ export interface ConditionEvaluation {
 
 /** `a == b` / `a != b` where each side is a context lookup or a quoted literal. */
 const COMPARISON = /^(.+?)\s*(==|!=)\s*(.+)$/;
+const MAX_CONDITION_LENGTH = 1000;
 
 function operandValue(token: string, context: ExpressionContext): { value: string; resolution?: Resolution } {
-  const trimmed = token.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
+  const trimmed = unwrapExpression(token.trim()).trim();
   const quoted = /^'([^']*)'$/.exec(trimmed) ?? /^"([^"]*)"$/.exec(trimmed);
   if (quoted) return { value: quoted[1]! };
   const resolution = resolveExpression(trimmed, context);
   return { value: resolution.value, resolution };
+}
+
+/** `text` without a leading `${{` and a trailing `}}`; a regex with `\s*` before `}}$` is quadratic on long runs of spaces (CodeQL alert 13). */
+function unwrapExpression(text: string): string {
+  const opened = text.startsWith("${{") ? text.slice(3) : text;
+  return opened.trimEnd().endsWith("}}") ? opened.trimEnd().slice(0, -2) : opened;
 }
 
 /**
@@ -139,8 +166,13 @@ function operandValue(token: string, context: ExpressionContext): { value: strin
  * does not run" are different claims and only one of them is safe to act on.
  */
 export function evaluateCondition(expression: string, context: ExpressionContext, evidence?: EvidenceRef): ConditionEvaluation {
-  const raw = expression.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
+  const raw = unwrapExpression(expression.trim()).trim();
   const base = { expression: raw, ...(evidence ? { evidence } : {}) };
+
+  // Real `if:` conditions are short; the comparison regex below is quadratic on long whitespace runs.
+  if (raw.length > MAX_CONDITION_LENGTH) {
+    return { ...base, result: "UNRESOLVED", reason: `the condition is longer than ${MAX_CONDITION_LENGTH} characters, so it is not modelled`, resolutions: [] };
+  }
 
   if (/^true$/i.test(raw)) return { ...base, result: "TRUE", resolutions: [] };
   if (/^false$/i.test(raw)) return { ...base, result: "FALSE", resolutions: [] };

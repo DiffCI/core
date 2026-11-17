@@ -98,18 +98,26 @@ function diffciInvocation(repoPath: string, version: string): string {
   catch { return hookCommand("npm", version); }
 }
 
-/** A path as one shell word in POSIX shells, cmd.exe and PowerShell. */
-function shellPath(path: string): string {
-  return /^[A-Za-z0-9_./@+-]+$/.test(path) ? path : `"${path.replace(/"/g, '\\"')}"`;
+/**
+ * A path as one shell word in POSIX shells, cmd.exe and PowerShell, or undefined when no quoting is
+ * literal in all three. Inside double quotes `$` and backticks still expand (POSIX, PowerShell), `%` and
+ * `!` expand in cmd.exe, and `\` and `"` cannot be escaped the same way in each. The agent runs this
+ * command as written, so a repository file named `$(…).ts` must never reach it (CodeQL alert 36).
+ */
+export function shellPath(path: string): string | undefined {
+  if (/^[A-Za-z0-9_./@+-]+$/.test(path)) return path;
+  return /[$`"\\%!\0-\x1f\x7f]/.test(path) ? undefined : `"${path}"`;
 }
 
-/** The one command that verifies `scope` in isolation, as `diffci_select_tests` returns it. */
-export function scopedVerifyCommand(repoPath: string, scope: VerificationTreeScope, version = requireDiffciPackageIdentity().version): string {
+/** The one command that verifies `scope` in isolation, as `diffci_select_tests` returns it, or undefined when a path cannot be quoted safely. */
+export function scopedVerifyCommand(repoPath: string, scope: VerificationTreeScope, version = requireDiffciPackageIdentity().version): string | undefined {
   const run = diffciInvocation(repoPath, version);
-  return scope.kind === "staged"
-    ? `${run} verify --staged --json`
-    : `${run} verify --json --paths ${scope.paths.map(shellPath).join(" ")}`;
+  if (scope.kind === "staged") return `${run} verify --staged --json`;
+  const words = scope.paths.map(shellPath);
+  return words.every((word) => word !== undefined) ? `${run} verify --json --paths ${words.join(" ")}` : undefined;
 }
+
+const UNQUOTABLE_PATH = "a path contains a character no shell quoting keeps literal ($ ` \" \\ % ! or a control character), so DiffCI returns no command to paste; stage the files and use scope \"staged\", or run `diffci verify --paths` with the path quoted for your shell";
 
 /**
  * The plan for HEAD plus only the staged files, or only the named files (2026-11-17), made in the same
@@ -135,6 +143,7 @@ export async function agentScopedSelection(repoInput: string, scope: Verificatio
     fallback_reasons: [], analysis_status: "not_needed", risk_signals: [], required_ci_authoritative: true,
   });
   if (!scoped.changed) return unplanned("planned", scope.kind === "staged" ? "nothing is staged: the index matches HEAD" : "the given paths do not differ from HEAD");
+  if (command === undefined) return unplanned("blocked", UNQUOTABLE_PATH);
   const worktree = createIsolatedWorktree(repoPath, scoped.baseSha, scoped.treeSha);
   if ("error" in worktree) return unplanned("blocked", worktree.error);
   let plan: AgentSelectionPlan;

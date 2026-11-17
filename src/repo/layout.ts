@@ -27,6 +27,10 @@
 import { extname } from "node:path";
 import type { RepositoryProfile } from "./types.js";
 
+/** Trailing slashes. The lookbehind starts a match only at the first slash of a run; `/\/+$/` alone retries from every
+ * slash of a run that is not at the end, which is quadratic on long runs (CodeQL alerts 16, 17). */
+const TRAILING_SLASHES = /(?<!\/)\/+$/;
+
 /**
  * Directory names that mean "documentation" across the ecosystem. Deliberately short: a name earns a
  * place here by being a convention many projects share, not by appearing in one repository.
@@ -47,7 +51,7 @@ export interface RepositoryLayout {
 }
 
 function normalizeRoot(root: string): string {
-  return root.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
+  return root.replace(/\\/g, "/").replace(/^\.\//, "").replace(TRAILING_SLASHES, "");
 }
 
 function isUnder(path: string, root: string): boolean {

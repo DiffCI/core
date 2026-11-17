@@ -64,7 +64,7 @@ function expandScript(name: string, scripts: Readonly<Record<string, string>>, d
   const phases: string[] = [];
   for (const hook of [`pre${name}`, name, `post${name}`]) {
     if (hook !== name && typeof scripts[hook] !== "string") continue;
-    for (const phase of (hook === name ? body : scripts[hook]!).split(/\s*&&\s*/)) {
+    for (const phase of (hook === name ? body : scripts[hook]!).split("&&")) {
       const words = shellWords(phase.trim());
       const nested = words && /^(?:npm|pnpm|yarn|bun)$/.test(words[0] ?? "")
         ? (words[1] === "run" || words[1] === "run-script" ? words[2] : words[1] === "test" || words[1] === "t" ? "test" : undefined)
