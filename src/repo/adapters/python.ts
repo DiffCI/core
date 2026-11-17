@@ -70,9 +70,17 @@ export function isPythonSource(path: string): boolean {
   return path.endsWith(".py") && !path.split("/").some((part) => EXCLUDED_DIRS.has(part) || part.endsWith(".egg-info"));
 }
 
-/** The first interpreter that runs: `python3`, `python`, then the Windows launcher `py -3`. */
+/** The interpreters `pythonInterpreter()` tries, in order: `python3`, `python`, then the Windows launcher `py -3`. */
+export const PYTHON_INTERPRETER_CANDIDATES: readonly (readonly string[])[] = [["python3"], ["python"], ["py", "-3"]];
+
+/**
+ * The first of `PYTHON_INTERPRETER_CANDIDATES` that runs Python 3. Each call probes again, so two calls
+ * can disagree when a launcher is slow or flaky (a Windows `python3` alias stub); use the interpreter
+ * the analysis recorded (`profile.pythonInterpreter`) rather than a second probe (#304).
+ */
 export function pythonInterpreter(cwd: string): string[] | undefined {
-  for (const candidate of [["python3"], ["python"], ["py", "-3"]]) {
+  for (const entry of PYTHON_INTERPRETER_CANDIDATES) {
+    const candidate = [...entry];
     const result = spawnSync(candidate[0]!, [...candidate.slice(1), "-c", "import sys; print(sys.version_info[0])"], { cwd, encoding: "utf8", timeout: 10_000, windowsHide: true });
     if (result.status === 0 && result.stdout.trim() === "3") return candidate;
   }
