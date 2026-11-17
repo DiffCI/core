@@ -10,7 +10,7 @@ import { inferFullCommand, inferSelectedCommand, inferComparableSelectedCommand,
 import { analyzeRepository } from "@diffci.com/core/repo/analyzer";
 import { commandSpecToString, planSelectiveTestCommands } from "@diffci.com/core/planner/test-command";
 
-import { measureCommand, runVerifySavings } from "../../src/client/verify-savings.js";
+import { buildVerifySavingsReport, formatVerifySavingsSummary, looksLikeMissingDependencies, measureCommand, runVerifySavings, type CommandMeasurement } from "../../src/client/verify-savings.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(ROOT, "src", "client", "cli.ts");
@@ -186,5 +186,42 @@ describe("automatic check timing", () => {
         try { rmSync(path, { force: true }); } catch { /* best effort */ }
       }
     }
+  });
+});
+
+describe("verify-savings missing-dependency hint", () => {
+  const arm = (command: string, exitCode: number, stderrTail: string, stdoutTail = ""): CommandMeasurement => ({
+    command, exitCode, signal: null, timedOut: false, startedAt: "2026-11-16T00:00:00.000Z",
+    finishedAt: "2026-11-16T00:00:01.000Z", wallMs: 500, stdoutTail, stderrTail,
+  });
+  const summary = (full: CommandMeasurement, selected: CommandMeasurement): string => formatVerifySavingsSummary(
+    buildVerifySavingsReport({ cwd: ".", timeoutMs: 1000, selection: { source: "manual" }, full, selected }));
+  const HINT = /hint: the test runner or a module was not found\. Install the repository's dependencies/;
+
+  it("recognises missing runners and modules on Windows, POSIX shells, npx and Node", () => {
+    for (const output of [
+      "'tsx' is not recognized as an internal or external command,\noperable program or batch file.",
+      "/usr/bin/bash: line 1: pnpm: command not found",
+      "sh: 1: vitest: not found",
+      "npm error npx canceled due to missing packages and no YES option: [\"vitest@5.1.0\"]",
+      "npm error could not determine executable to run",
+      "Error: Cannot find module 'vitest/config'",
+      "Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /repo",
+    ]) assert.equal(looksLikeMissingDependencies(arm("npm test", 1, output)), true, output);
+    assert.equal(looksLikeMissingDependencies(arm("npm test", 127, "")), true);
+  });
+
+  it("does not treat a passing arm or an ordinary test failure as missing dependencies", () => {
+    assert.equal(looksLikeMissingDependencies(arm("npm test", 0, "Cannot find module 'x' (logged by a passing test)")), false);
+    assert.equal(looksLikeMissingDependencies(arm("npm test", 1, "", "✖ adds numbers\n  AssertionError: expected 3 to equal 4")), false);
+  });
+
+  it("adds the install hint to the summary only when an arm failed for a missing tool", () => {
+    const missing = summary(arm("npm test", 1, "'tsx' is not recognized as an internal or external command,"), arm("npx --no-install tsx --test a.test.ts", 1, "npm error npx canceled due to missing packages"));
+    assert.match(missing, /comparison invalid because one or both commands failed/);
+    assert.match(missing, HINT);
+    const realFailure = summary(arm("npm test", 1, "", "AssertionError: expected 3 to equal 4"), arm("npm test -- a", 1, "", "AssertionError: expected 3 to equal 4"));
+    assert.doesNotMatch(realFailure, HINT);
+    assert.doesNotMatch(summary(arm("npm test", 0, ""), arm("npm test -- a", 0, "")), HINT);
   });
 });

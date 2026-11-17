@@ -801,10 +801,34 @@ export function writeVerifySavingsReport(report: VerifySavingsReport, paths: { o
   if (paths.markdown) writeText(paths.markdown, renderVerifySavingsMarkdown(report));
 }
 
+/** Output that means the test runner or a module could not be found, the usual sign of a fresh
+ * clone whose dependencies were never installed (2026-11-16: a first `check` on an un-installed
+ * Core clone printed only "inconclusive", with no hint why). */
+const MISSING_TOOL_PATTERNS: readonly RegExp[] = [
+  /is not recognized as an internal or external command/i,
+  /command not found/i,
+  /^(?:\/bin\/)?(?:ba|da)?sh: (?:line \d+: |\d+: )?\S+: not found/im,
+  /npx canceled due to missing packages/i,
+  /could not determine executable to run/i,
+  /Cannot find module/,
+  /Cannot find package/,
+  /ERR_MODULE_NOT_FOUND/,
+];
+
+/** Whether a failed arm looks like a missing runner or dependency rather than a test failure. */
+export function looksLikeMissingDependencies(measurement: CommandMeasurement): boolean {
+  if (measurement.exitCode === 0 || measurement.timedOut) return false;
+  if (measurement.exitCode === 127) return true;
+  const output = `${measurement.stderrTail}\n${measurement.stdoutTail}`;
+  return MISSING_TOOL_PATTERNS.some((pattern) => pattern.test(output));
+}
+
 export function formatVerifySavingsSummary(report: VerifySavingsReport): string {
   if (!report.comparison.fullCommandSucceeded || !report.comparison.selectedCommandSucceeded) {
+    const missing = [report.full, report.selected].some(looksLikeMissingDependencies);
     return "DiffCI verify-savings: comparison invalid because one or both commands failed" +
       `\n  failure assessment: ${report.failureAssessment.kind} (${report.failureAssessment.confidence}) - ${report.failureAssessment.explanation}` +
+      (missing ? "\n  hint: the test runner or a module was not found. Install the repository's dependencies (for example `npm ci` or `pnpm install`), then run this again." : "") +
       (report.comparison.missedFailureSignal ? "\n  warning: full failed while selected passed; inspect outputs before claiming safety" : "");
   }
   if (!report.comparison.evidenceValid) {
