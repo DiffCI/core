@@ -127,9 +127,17 @@ describe("Rust selective command synthesis", () => {
     // Testing actual-core alone drops a feature cli turns on; cli alone, or both together, keep it.
     const p = profile();
     p.rustFeatureCoverage = { deficits: { "actual-core": ["actual-core v0.1.0"] }, units: [{ crates: ["actual-core", "cli"], covers: ["actual-core v0.1.0"] }] };
+    // Testing actual-core alone would drop the feature, so cli joins the command: more tests than
+    // selected, the full run's features, and still fewer tests than the full run.
     const alone = planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]);
-    assert.match(alone.refusalReason ?? "", /would build actual-core v0\.1\.0 with different features/);
-    assert.deepEqual(alone.commands, []);
+    assert.equal(alone.refusalReason, undefined);
+    assert.deepEqual(alone.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli"] }]);
+    assert.equal(alone.groups[0]?.label, "Cargo package tests (with cli for the full run's features)");
+    assert.deepEqual(alone.groups[0]?.paths, ["crates/core/src/lib.rs"]);
+    // Without a unit that covers the dependency, the plan is still refused.
+    const uncovered = profile();
+    uncovered.rustFeatureCoverage = { deficits: { "actual-core": ["actual-core v0.1.0"] }, units: [] };
+    assert.match(planSelectiveTestCommands(uncovered, ["crates/core/src/lib.rs"]).refusalReason ?? "", /would build actual-core v0\.1\.0 with different features/);
     const together = planSelectiveTestCommands(p, ["crates/core/src/lib.rs", "cli/src/main.rs"]);
     assert.equal(together.refusalReason, undefined);
     assert.deepEqual(together.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli"] }]);
@@ -137,5 +145,20 @@ describe("Rust selective command synthesis", () => {
     refuses(p, ["cli/src/main.rs", "crates/core/tests/one.rs"]);
     const cli = planSelectiveTestCommands(p, ["cli/src/main.rs"]);
     assert.equal(cli.refusalReason, undefined);
+  });
+
+  it("adds the smallest covering units, repeatedly, until every selected crate has the full run's features", () => {
+    const p = profile();
+    p.rustTestPackages = { "a/src/lib.rs": "a", "b/src/lib.rs": "b", "c/src/lib.rs": "c", "d/src/lib.rs": "d" };
+    p.rustTestTargets = Object.fromEntries(["a", "b", "c", "d"].map(name => [`${name}/src/lib.rs`, { name, kind: "lib" as const }]));
+    p.testFilePaths = Object.keys(p.rustTestPackages);
+    // a needs shared's full features, which b (alone) or c with d give; b then needs other's, which only d gives.
+    p.rustFeatureCoverage = {
+      deficits: { a: ["shared v1.0.0"], b: ["other v1.0.0"] },
+      units: [{ crates: ["c", "d"], covers: ["shared v1.0.0"] }, { crates: ["b"], covers: ["shared v1.0.0"] }, { crates: ["d"], covers: ["other v1.0.0"] }],
+    };
+    const plan = planSelectiveTestCommands(p, ["a/src/lib.rs"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "a", "-p", "b", "-p", "d"] }]);
   });
 });
