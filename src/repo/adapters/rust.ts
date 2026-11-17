@@ -197,7 +197,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean; runsPrograms: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -241,6 +241,7 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   const inputs: Array<{ path: string; code: boolean }> = [];
   const paths: string[] = [];
   let compiles = false;
+  let runsPrograms = false;
   const includeArguments = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i]!.value === "mod" && tokens[i + 1]?.value === "target" && tokens[i + 2]?.value === ";") return undefined;
@@ -266,6 +267,13 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
     }
     if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
       && tokens[i + 4]?.value === "(" && /^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")) compiles = true;
+    // Any other program (a script, a shell, a tool) could read files no Rust edge shows. Running the
+    // package's own binary (`env!("CARGO_BIN_EXE_name")`) is Rust code Cargo already models. This is a
+    // token heuristic: clap's `Command::new("app")` counts too, which only fails closed.
+    if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
+      && tokens[i + 4]?.value === "(" && !/^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")
+      && !(tokens[i + 5]?.value === "env" && tokens[i + 6]?.value === "!" && tokens[i + 7]?.value === "(" && /^CARGO_BIN_EXE_/.test(tokens[i + 8]?.literal ?? ""))) runsPrograms = true;
+    if (["duct", "xshell", "subprocess"].includes(tokens[i]!.value) || (tokens[i]!.value === "cmd" && tokens[i + 1]?.value === "!")) runsPrograms = true;
     // `env!("CARGO")`, `env::var("RUSTC")` and similar name the toolchain a test is about to run.
     if (["CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER"].includes(tokens[i]!.literal ?? "")) compiles = true;
     if (!["include", "include_str", "include_bytes"].includes(tokens[i]!.value) || tokens[i + 1]?.value !== "!") continue;
@@ -288,7 +296,7 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   });
   const navigates = navigatesUpward(tokens);
   // Code that climbs out of its crate can walk to README or docs without naming them.
-  return { inputs, paths, compiles, navigates, documentation: documentation || navigates };
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates, runsPrograms };
 }
 
 /** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,
@@ -486,6 +494,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
       // Model these as dependencies of this crate instead of blocking the repository.
       if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
+      if (scanned.runsPrograms) result.rustRunsPrograms = true;
       const reached = new Set<string>();
       if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);
       for (const literal of scanned.paths) {
@@ -518,6 +527,8 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       }
     }
     result.assetPaths = [...new Set(result.assetPaths)].sort();
+    result.rustCrateDirectories = [...new Set(packages.map(({ directory }) => directory))].sort();
+    result.rustRunsPrograms ??= false;
     // Selective commands must give every package the features the full invocation gives it. Cargo
     // resolves each tested crate alone and with its dependents (what a change to it selects); the
     // planner checks each selected set against those units.
