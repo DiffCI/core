@@ -1493,11 +1493,11 @@ Usage:
   diffci verify [--changed | --staged | --paths <file...> | --paths-from <file|-> | --base <sha> --head <sha>]
                 [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
-                [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
+                [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
                 [--shard <i/N> [--timings <file>]] [--no-coverage]
   diffci telemetry [--mode repo|count-only] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
-               [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
+               [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
   diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>] [--check-jobs <regex>] [--ci-only-jobs <regex>]
@@ -1506,7 +1506,7 @@ Usage:
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
   diffci observe [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                  [--redact-paths] [--json] [--quiet] [--fail-on-error] [--summary-out <file.md>]
-                 [--api-url <url> --api-token <token>] [--no-send] [--share-usage] [--agent <name|auto>]
+                 [--api-url <url> --api-token <token>] [--no-send] [--agent <name|auto>]
                  [--graph-cache-dir <dir>] [--shared-graph-cache [--graph-cache-url <url>]]
   diffci verify-savings --repo <path> --full <command>
                          (--selected <command> | --selected-from-report <file>)
