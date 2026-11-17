@@ -19,25 +19,47 @@ function expandBraces(pattern: string): string[] {
   return result;
 }
 
+/**
+ * A task input glob as an anchored regex. `**\/` is any number of leading directories, a trailing `/**` is
+ * anything below, and any other `**` (`**.js`, a bare `**`) is any run of characters including `/`, as in
+ * GitHub's path filters. `*` stays within one segment. Characters that only mean something to a regex
+ * (`( ) $ ^ |`) are literal, so route directories like `app/(marketing)` and `routes/$id.tsx` match
+ * themselves. `?`, `+` and `[...]` keep their filter meaning.
+ */
 function regexFrom(pattern: string): RegExp {
-  let escaped = pattern.replace(/\\/g, "\\\\").replace(/\./g, "\\.");
-  // Protect the multi-segment globstar sequences behind placeholders before the
-  // single-`*` replace runs below - otherwise the `*` inside "(?:.*/)?"/"(?:/.*)?" gets
-  // re-matched and mangled by that same replace (e.g. "src/**/*.test.ts" would wrongly
-  // fail to match files nested two or more directories under src/, since the resulting
-  // regex only reliably matched zero or one intervening path segment).
-  escaped = escaped
-    .replace(/\*\*\//g, "\0GLOBSTAR_SLASH\0")
-    .replace(/\/\*\*/g, "\0SLASH_GLOBSTAR\0")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\0GLOBSTAR_SLASH\0/g, "(?:.*/)?")
-    .replace(/\0SLASH_GLOBSTAR\0/g, "(?:/.*)?");
-  return new RegExp(`^${escaped}$`);
+  let source = "";
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index]!;
+    if (character === "/" && pattern.startsWith("**", index + 1) && index + 3 === pattern.length) {
+      source += "(?:/.*)?";
+      index += 2;
+    } else if (character === "*" && pattern[index + 1] === "*") {
+      if (pattern[index + 2] === "/") { source += "(?:.*/)?"; index += 2; }
+      else { source += ".*"; index += 1; }
+    } else if (character === "*") {
+      source += "[^/]*";
+    } else if (/[\\.()$^|]/.test(character)) {
+      source += `\\${character}`;
+    } else {
+      source += character;
+    }
+  }
+  return new RegExp(`^${source}$`);
 }
 
 function matches(path: string, pattern: string): boolean {
   const normalized = path.replace(/\\/g, "/");
-  return expandBraces(pattern).some((p) => regexFrom(p).test(normalized));
+  return expandBraces(pattern).some((p) => {
+    let regex: RegExp;
+    try {
+      regex = regexFrom(p);
+    } catch {
+      // A pattern that is not a valid filter cannot rule a change out: count it as matching, so the
+      // task runs rather than the whole plan throwing.
+      return true;
+    }
+    return regex.test(normalized);
+  });
 }
 
 function matchesAny(path: string, patterns: string[] | undefined): boolean {
