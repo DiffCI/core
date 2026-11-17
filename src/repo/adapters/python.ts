@@ -116,8 +116,11 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
     for (const key of keys) {
       if (file === "pyproject.toml") {
         const match = new RegExp(`^${key}\\s*=\\s*(\\[[\\s\\S]*?\\]|"[^"]*"|'[^']*')`, "m").exec(body);
-        // A multi-line string would otherwise match as an empty one.
-        if (new RegExp(`^${key}\\s*=\\s*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+        // A multi-line string would otherwise match as an empty one. Its contents are read as one string;
+        // a basic string's line-ending backslash only joins lines. An unterminated one cannot be read.
+        const multiline = new RegExp(`^${key}\\s*=\\s*("""|'{3})([\\s\\S]*?)\\1`, "m").exec(body);
+        if (multiline) apply(key, splitList(multiline[1] === '"""' ? multiline[2]!.replace(/\\\r?\n/g, " ") : multiline[2]!));
+        else if (new RegExp(`^${key}\\s*=\\s*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
         else if (match) apply(key, splitList(match[1]!.replace(/^\[|\]$/g, "")));
         else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
       } else {

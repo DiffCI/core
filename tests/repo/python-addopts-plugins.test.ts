@@ -25,9 +25,18 @@ describe("pytest plugins loaded with -p in addopts", () => {
     assert.equal(none.plugins, undefined);
   });
 
-  it("does not read a multi-line pyproject.toml string as an empty one", () => {
-    const settings = readPytestSettings((path) => path === "pyproject.toml" ? "[tool.pytest.ini_options]\naddopts = \"\"\"\n  -p myplugin\n\"\"\"\n" : undefined);
-    assert.equal(settings.unreadable, "pyproject.toml addopts");
+  it("reads a multi-line pyproject.toml string instead of an empty one, and falls back on an unterminated one", () => {
+    const basic = readPytestSettings((path) => path === "pyproject.toml" ? "[tool.pytest.ini_options]\naddopts = \"\"\"\n  -p myplugin \\\n  --strict-markers\n\"\"\"\ntestpaths = [\"tests\"]\n" : undefined);
+    assert.equal(basic.unreadable, undefined);
+    assert.deepEqual(basic.plugins, ["myplugin"]);
+    assert.deepEqual(basic.testpaths, ["tests"]);
+    const literal = readPytestSettings((path) => path === "pyproject.toml" ? "[tool.pytest.ini_options]\naddopts = '''\n  -p tools.fixtures\n'''\n" : undefined);
+    assert.deepEqual(literal.plugins, ["tools.fixtures"]);
+    const plain = readPytestSettings((path) => path === "pyproject.toml" ? "[tool.pytest.ini_options]\naddopts = \"\"\"\n  --strict-markers\n\"\"\"\n" : undefined);
+    assert.equal(plain.unreadable, undefined);
+    assert.equal(plain.plugins, undefined);
+    const unterminated = readPytestSettings((path) => path === "pyproject.toml" ? "[tool.pytest.ini_options]\naddopts = \"\"\"\n  -p myplugin\n" : undefined);
+    assert.equal(unterminated.unreadable, "pyproject.toml addopts");
   });
 
   it("makes every test depend on a first-party plugin, and falls back when one cannot be resolved", () => {
