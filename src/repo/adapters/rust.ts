@@ -197,7 +197,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean; module?: string[] }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -238,23 +238,53 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   // dependency edge cannot see is code that reaches another crate's modelled Rust inputs at run or
   // build time. Report literal paths (the caller checks which crates they reach) and Cargo/rustc
   // invocations; ordinary identifiers such as `fs`, `process`, `unsafe` or `metadata` are not inputs.
-  const inputs: Array<{ path: string; code: boolean }> = [];
+  const inputs: Array<{ path: string; code: boolean; module?: string[] }> = [];
+  // Inline `mod name { ... }` blocks open around each token, for `#[path]` (null: any other brace).
+  const blocks: Array<string | null> = [];
   const paths: string[] = [];
   let compiles = false;
   const includeArguments = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i]!.value === "mod" && tokens[i + 1]?.value === "target" && tokens[i + 2]?.value === ";") return undefined;
+    if (tokens[i]!.value === "{") blocks.push(tokens[i - 2]?.value === "mod" && /^[A-Za-z_]/.test(tokens[i - 1]?.value ?? "") ? tokens[i - 1]!.value : null);
+    if (tokens[i]!.value === "}") blocks.pop();
     if (tokens[i]!.value === "#") {
       let j = i + 1;
       if (tokens[j]?.value === "!") j++;
       if (tokens[j]?.value === "[") {
         let depth = 1;
+        const paths: string[] = [];
         for (j++; j < tokens.length && depth; j++) {
           if (tokens[j]!.value === "[") depth++;
           if (tokens[j]!.value === "]") depth--;
-          if (tokens[j]!.value === "path" && tokens[j + 1]?.value === "=") return undefined;
+          if (tokens[j]!.value === "path" && tokens[j + 1]?.value === "=") {
+            // `#[path = "x.rs"]` or `#[cfg_attr(pred, path = "x.rs")]` with a plain literal.
+            const literal = tokens[j + 2]?.literal;
+            if (tokens[i + 1]?.value === "!" || !["[", ","].includes(tokens[j - 1]?.value ?? "") || literal === undefined
+              || !["]", ",", ")"].includes(tokens[j + 3]?.value ?? "") || /[\0\r\n]/.test(literal)) return undefined;
+            paths.push(literal);
+          }
         }
         if (depth) return undefined;
+        if (paths.length) {
+          // Only on a file module (`mod name;`), after any other attributes and visibility: on an
+          // inline module the path would move every module declared inside it.
+          let k = j;
+          for (;;) {
+            if (tokens[k]?.value === "#" && tokens[k + 1]?.value === "[") {
+              let nested = 1;
+              for (k += 2; k < tokens.length && nested; k++) nested += tokens[k]!.value === "[" ? 1 : tokens[k]!.value === "]" ? -1 : 0;
+            } else if (tokens[k]?.value === "pub" && tokens[k + 1]?.value === "(") {
+              k = tokens.findIndex((token, index) => index > k && token.value === ")") + 1;
+              if (!k) return undefined;
+            } else if (tokens[k]?.value === "pub") k++;
+            else break;
+          }
+          if (tokens[k]?.value !== "mod" || !/^[A-Za-z_]/.test(tokens[k + 1]?.value ?? "") || tokens[k + 2]?.value !== ";") return undefined;
+          const module = blocks.filter((name): name is string => name !== null);
+          if (blocks.length !== module.length) return undefined;
+          for (const path of paths) inputs.push({ path, code: true, module });
+        }
       }
     }
     if (tokens[i]!.value === "use") {
@@ -473,6 +503,8 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     if (packages.some(({ pkg }) => pkg.targets.some(target => target["required-features"]?.length))) {
       result.blockers.push("Cargo targets requiring features need an explicitly supported test invocation; full validation required");
     }
+    const targetRoots = new Set(packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path))));
+    const pathModuleTrees: string[] = [];
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
       if (!sourceOwner) continue;
@@ -504,7 +536,15 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       reached.delete(sourceOwner.manifest);
       for (const manifest of reached) result.edges.push({ from: sourceOwner.manifest, to: manifest, kind: "import" });
       for (const input of scanned.inputs) {
-        const path = repositoryPath(root, resolve(root, dirname(source), input.path), known);
+        // A `#[path]` is relative to the file's directory; inside inline modules, also to their
+        // names, below the file's stem unless it is a crate root or mod.rs.
+        const modRs = targetRoots.has(source) || /(?:^|\/)mod\.rs$/.test(source);
+        if (input.module?.length && !modRs) {
+          result.blockers.push(`Rust computed includes or path attributes require full validation: ${source}`);
+          continue;
+        }
+        const base = input.module ? posix.join(dirname(source), ...input.module) : dirname(source);
+        const path = repositoryPath(root, resolve(root, base, input.path), known);
         if (!path || owner(path)?.pkg.id !== sourceOwner.pkg.id) {
           result.blockers.push(`Rust include outside its crate or unavailable requires full validation: ${source}`);
           continue;
@@ -513,10 +553,18 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           result.blockers.push(`Rust include code with a non-Rust extension requires full validation: ${source}`);
           continue;
         }
+        if (input.module) {
+          // Module source of the same crate: already a source of it. What it declares is looked up
+          // from its own directory, so that tree must be complete too.
+          pathModuleTrees.push(dirname(path) === "." ? "" : dirname(path));
+          result.edges.push({ from: source, to: path, kind: "import" });
+          continue;
+        }
         if (!result.sourcePaths.includes(path)) result.assetPaths.push(path);
         result.edges.push({ from: source, to: path, kind: "asset" });
       }
     }
+    if (pathModuleTrees.length && !completeRustInventory(root, known, pathModuleTrees)) result.blockers.push("Incomplete Rust source inventory or symlinked inputs require full validation");
     result.assetPaths = [...new Set(result.assetPaths)].sort();
     // Selective commands must give every package the features the full invocation gives it. Cargo
     // resolves each tested crate alone and with its dependents (what a change to it selects); the
