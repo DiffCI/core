@@ -48,9 +48,10 @@ function under(dir: string, path: string): boolean { return !dir || path === dir
 function owningPom(poms: Pom[], file: string): Pom | undefined {
   return poms.filter(pom => under(pom.dir, file)).sort((a, b) => b.dir.length - a.dir.length)[0];
 }
+/** Surefire's default includes (Test*, *Test, *Tests, *TestCase) and Failsafe's (IT*, *IT, *ITCase). */
 function isTest(path: string): boolean {
   return /\/src\/test\/(?:java|kotlin)\//.test("/" + path) &&
-    /^(?:Test.*|.*(?:Test|Tests|TestCase|IT))\.(?:java|kt)$/.test(posix.basename(path));
+    /^(?:Test.*|IT.*|.*(?:Test|Tests|TestCase|IT|ITCase))\.(?:java|kt)$/.test(posix.basename(path));
 }
 
 export function analyzeMaven(context: AdapterContext): AdapterContribution {
