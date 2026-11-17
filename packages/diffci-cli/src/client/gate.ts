@@ -209,8 +209,12 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   const repoPath = resolve(options.repoPath);
   const run = options.run ?? measureCommand;
   const started = Date.now();
-  const remaining = () => Math.max(options.timeoutMs - (Date.now() - started), 0);
-  const execute = (command: string): CommandMeasurement => run(command, { cwd: repoPath, timeoutMs: remaining(), tailBytes: options.tailBytes });
+  // A step that would start with no time left is not run: a 0ms timeout would mean no limit at all.
+  const execute = (command: string): CommandMeasurement | undefined => {
+    const remaining = options.timeoutMs - (Date.now() - started);
+    return remaining > 0 ? run(command, { cwd: repoPath, timeoutMs: remaining, tailBytes: options.tailBytes }) : undefined;
+  };
+  const step = (measurement: CommandMeasurement | undefined): StepRun => measurement ? stepRun(measurement) : { status: "not_run" };
 
   // 1. What DiffCI would do: a plan made elsewhere, or an analysis here. Never fatal: the full gate runs
   //    whatever happens here.
@@ -227,7 +231,7 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   // 2. The full gate, every leaf, continuing past failures so each one is attributed.
   const checks: GateCheckReport[] = full.map((check) => {
     const decided = decisionOf.get(check.id);
-    const measured = stepRun(execute(check.command));
+    const measured = step(execute(check.command));
     return {
       id: check.id, kind: check.kind,
       decision: decided?.decision ?? "UNPLANNED",
@@ -242,7 +246,7 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   let tests: GateTestReport | undefined;
   if (testCommand) {
     const measurement = execute(testCommand);
-    const fullRun = { ...stepRun(measurement), ...(measurement.failingTests?.length ? { failing_tests: measurement.failingTests } : {}) };
+    const fullRun = { ...step(measurement), ...(measurement?.failingTests?.length ? { failing_tests: measurement.failingTests } : {}) };
     tests = {
       command: testCommand, full: fullRun,
       selection: plan?.tests.selection ?? "unavailable",
@@ -257,15 +261,17 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   //    unless --measure-selected asks for timings on a passing build.
   for (const check of checks) {
     if (check.full.status === "passed" && !options.measureSelected) continue;
+    // A step the time limit left unrun has no result, so it cannot be a miss.
+    if (check.full.status === "not_run") continue;
     if (check.decision === "SKIP") { check.missed = check.full.status !== "passed"; continue; }
     if (check.decision !== "NARROWED" || !check.narrowed_command) continue;
-    check.narrowed = stepRun(execute(check.narrowed_command));
+    check.narrowed = step(execute(check.narrowed_command));
     if (check.full.status !== "passed") check.missed = check.narrowed.status === "passed";
   }
   if (tests?.selected_commands && (tests.full.status !== "passed" || options.measureSelected)) {
     const runs = tests.selected_commands.map((command) => execute(command));
-    const failed = runs.find((measurement) => stepRun(measurement).status !== "passed");
-    tests.selected = { ...stepRun(failed ?? runs[runs.length - 1]!), wall_ms: runs.reduce((sum, measurement) => sum + measurement.wallMs, 0) };
+    const failed = runs.findIndex((measurement) => step(measurement).status !== "passed");
+    tests.selected = { ...step(runs[failed >= 0 ? failed : runs.length - 1]), wall_ms: runs.reduce((sum, measurement) => sum + (measurement?.wallMs ?? 0), 0) };
     if (tests.full.status !== "passed") tests.missed = tests.selected.status === "passed";
   }
 
