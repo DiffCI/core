@@ -262,6 +262,7 @@
     "tests/repo/layout.test.ts",
     "tests/repo/lockfile-free-dependencies.test.ts",
     "tests/repo/lockfiles.test.ts",
+    "tests/repo/mocharc-config-fallback.test.ts",
     "tests/repo/orphan-tool-config.test.ts",
     "tests/repo/removed-files.test.ts",
     "tests/repo/repo-config.test.ts",
