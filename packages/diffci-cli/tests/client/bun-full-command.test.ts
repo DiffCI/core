@@ -49,3 +49,22 @@ test("the enforce audit does not count `bun test` as a Bun repository's test scr
   assert.deepEqual(runs("bun run test"), [".github/workflows/ci.yml#test"]);
   assert.deepEqual(runs("bun test"), []);
 });
+
+test("the enforce audit counts `bun test` when the test script is exactly `bun test`", () => {
+  const workflow = (run: string) => `on:\n  push:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ${run}\n`;
+  const runs = (script: string, run: string) => {
+    const dir = bunRepository({
+      "package.json": JSON.stringify({ scripts: { test: script } }),
+      "bun.lock": "",
+      ".github/workflows/ci.yml": workflow(run),
+    });
+    try {
+      return auditEnforceWorkflows(dir).fullSuiteJobs;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  assert.deepEqual(runs("bun test", "bun test"), [".github/workflows/ci.yml#test"]);
+  assert.deepEqual(runs("bun test", "bun run test"), [".github/workflows/ci.yml#test"]);
+  assert.deepEqual(runs("bun test --coverage", "bun test"), []);
+});

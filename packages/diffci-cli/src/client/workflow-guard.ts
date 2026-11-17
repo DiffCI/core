@@ -436,9 +436,24 @@ function normalizeTestCommand(command: string): string {
   return command.trim().replace(/\s+/g, " ").replace(/^(npm|pnpm|yarn) run test$/, "$1 test");
 }
 
-function runInvokesFullCommand(run: string, fullCommand: string): boolean {
-  const target = normalizeTestCommand(fullCommand);
-  return commandText(run).split("\n").some((line) => normalizeTestCommand(line) === target);
+function runInvokesFullCommand(run: string, fullCommands: readonly string[]): boolean {
+  const targets = new Set(fullCommands.map(normalizeTestCommand));
+  return commandText(run).split("\n").some((line) => targets.has(normalizeTestCommand(line)));
+}
+
+/**
+ * `bun run test` runs scripts.test. When that script is exactly `bun test`, a workflow step that runs
+ * `bun test` directly runs the same suite, so it counts as the full command too.
+ */
+function bunScriptEquivalents(repoPath: string, fullCommand: string): string[] {
+  if (normalizeTestCommand(fullCommand) !== "bun run test") return [];
+  try {
+    const pkg = JSON.parse(readFileSync(join(repoPath, "package.json"), "utf8")) as { scripts?: Record<string, unknown> };
+    const script = pkg.scripts?.test;
+    return typeof script === "string" && normalizeTestCommand(script) === "bun test" ? ["bun test"] : [];
+  } catch {
+    return [];
+  }
 }
 
 function globToRegExp(glob: string): RegExp {
@@ -576,6 +591,7 @@ export function auditEnforceWorkflows(repoPath: string, options: EnforceAuditOpt
   const unprovable: string[] = [];
   const inferred = options.fullCommand ? { command: options.fullCommand, reason: "--full-command" } : inferFullCommand(repoPath);
   const fullCommand = inferred.command;
+  const fullCommands = fullCommand ? [fullCommand, ...bunScriptEquivalents(repoPath, fullCommand)] : [];
 
   if (!fullCommand) {
     findings.push({
@@ -630,7 +646,7 @@ export function auditEnforceWorkflows(repoPath: string, options: EnforceAuditOpt
       const jobCondition = conditionHolds(rawJob.if, branch);
       if (jobCondition === "FALSE") continue;
       for (const step of steps) {
-        if (typeof step.run !== "string" || !runInvokesFullCommand(step.run, fullCommand)) continue;
+        if (typeof step.run !== "string" || !runInvokesFullCommand(step.run, fullCommands)) continue;
         if (step["working-directory"] !== undefined && step["working-directory"] !== ".") continue;
         const stepCondition = conditionHolds(step.if, branch);
         if (jobCondition === "TRUE" && stepCondition === "TRUE") {
