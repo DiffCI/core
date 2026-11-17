@@ -2,6 +2,7 @@
 
 [![Core CI](https://github.com/DiffCI/core/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/DiffCI/core/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/DiffCI/core/badge)](https://scorecard.dev/viewer/?uri=github.com/DiffCI/core)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16835/badge)](https://www.bestpractices.dev/projects/16835)
 [![npm provenance](https://img.shields.io/badge/npm-SLSA%20provenance-brightgreen?logo=npm)](https://www.npmjs.com/package/@diffci.com/diffci#provenance)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
