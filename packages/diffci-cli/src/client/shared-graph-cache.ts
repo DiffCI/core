@@ -354,10 +354,11 @@ export function configureGraphCache(input: GraphCacheConfigInput): { cache?: Lay
   if (input.shared) {
     const baseUrl = resolveSharedGraphCacheBaseUrl({ cacheUrl: input.cacheUrl, apiUrl: input.apiUrl });
     const secret = input.secret && input.secret.length >= 16 ? input.secret : undefined;
-    if (input.secret && !secret) notes.push("DIFFCI_GRAPH_CACHE_SECRET ignored: it must be at least 16 characters");
     if (input.noSend) notes.push("shared graph cache off: --no-send");
     else if (!baseUrl) notes.push("shared graph cache off: no https api-url or graph-cache-url");
     else if (!input.token) notes.push("shared graph cache off: no api-token");
+    // A secret that is set asks for encryption: one too short to use must not fall back to plaintext uploads.
+    else if (input.secret && !secret) notes.push("shared graph cache off: DIFFCI_GRAPH_CACHE_SECRET must be at least 16 characters");
     else if (input.redactPaths && !secret) notes.push("shared graph cache off: --redact-paths needs DIFFCI_GRAPH_CACHE_SECRET, because the graph carries file paths");
     else remote = new RemoteGraphCache({ baseUrl, token: input.token, secret, version: input.version, fetchImpl: input.fetchImpl });
   }
