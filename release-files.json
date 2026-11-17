@@ -279,6 +279,7 @@
     "tests/repo/test-discovery.test.ts",
     "tests/repo/test-fixture-ownership.test.ts",
     "tests/repo/test-framework.test.ts",
+    "tests/repo/test-universe-empty-reason.test.ts",
     "tests/repo/tool-config-reasons.test.ts",
     "tests/repo/tsconfig-variant-reason.test.ts",
     "tests/repo/tsconfig-newer-options.test.ts",

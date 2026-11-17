@@ -708,7 +708,8 @@ export class ImpactAnalyzer {
     // whose entire `__tests__/` suite was invisible: graph confidence COMPLETE, 5 of 5 commits
     // SELECTIVE, zero tests. Fails closed to FULL instead.
     if (profile.testUniverse?.blindSpot === true) {
-      const declared = profile.testUniverse.declaredFrameworks.join(", ");
+      // A language adapter (Go, Maven, pytest, Cargo) declares its runner without a package.json framework.
+      const declared = [...profile.testUniverse.declaredFrameworks, ...(profile.testUniverse.adapterRunners ?? [])].join(", ");
       const message = `Repository declares ${declared} but no test files were discovered; full validation required`;
       riskSignals.push({ level: "critical", reason: "TEST_UNIVERSE_EMPTY", message });
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);

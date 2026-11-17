@@ -133,6 +133,8 @@ export interface RepositoryProfile {
     /** How each framework was detected - "dependency:<pkg>" or "script:<name>". */
     frameworkEvidence: Record<string, string>;
     discoveredTestFiles: number;
+    /** Runners that language adapters found sources for (`go test`, `Maven`, `pytest`, `cargo test`). */
+    adapterRunners?: string[];
     /** True when the repository declares a test framework and zero test files were discovered - the
      * engine does not understand this repository's test layout, and must not propose a selection
      * against an empty universe. */
