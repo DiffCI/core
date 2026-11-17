@@ -176,7 +176,9 @@ try {
       requireSuccess(result);
     }
     const lockfile = readFileSync(join(repo, 'Cargo.lock'), 'utf8');
-    replay.lockfile = { sha256: sha256(lockfile), contents: lockfile };
+    // A generated lockfile is kept whole so later runs can compare dependency resolution; a committed
+    // one is already in the target's history at this head.
+    replay.lockfile = { sha256: sha256(lockfile), ...(lockfileMode === 'generate' ? { contents: lockfile } : { committed: true }) };
     clean();
     replay.stateBeforeAnalysis = { head: git('rev-parse', 'HEAD'), status: status(), lockfileSha256: sha256(lockfile) };
     const start = performance.now();
