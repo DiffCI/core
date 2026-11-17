@@ -15,6 +15,8 @@ import { planRustTestCommands } from '../dist/planner/rust-command.js';
 const targets = {
   glob: {
     upstream: 'https://github.com/rust-lang/glob.git',
+    // glob ignores Cargo.lock, so the harness generates one per head.
+    lockfile: 'generate',
     pinnedHead: '057cef2824f5a96f738e52d7d8ca3e024381bcc6',
     revisions: [
       ['8a903ef83cdc3ac4be8a16c4160c570fcfead655', '1f753241f047175126d1be051718d1a0994d29f4'],
@@ -27,12 +29,27 @@ const targets = {
   // whose path-handling code depends on every crate, so it is expected to stay FULL.
   'rust-url': {
     upstream: 'https://github.com/servo/rust-url.git',
+    lockfile: 'generate',
     pinnedHead: 'bcf5a2a98986dd5dfb252d3e977d2da380b09fda',
     revisions: [
       ['13b385b299238306d2601ddc1c0043afcd2f2046', 'cad4a844d8de6100f18b0ca17603ac3866a13c1f'],
       ['55ff72dd676ae6657d0b8d7dd005233210da76d2', '9a04be18b36cd08e933da06554af0d83bf3fb31b'],
       ['828b28c95034953e353c1559fd28520a2f01ca80', '15e0b57e5881e3c5a622b38a7e7d6efffcecb8e5'],
       ['bcf5a2a98986dd5dfb252d3e977d2da380b09fda', '13b385b299238306d2601ddc1c0043afcd2f2046'],
+    ],
+  },
+  // A virtual workspace of 20 small crates with a committed Cargo.lock. Two members share their name
+  // with published versions used as dev-dependencies, so members are named NAME@VERSION. The first
+  // three deltas change one leaf crate each; the last also changes Cargo.lock, so it stays FULL.
+  anstyle: {
+    upstream: 'https://github.com/rust-cli/anstyle.git',
+    lockfile: 'tracked',
+    pinnedHead: '46bb5c061b42ebad90694969352ee0a31d67fc68',
+    revisions: [
+      ['f9639e70cb43f456ab15f04446f4c80e2163f452', '5a4a67f7b8358564fb9337f2955553f166ad57bd'],
+      ['1c4609a7b3ac7cbe0fd60e3fb2b410db877758e0', 'd234fa36798244f2f68c0b8d0f831d554d8cdc6d'],
+      ['4e584086dc7bff99f20506999509af6f1add7440', '25e9c043e8b4af3c404df9f13a98b3366fdc4045'],
+      ['d234fa36798244f2f68c0b8d0f831d554d8cdc6d', '52495ba9af66443ac177785307947f9fc86afbca'],
     ],
   },
 };
@@ -44,11 +61,11 @@ for (let i = 0; i < args.length; i++) {
   options[key] = key === '--prepare-dependencies' ? true : args[++i];
 }
 if (!options['--repo'] || !options['--disposable-root'] || !options['--output'] || !options['--prepare-dependencies']) {
-  throw new Error('Usage: node scripts/replay-rust.mjs [--target glob|rust-url] --repo PATH --disposable-root PATH --output FILE --prepare-dependencies (authorizes Cargo lockfile generation and dependency fetch in that disposable clone)');
+  throw new Error('Usage: node scripts/replay-rust.mjs [--target glob|rust-url|anstyle] --repo PATH --disposable-root PATH --output FILE --prepare-dependencies (authorizes Cargo lockfile generation, for targets without a committed one, and dependency fetch in that disposable clone)');
 }
 const targetName = options['--target'] ?? 'glob';
 if (!Object.hasOwn(targets, targetName)) throw new Error(`Unknown target: ${targetName}`);
-const { upstream, pinnedHead, revisions } = targets[targetName];
+const { upstream, lockfile: lockfileMode, pinnedHead, revisions } = targets[targetName];
 const repo = realpathSync(options['--repo']);
 const disposableRoot = realpathSync(options['--disposable-root']);
 const child = relative(disposableRoot, repo);
@@ -88,13 +105,20 @@ function clean() {
 function testResults(output) {
   const results = {};
   let binary;
+  let failureList = false;
   for (const line of output.split(/\r?\n/)) {
     const running = /^\s+Running (?:unittests )?(\S+) \((?:[^)]*[\\/])?([^)\\/]+?)(?:-[0-9a-f]{16})?(?:\.exe)?\)$/.exec(line);
-    if (running) { binary = `${running[2]} ${running[1]}`; continue; }
+    if (running) { binary = `${running[2]} ${running[1]}`; failureList = false; continue; }
     const doc = /^\s+Doc-tests (\S+)$/.exec(line);
-    if (doc) { binary = `doc ${doc[1]}`; continue; }
+    if (doc) { binary = `doc ${doc[1]}`; failureList = false; continue; }
+    // A test's own output can share the line with "test name ... ", hiding its FAILED marker. libtest
+    // also lists every failed test, indented, under the last "failures:" line before its summary.
+    if (line === 'failures:') { failureList = true; continue; }
+    if (/^test result: /.test(line) || line.startsWith('---- ')) { failureList = false; continue; }
+    const listed = failureList ? /^ {4}(\S.*)$/.exec(line) : null;
+    if (listed && binary) { results[`${binary} :: ${listed[1]}`] = 'FAILED'; continue; }
     const result = /^test (.+?) \.\.\. (ok|FAILED|ignored)(?:, .*)?$/.exec(line);
-    if (result && binary) results[`${binary} :: ${result[1]}`] = result[2];
+    if (result && binary && results[`${binary} :: ${result[1]}`] !== 'FAILED') results[`${binary} :: ${result[1]}`] = result[2];
   }
   return results;
 }
@@ -139,7 +163,7 @@ const report = {
   environment: { node: process.version, platform: process.platform, architecture: process.arch, cargo: requireSuccess(run('cargo', ['--version'])), rustc: requireSuccess(run('rustc', ['-Vv'])), runnerImage: process.env.ImageVersion ?? null },
   scope: `${revisions.length} historical source-changing deltas, one Linux default cargo test baseline per head. Not an equivalent replacement for upstream CI, platform/toolchain matrix, features, or other commands.`,
   selection: 'For a SELECTIVE plan the harness runs the selected cargo test commands next to the full baseline and compares every reported test. The commands come from the plan when the target CI gives plain cargo test evidence; otherwise from the same planner with the harness baseline (plain cargo test --offline --locked, no flags or compiler environment) as the invocation evidence. A fault injected into the changed Rust file in a separate local clone must fail both runs.',
-  preparation: 'Harness explicitly generates Cargo.lock and fetches dependencies before read-only analysis. Lockfile bytes and hashes are captured. Analyzer uses offline locked Cargo metadata and does not download dependencies.',
+  preparation: `Harness ${lockfileMode === 'generate' ? 'explicitly generates Cargo.lock and fetches' : 'uses the committed Cargo.lock and fetches its'} dependencies before read-only analysis. Lockfile bytes and hashes are captured. Analyzer uses offline locked Cargo metadata and does not download dependencies.`,
   measurement: 'One full run per revision, sequential with shared build cache; timings include compilation and are not a benchmark or evidence of avoided compute.',
   avoidedComputeClaim: false, replays: [],
 };
@@ -153,10 +177,13 @@ try {
     const replay = { head, base, subject: git('show', '-s', '--format=%s', head), preparation: [] };
     report.replays.push(replay);
     save();
-    // No tracked source is edited. glob intentionally ignores its generated Cargo.lock.
-    git('check-ignore', 'Cargo.lock');
-    if (git('ls-files', 'Cargo.lock')) throw new Error('Expected untracked generated lockfile');
-    for (const commandArgs of [['generate-lockfile'], ['fetch', '--locked']]) {
+    // No tracked source is edited: either the target ignores Cargo.lock and the harness generates
+    // it, or the committed Cargo.lock is used as is (fetch --locked refuses to change it).
+    if (lockfileMode === 'generate') {
+      git('check-ignore', 'Cargo.lock');
+      if (git('ls-files', 'Cargo.lock')) throw new Error('Expected untracked generated lockfile');
+    } else if (!git('ls-files', 'Cargo.lock')) throw new Error('Expected a committed Cargo.lock');
+    for (const commandArgs of [...(lockfileMode === 'generate' ? [['generate-lockfile']] : []), ['fetch', '--locked']]) {
       const result = run('cargo', commandArgs);
       replay.preparation.push(result);
       save();
@@ -220,7 +247,9 @@ try {
     save();
   }
   const selective = report.replays.filter(replay => replay.selectedTest);
-  report.status = report.replays.every(replay => replay.fullTest.exitCode === 0)
+  // A full baseline may fail on its own (for example, newer dependency data than the head was written
+  // for); it must still finish, and every selected run must report exactly its failures.
+  report.status = report.replays.every(replay => replay.fullTest.exitCode !== null && !replay.fullTest.error)
     && selective.every(replay => replay.selectedTest.comparison.sameFailures && replay.injectedFault?.caught) ? 'PASSED' : 'FAILED';
   report.summary = {
     replays: report.replays.length,

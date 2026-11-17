@@ -99,7 +99,7 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
     const selected = new Set(cratePackages);
     for (let missing = uncovered(selected); missing !== undefined; missing = uncovered(selected)) {
       const extra = (unit: { crates: string[] }) => unit.crates.filter(name => !selected.has(name)).length;
-      const unit = coverage.units.filter(candidate => candidate.covers.includes(missing!) && candidate.crates.every(name => literalName.test(name)))
+      const unit = coverage.units.filter(candidate => candidate.covers.includes(missing!) && candidate.crates.every(name => packageSpec.test(name)))
         .sort((a, b) => extra(a) - extra(b) || a.crates.join(" ").localeCompare(b.crates.join(" ")))[0];
       if (!unit) break;
       for (const name of unit.crates) selected.add(name);

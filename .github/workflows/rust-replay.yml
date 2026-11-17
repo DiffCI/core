@@ -1,14 +1,21 @@
 name: Rust public repository replay
-# Manual only: each run clones, builds and fully tests glob three times. Run it from the Actions tab
-# when a Rust adapter change could alter the replay's outcome.
+# Manual only: each run clones one pinned target, then builds and fully tests every listed revision
+# (scripts/replay-rust.mjs). Run it from the Actions tab when a Rust adapter change could alter the
+# replay's outcome.
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Pinned public Rust target
+        type: choice
+        options: [glob, rust-url, anstyle]
+        default: glob
 permissions:
   contents: read
 jobs:
   replay:
     runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,18 +32,29 @@ jobs:
       - run: npm run build
       - name: Clone pinned official Rust target into a disposable directory
         shell: bash
+        env:
+          TARGET: ${{ inputs.target || 'glob' }}
         run: |
           set -euo pipefail
           root=$(mktemp -d "$RUNNER_TEMP/rust-replay.XXXXXX")
           echo "RUST_REPLAY_ROOT=$root" >> "$GITHUB_ENV"
-          git clone https://github.com/rust-lang/glob.git "$root/glob"
-          git -C "$root/glob" checkout --detach 057cef2824f5a96f738e52d7d8ca3e024381bcc6
+          case "$TARGET" in
+            glob) url=https://github.com/rust-lang/glob.git; head=057cef2824f5a96f738e52d7d8ca3e024381bcc6 ;;
+            rust-url) url=https://github.com/servo/rust-url.git; head=bcf5a2a98986dd5dfb252d3e977d2da380b09fda ;;
+            anstyle) url=https://github.com/rust-cli/anstyle.git; head=46bb5c061b42ebad90694969352ee0a31d67fc68 ;;
+            *) echo "Unknown target: $TARGET" >&2; exit 1 ;;
+          esac
+          git clone "$url" "$root/$TARGET"
+          git -C "$root/$TARGET" checkout --detach "$head"
       - name: Prepare Cargo dependencies, then analyze and run full offline baselines
         shell: bash
+        env:
+          TARGET: ${{ inputs.target || 'glob' }}
         run: |
           set -euo pipefail
           node scripts/replay-rust.mjs \
-            --repo "$RUST_REPLAY_ROOT/glob" \
+            --target "$TARGET" \
+            --repo "$RUST_REPLAY_ROOT/$TARGET" \
             --disposable-root "$RUST_REPLAY_ROOT" \
             --output "$RUNNER_TEMP/rust-replay-report.json" \
             --prepare-dependencies
@@ -44,7 +62,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rust-public-replay
+          name: rust-public-replay-${{ inputs.target || 'glob' }}
           path: ${{ runner.temp }}/rust-replay-report.json
           if-no-files-found: warn
           retention-days: 30
