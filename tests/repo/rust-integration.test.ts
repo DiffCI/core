@@ -210,10 +210,19 @@ test("documentation stays full-suite when Rust code may read it, and excluded fi
     writeFileSync(join(root, "app/src/lib.rs"), '#[test] fn names() { assert_eq!("cmd", "cmd"); let _ = "doctor/visit"; }');
     graph = await buildDependencyGraph({ repoPath: root });
     assert.deepEqual(graph.profile.rustDocumentationReaders, []);
-    // A member that path-depends on the fixture keeps the repository-wide fallback.
-    output = metadata([{ id: "sample", name: "sample", manifest_path: join(root, "tests/fixtures/sample/Cargo.toml"), dependencies: [], features: {},
-      targets: [{ name: "sample", kind: ["lib"], src_path: join(root, "tests/fixtures/sample/src/lib.rs"), test: true, doctest: true }] }]);
+    // A member that path-depends on the fixture inside the repository: the fixture stays an
+    // unmodelled boundary (its changes keep the full suite) and other changes still narrow.
+    const sample = (manifest: string) => [{ id: "sample", name: "sample", manifest_path: manifest, dependencies: [], features: {},
+      targets: [{ name: "sample", kind: ["lib"], src_path: join(dirname(manifest), "src/lib.rs"), test: true, doctest: true }] }];
+    output = metadata(sample(join(root, "tests/fixtures/sample/Cargo.toml")));
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, []);
+    assert.equal(new ImpactAnalyzer().analyze(delta("core/src/lib.rs"), graph, graph.profile).fallbackRequired, false);
+    assert.equal(new ImpactAnalyzer().analyze(delta("tests/fixtures/sample/src/lib.rs"), graph, graph.profile).fallbackRequired, true);
+    // One outside the repository can change without the diff showing it: repository-wide fallback.
+    output = metadata(sample(join(dirname(root), "outside-sample/Cargo.toml")));
     graph = await buildDependencyGraph({ repoPath: root });
     assert.ok(graph.adapterBlockers?.some(reason => reason.startsWith("Cargo manifests outside workspace membership")));
+    assert.ok(graph.adapterBlockers?.some(reason => reason.startsWith("Local Cargo path dependencies outside the workspace")));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

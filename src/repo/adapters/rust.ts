@@ -358,7 +358,16 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     // package outside the workspace appears, no member depends on these crates: they are fixtures or
     // excluded crates. Their files stay unmodelled, so changing one keeps the full suite (impact.ts)
     // without blocking changes elsewhere. Otherwise the repository-wide fallback stays.
-    const localDependencyOutside = metadata.packages.some(pkg => !metadata.workspace_members.includes(pkg.id) && (pkg.source === undefined || pkg.source === null));
+    // Local path packages that are not workspace members. Inside the repository they are unmodelled
+    // boundaries like fixture crates: a change to one keeps the full suite, and dependency edges
+    // through them are followed below. Outside the repository their changes are invisible to the diff.
+    const localNonMembers = metadata.packages.filter(pkg => !metadata.workspace_members.includes(pkg.id) && (pkg.source === undefined || pkg.source === null));
+    const localInside = new Map<string, string>();
+    for (const pkg of localNonMembers) {
+      const manifest = repositoryPath(root, pkg.manifest_path, known);
+      if (manifest && /(?:^|\/)Cargo\.toml$/.test(manifest) && manifest !== "Cargo.toml" && unmodeledManifests.includes(manifest)) localInside.set(pkg.id, manifest);
+    }
+    const localDependencyOutside = localNonMembers.some(pkg => !localInside.has(pkg.id));
     const unmodeledBoundary = (file: string) => !localDependencyOutside
       && unmodeledManifests.some(manifest => under(file, manifest.slice(0, -"/Cargo.toml".length)));
     if (unmodeledManifests.length && localDependencyOutside) result.blockers.push(`Cargo manifests outside workspace membership require full validation: ${unmodeledManifests.join(", ")}`);
@@ -444,21 +453,57 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       || metadata.workspace_members.some(id => !nodes.some(node => node.id === id))) {
       result.blockers.push("Cargo dependency resolution is missing or incomplete; full validation required");
     } else {
+      // A member can depend on another member through packages outside the workspace (a local path
+      // package that itself depends on a member, or a `[patch]`ed crate). Follow dependencies through
+      // non-members until they reach members. An in-repository local package whose own code could
+      // read other crates' files (a build script, Cargo or program runs, climbing out of its
+      // directory, path literals or includes) makes the member depend on every workspace crate.
+      const byId = new Map(nodes.map(node => [node.id, node]));
+      const opaque = new Map<string, boolean>();
+      const opaqueLocal = (id: string) => {
+        const manifest = localInside.get(id);
+        if (!manifest) return false;
+        if (!opaque.has(id)) {
+          const directory = manifest.slice(0, -"/Cargo.toml".length);
+          const pkg = localNonMembers.find(candidate => candidate.id === id)!;
+          opaque.set(id, pkg.targets.some(target => target.kind.includes("custom-build"))
+            || context.files.filter(file => file.endsWith(".rs") && under(file, directory)).some(file => {
+              let scanned: ReturnType<typeof rustInputs>;
+              try { scanned = rustInputs(readFileSync(resolve(root, file), "utf8")); } catch { return true; }
+              return !scanned || scanned.compiles || scanned.navigates || scanned.documentation || scanned.paths.length > 0
+                || scanned.inputs.some(input => { const path = repositoryPath(root, resolve(root, dirname(file), input.path), known); return !path || !under(path, directory); });
+            }));
+        }
+        return opaque.get(id)!;
+      };
       for (const node of nodes) {
         const anchor = anchors.get(node.id);
         if (!anchor) continue;
-        for (const dependency of node.dependencies) {
+        const reached = new Set<string>();
+        let everything = false;
+        const seen = new Set<string>([node.id]);
+        const pending = [...node.dependencies];
+        while (pending.length) {
+          const dependency = pending.pop()!;
+          if (seen.has(dependency)) continue;
+          seen.add(dependency);
           const target = anchors.get(dependency);
-          if (target && target !== anchor) result.edges.push({ from: anchor, to: target, kind: "import" });
+          if (target) { reached.add(target); continue; }
+          if (opaqueLocal(dependency)) everything = true;
+          pending.push(...(byId.get(dependency)?.dependencies ?? []));
         }
+        if (everything) for (const other of packages) reached.add(other.manifest);
+        reached.delete(anchor);
+        for (const target of reached) result.edges.push({ from: anchor, to: target, kind: "import" });
       }
     }
     // Registry and Git dependencies are locked and immutable unless Cargo.lock changes, and a
     // Cargo.lock change keeps the full suite. Their build scripts and procedural macros run the same
     // code for the selected and the full invocation; anything they read from this repository outside
     // modelled Rust sources is a changed path that keeps the full suite. A local path dependency that
-    // is not a workspace member has no modelled ownership, so it still blocks the repository.
-    const localOutside = metadata.packages.filter(pkg => !metadata.workspace_members.includes(pkg.id) && (pkg.source === undefined || pkg.source === null));
+    // is not a workspace member and lives outside the repository can change without the diff showing it,
+    // so it still blocks the repository; one inside the repository is an unmodelled boundary (above).
+    const localOutside = localNonMembers.filter(pkg => !localInside.has(pkg.id));
     if (localOutside.length) {
       result.blockers.push(`Local Cargo path dependencies outside the workspace require full validation: ${localOutside.map(pkg => pkg.name).sort().join(", ")}`);
     }
