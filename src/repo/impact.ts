@@ -24,6 +24,10 @@ const NEXT_ENTRY_NAMES = new Set(["page","layout","route","api","loading","error
 // Lockfiles are reported by the lockfile rule; resolving their readers would only repeat it.
 function isLockfile(filePath: string): boolean { return LOCKFILE.test(posix.basename(filePath)); }
 function isSourceFilePath(filePath: string): boolean { return SOURCE_EXTENSIONS.has(extname(filePath).toLowerCase()); }
+/** JavaScript and TypeScript code, which a tool can load by name (failToolLoadedOrphan). */
+const JS_TS_CODE = /\.[cm]?[jt]sx?$/;
+/** `karma.conf.js`, `ava.config.mjs`, `.c8rc.js`, `.mocharc.cjs`: names a tool looks for, not a module. */
+const TOOL_LOADED_NAME = /(?:\.(?:config|conf)\.[cm]?[jt]sx?|^\.[^/]*rc\.[cm]?[jt]s)$/;
 function isAssetFilePath(filePath: string): boolean { return ASSET_EXTENSIONS.has(extname(filePath).toLowerCase()); }
 function isGoReaderFile(filePath: string): boolean { return filePath.endsWith(".go"); }
 /**
@@ -1252,6 +1256,38 @@ export class ImpactAnalyzer {
       this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true });
     }
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
+    this.failToolLoadedOrphan(changedPath, changedImpact, graph, affectedTests, evidence, riskSignals, fallbackReasons, covered);
+  }
+
+  /**
+   * Code a tool loads by its name rather than through an import (2026-11-17). `.c8rc.js`, `ava.config.js`,
+   * `karma.conf.js` and `.mocharc.js` decide how a suite runs, but no file imports them, so the graph
+   * reached no test and the plan was SELECTIVE with nothing selected and no reason. CONFIG_PATTERNS names
+   * the common ones; this catches the rest: a JavaScript or TypeScript file with a configuration-style
+   * name anywhere, or any one at the repository root, that no file imports and that reached no test.
+   * An unused module elsewhere (`src/unused.ts`) still selects nothing: no tool loads it by name.
+   */
+  private failToolLoadedOrphan(
+    changedPath: string,
+    changedImpact: ChangedImpact,
+    graph: DependencyGraph,
+    affectedTests: Map<string, TestImpact>,
+    evidence: ImpactEvidence[],
+    riskSignals: ImpactRiskSignal[],
+    fallbackReasons: string[],
+    covered: boolean,
+  ): void {
+    if (covered || changedImpact.file.changeType === "deleted" || this.isTestFile(changedPath)) return;
+    if (!JS_TS_CODE.test(changedPath) || changedPath.split("/").includes("node_modules")) return;
+    if (changedPath.includes("/") && !TOOL_LOADED_NAME.test(posix.basename(changedPath))) return;
+    if (hasNode(graph, changedPath) && graph.transitiveDependentsOf(changedPath).length > 0) return;
+    if ([...affectedTests.values()].some((test) => test.evidence.some((item) => item.changedFile === changedPath))) return;
+    // Another rule already explained this path (a runner setup file, issue #139).
+    if (fallbackReasons.some((reason) => reason.includes(changedPath))) return;
+    const message = `Code that no file imports changed: ${changedPath}; a tool may load it by name, so full validation required`;
+    evidence.push(makeEvidence("CONFIG_GLOBAL", changedPath, message));
+    riskSignals.push({ level: "critical", reason: "CONFIG_GLOBAL", message, paths: [changedPath] });
+    fallbackReasons.push(message);
   }
 
   /** Selects the tests that own `path` as a test fixture (src/repo/test-fixture-ownership.ts), if any do. */
