@@ -251,6 +251,16 @@ jobs:
             exit 1
           }
 
+      - name: Attach the tarball and its signed provenance to the GitHub Release
+        working-directory: packages/diffci-cli
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package_version=$(node -p "require('./package.json').version")
+          node "$GITHUB_WORKSPACE/scripts/attach-release-provenance.mjs" "$package_version"
+
       - name: Tag the matching observer Action release
         working-directory: packages/diffci-cli
         shell: bash
