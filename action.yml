@@ -189,6 +189,7 @@ runs:
         DIFFCI_API_URL: ${{ inputs.api-url }}
         DIFFCI_TOKEN: ${{ inputs.api-token }}
         DIFFCI_CLI_VERSION: ${{ inputs.cli-version }}
+        DIFFCI_SURFACE: github-action
       run: |
         set -euo pipefail
         if [[ ! "$DIFFCI_CLI_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
