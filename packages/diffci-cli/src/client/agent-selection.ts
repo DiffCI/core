@@ -10,8 +10,9 @@ import { requireDiffciPackageIdentity } from "./package-identity.js";
 import { executableSelection, scopedChanges } from "./verify.js";
 import { captureScopedTree, captureWorkingTreeSnapshot, type VerificationTreeScope, type WorkingTreeSnapshot } from "./working-tree.js";
 
+/** A rename is its old path and its new one: whatever imported the old path is affected too. */
 function changedPaths(repoPath: string, snapshot: WorkingTreeSnapshot): string[] {
-  return execFileSync("git", ["diff", "--name-only", "-z", snapshot.baseSha, snapshot.commitSha], {
+  return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", snapshot.baseSha, snapshot.commitSha], {
     cwd: repoPath, encoding: "utf8", windowsHide: true,
   }).split("\0").filter(Boolean);
 }
