@@ -101,17 +101,24 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       command ??= token;
       continue;
     }
-    const key = token.slice(2);
+    // `--name=value` is the same flag as `--name value`. Read as a flag named "name=value" it was
+    // silently ignored: `verify --policy=enforce` verified without enforcement.
+    const equals = token.indexOf("=");
+    const key = equals > 2 ? token.slice(2, equals) : token.slice(2);
+    const inline = equals > 2 ? token.slice(equals + 1) : undefined;
     const next = args[i + 1];
     if (key === "paths") {
       // `--paths a b c` takes every value up to the next flag, and repeats add to it; NUL separates
       // them because no path contains one.
       const values: string[] = typeof flags.paths === "string" ? flags.paths.split("\0") : [];
+      if (inline) values.push(inline);
       while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("--")) values.push(args[++i]!);
       flags.paths = values.length ? values.join("\0") : true;
       continue;
     }
-    if (next !== undefined && !next.startsWith("--")) {
+    if (inline !== undefined) {
+      flags[key] = inline;
+    } else if (next !== undefined && !next.startsWith("--")) {
       flags[key] = next;
       i++;
     } else {
