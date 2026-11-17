@@ -4,6 +4,8 @@ import type { SelectiveTestCommandGroup, SelectiveTestCommandPlan } from "./test
 
 /** Cargo target names are literal arguments, not paths, globs, package specs or shell fragments. */
 const literalName = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+/** A package is its name, or NAME@VERSION when a dependency shares the name (adapters/rust.ts). */
+const packageSpec = /^[A-Za-z0-9_][A-Za-z0-9_-]*(?:@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?$/;
 
 /** Only the Rust adapter may attest that the repository's invocation is reproducible. Missing
  * evidence (including old cached profiles) must never become a guessed default test command. */
@@ -31,7 +33,7 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
       return refuse("Rust tests require verified Cargo package and target metadata");
     }
     const target = targets[path]!;
-    if (!literalName.test(packages[path]!) || !literalName.test(target.name)
+    if (!packageSpec.test(packages[path]!) || !literalName.test(target.name)
       || !["lib", "bin", "test", "bench", "example"].includes(target.kind)) {
       return refuse("Invalid Cargo package or test target");
     }

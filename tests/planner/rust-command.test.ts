@@ -60,6 +60,16 @@ describe("Rust selective command synthesis", () => {
     ]);
   });
 
+  it("passes NAME@VERSION through when a dependency shares a member's name", () => {
+    const p = profile();
+    p.rustTestPackages!["crates/core/src/lib.rs"] = "actual-core@0.2.0";
+    p.rustTestPackages!["crates/core/tests/one.rs"] = "actual-core@0.2.0-rc.1";
+    assert.deepEqual(planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]).commands, [{ executable: "cargo", args: ["test", "-p", "actual-core@0.2.0"] }]);
+    assert.deepEqual(planSelectiveTestCommands(p, ["crates/core/tests/one.rs"]).commands, [{ executable: "cargo", args: ["test", "-p", "actual-core@0.2.0-rc.1", "--test", "custom-integration"] }]);
+    for (const spec of ["actual-core@0.2", "actual-core@^0.2.0", "actual-core@0.2.0+build", "actual-core@0.2.0 --workspace"]) {
+      const q = profile(); q.rustTestPackages!["crates/core/src/lib.rs"] = spec; refuses(q);
+    }
+  });
   it("refuses missing invocation evidence, including cached profiles", () => {
     const p = profile(); delete p.rustTestInvocation; refuses(p);
   });

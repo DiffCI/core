@@ -16,6 +16,7 @@ export interface CargoTarget {
 export interface CargoPackage {
   id: string;
   name: string;
+  version?: string;
   manifest_path: string;
   targets: CargoTarget[];
   source?: string | null;
@@ -124,7 +125,8 @@ export function parseCargoMetadata(output: string): CargoMetadata {
     if (!object(pkg) || typeof pkg.id !== "string" || !pkg.id || typeof pkg.name !== "string"
       || !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(pkg.name) || typeof pkg.manifest_path !== "string"
       || !isAbsolute(pkg.manifest_path) || !Array.isArray(pkg.targets) || !pkg.targets.length
-      || (pkg.source !== undefined && pkg.source !== null && typeof pkg.source !== "string")) {
+      || (pkg.source !== undefined && pkg.source !== null && typeof pkg.source !== "string")
+      || (pkg.version !== undefined && typeof pkg.version !== "string")) {
       throw new Error("Invalid Cargo package metadata");
     }
     for (const target of pkg.targets) {
@@ -338,6 +340,18 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       result.blockers.push("Ambiguous Cargo workspace package names require full validation");
       return result;
     }
+    // `cargo test -p NAME` and `cargo tree -p NAME` stop with "specification is ambiguous" when a
+    // dependency has a member's name (an older release of the same crate, say). Name such a member
+    // NAME@VERSION, which Cargo accepts, or fall back when even that cannot tell them apart.
+    const specs = new Map<string, string>();
+    for (const pkg of members) {
+      const named = metadata.packages.filter(other => other.name === pkg.name);
+      if (named.length === 1) specs.set(pkg.id, pkg.name);
+      else if (pkg.version && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pkg.version) && named.filter(other => other.version === pkg.version).length === 1) {
+        specs.set(pkg.id, `${pkg.name}@${pkg.version}`);
+      } else result.blockers.push(`Cargo package ${pkg.name} has no unambiguous package specification; full validation required`);
+    }
+    const spec = (pkg: CargoPackage) => specs.get(pkg.id) ?? pkg.name;
     const packages: Array<{ pkg: CargoPackage; directory: string; manifest: string }> = [];
     for (const pkg of members) {
       const manifest = repositoryPath(root, pkg.manifest_path, known);
@@ -412,7 +426,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           continue;
         }
         result.testFiles.push(path);
-        result.testPackages[path] = pkg.name;
+        result.testPackages[path] = spec(pkg);
         result.rustTestTargets[path] = { name: target.name, kind };
       }
     }
@@ -523,17 +537,17 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     // planner checks each selected set against those units.
     if (!cargoFeaturesVary(metadata)) result.rustFeatureCoverage = { deficits: {}, units: [] };
     else {
-      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => pkg.name);
+      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => spec(pkg));
       const dependents = new Map<string, string[]>();
       for (const edge of result.edges) {
         if (edge.from.endsWith("Cargo.toml") && edge.to.endsWith("Cargo.toml") && edge.from !== edge.to) {
           dependents.set(edge.to, [...(dependents.get(edge.to) ?? []), edge.from]);
         }
       }
-      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, pkg.name]));
+      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, spec(pkg)]));
       const units = new Map<string, string[]>();
       for (const { pkg, manifest } of packages) {
-        if (tested.has(pkg.id)) units.set(pkg.name, [pkg.name]);
+        if (tested.has(pkg.id)) units.set(spec(pkg), [spec(pkg)]);
         const seen = new Set([manifest]); const pending = [manifest];
         while (pending.length) for (const next of dependents.get(pending.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); pending.push(next); }
         const closure = [...seen].map(path => byManifest.get(path)).filter((name): name is string => name !== undefined && testedNames.includes(name)).sort();
