@@ -53,6 +53,7 @@ const EXAMPLES = [
   ".nvmrc",
   ".node-version",
   ".npmrc",
+  ".mocharc.json",
 ];
 
 test("every CONFIG_PATTERNS entry has one real file name in the table", () => {

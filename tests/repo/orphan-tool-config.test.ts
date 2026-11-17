@@ -60,7 +60,9 @@ async function planForChange(files: Record<string, string>, changedPath: string,
 const BEFORE = "module.exports = { timeout: 2000 };\n";
 const AFTER = "module.exports = { timeout: 5000 };\n";
 
-for (const file of [".c8rc.js", "ava.config.js", "karma.conf.js", ".mocharc.cjs", "Gruntfile.js", "packages/a/karma.conf.js", "packages/a/.c8rc.cjs"]) {
+// `.mocharc.cjs` is not in this list: a Mocha configuration is classified before this fallback and gets
+// the reason that names it (see tests/repo/mocharc-config-fallback.test.ts).
+for (const file of [".c8rc.js", "ava.config.js", "karma.conf.js", "Gruntfile.js", "packages/a/karma.conf.js", "packages/a/.c8rc.cjs"]) {
   test(`a change to only ${file}, which nothing imports, runs every test and names it`, async () => {
     const plan = await planForChange(project({ [file]: BEFORE }), file, AFTER);
     assert.equal(plan.mode, "FULL");

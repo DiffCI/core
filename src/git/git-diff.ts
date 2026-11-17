@@ -252,6 +252,10 @@ export const CONFIG_PATTERNS = [
   /^\.nvmrc$/,
   /^\.node-version$/,
   /^\.npmrc$/,
+  // Mocha's configuration (issue #142). `.mocharc.json` reads as an asset by extension and
+  // `.mocharc.js` as code with no importers, so neither reached the configuration signals; both
+  // decide how the suite runs.
+  /^\.mocharc(?:\.[^/]+)?$/,
 ];
 
 // Stage 1B fix (2026-08-21, docs/research/2026-08-21-stage1b-*.md): root-caused in Stage 1A's fallback-
