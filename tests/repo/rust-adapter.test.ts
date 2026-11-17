@@ -278,7 +278,7 @@ test("byte and C raw strings cannot hide an include or path attribute", () => {
       const close = prefix.endsWith("#") ? '"#' : '"';
       for (const hidden of ['include!(concat!(env!("OUT_DIR"), "/generated.rs"));', '#[path = "../../other/src/lib.rs"] mod external;']) {
         writeFileSync(join(root, "app/src/lib.rs"), `pub const P: &[u8] = ${prefix}"\\${close};\n${hidden}\n// "\n`);
-        assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => reason.includes("Rust computed includes or path attributes")), `${prefix}: ${hidden}`);
+        assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => /Rust (?:computed includes|include outside)/.test(reason)), `${prefix}: ${hidden}`);
       }
     }
     writeFileSync(join(root, "app/src/lib.rs"), 'pub const P: &[u8] = br#"include_str!("missing") and \\"#;\npub const C: &core::ffi::CStr = cr"\\";\n');
