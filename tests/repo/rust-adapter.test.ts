@@ -336,6 +336,28 @@ mod tests {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("literal paths from the workspace root reach the crate they name", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers=["crates/app", "crates/other", "crates/third"]\n',
+    ".cargo/config.toml": '[env]\nCARGO_WORKSPACE_DIR = { value = "", relative = true }\n',
+    "crates/app/Cargo.toml": manifest("app"), "crates/app/src/lib.rs": "", "crates/other/Cargo.toml": manifest("other"), "crates/other/src/lib.rs": "",
+    "crates/third/Cargo.toml": manifest("third"), "crates/third/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "crates/app", "app"), pkg(root, "crates/other", "other"), pkg(root, "crates/third", "third")]);
+    const reads = (source: string) => {
+      writeFileSync(join(root, "crates/app/src/lib.rs"), source);
+      const result = analyzeRustMetadata(context, output);
+      assert.deepEqual(result.blockers, [], source);
+      return result.edges.filter(edge => edge.from === "crates/app/Cargo.toml" && edge.to.endsWith("Cargo.toml")).map(edge => edge.to).sort();
+    };
+    assert.deepEqual(reads('#[test] fn header() { let p = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("crates/other/src/lib.rs"); std::fs::read_to_string(p).unwrap(); }'), ["crates/other/Cargo.toml"]);
+    assert.deepEqual(reads('#[test] fn all() { let _ = std::fs::read_dir(concat!(env!("CARGO_WORKSPACE_DIR"), "crates/")); }'), ["crates/other/Cargo.toml", "crates/third/Cargo.toml"]);
+    // The root itself, or a path that only makes sense inside the crate, is not a read of another crate.
+    assert.deepEqual(reads('#[test] fn local() { let _ = std::fs::read("tests/data/input.bin"); let _ = format!("{}/{}", "a", "b"); let _ = std::path::Path::new("/"); }'), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("registry dependencies narrow; local outside path dependencies, symlinked modules and discovery-excluded Rust sources fail closed", (t) => {
   const files = { "Cargo.toml": manifest("app"), "src/lib.rs": "mod helper;", "src/helper.rs": "pub fn helper() {}" };
   const root = fixture(files);
