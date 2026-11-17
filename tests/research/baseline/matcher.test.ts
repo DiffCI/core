@@ -52,6 +52,9 @@ describe("matchesAny", () => {
     assert.ok(matchesAny("app/[id]/page.tsx", ["app/\\[id\\]/*"]));
     assert.ok(!matchesAny("app/i/page.tsx", ["app/\\[id\\]/*"]));
     assert.ok(matchesAny("a/[b", ["a/[b"]), "an unclosed [ is literal");
+    assert.ok(matchesAny("src/[z-a].ts", ["src/[z-a].ts"]), "a reversed range is literal, not a throw");
+    assert.ok(!matchesAny("src/a.ts", ["src/[z-a].ts"]));
+    assert.doesNotThrow(() => matchesAny("b", ["[a-\\]"]));
   });
 
   it("lets a ** that is not next to a slash cross directories", () => {
