@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import fc from "fast-check";
 import { matchesAny } from "../../../src/research/baseline/matcher.js";
 
 // Regression coverage for a bug found while fixing discoverTests() during the Stage 0
@@ -27,5 +28,45 @@ describe("matchesAny", () => {
     const pattern = ["src/**/*.test.ts"];
     assert.ok(!matchesAny("src/lib/security/scanner.ts", pattern));
     assert.ok(!matchesAny("docs/readme.md", pattern));
+  });
+
+  // #178: every character that is not glob syntax is literal, and no pattern throws.
+  it("treats regex metacharacters in a pattern as literal characters", () => {
+    assert.ok(matchesAny("app/(shop)/page.tsx", ["app/(shop)/**"]));
+    assert.ok(!matchesAny("app/shop/page.tsx", ["app/(shop)/**"]));
+    assert.ok(matchesAny("c++/x.cc", ["c++/*"]));
+    assert.ok(matchesAny("a|b/$x^.ts", ["a|b/$x^.ts"]));
+    assert.ok(!matchesAny("ab/x.ts", ["a|b/*"]));
+  });
+
+  it("matches ? as exactly one character within a segment", () => {
+    assert.ok(matchesAny("src/a.ts", ["src/?.ts"]));
+    assert.ok(!matchesAny("src/ab.ts", ["src/?.ts"]));
+    assert.ok(!matchesAny("src/a/b.ts", ["src/a?b.ts"]));
+  });
+
+  it("supports character classes and a backslash escape", () => {
+    assert.ok(matchesAny("src/v2.ts", ["src/v[0-9].ts"]));
+    assert.ok(!matchesAny("src/vx.ts", ["src/v[0-9].ts"]));
+    assert.ok(matchesAny("src/vx.ts", ["src/v[!0-9].ts"]));
+    assert.ok(matchesAny("app/[id]/page.tsx", ["app/\\[id\\]/*"]));
+    assert.ok(!matchesAny("app/i/page.tsx", ["app/\\[id\\]/*"]));
+    assert.ok(matchesAny("a/[b", ["a/[b"]), "an unclosed [ is literal");
+  });
+
+  it("lets a ** that is not next to a slash cross directories", () => {
+    assert.ok(matchesAny("a/b/c.js", ["**"]));
+    assert.ok(matchesAny("a/b/c.js", ["**.js"]));
+    assert.ok(!matchesAny("a/b/c.ts", ["**.js"]));
+    assert.ok(matchesAny("src", ["src/**"]));
+    assert.ok(matchesAny("src/a/b", ["src/**"]));
+    assert.ok(matchesAny("a/x/y/b", ["a/**/b"]));
+    assert.ok(matchesAny("a/b", ["a/**/b"]));
+  });
+
+  it("never throws, whatever the pattern", () => {
+    fc.assert(fc.property(fc.string(), fc.string(), (path, pattern) => {
+      matchesAny(path, [pattern]);
+    }), { numRuns: 2000 });
   });
 });
