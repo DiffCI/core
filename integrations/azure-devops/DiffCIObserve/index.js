@@ -14,7 +14,7 @@ const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 
 /** The CLI release this task was published with. Moved by every release's version bump. */
-const DEFAULT_CLI_VERSION = "0.3.53";
+const DEFAULT_CLI_VERSION = "0.3.54";
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 const MAX_TESTS_OUTPUT_BYTES = 64 * 1024;
 
