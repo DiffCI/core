@@ -103,9 +103,24 @@ function workflowPathFilters(on: unknown): { paths?: string[]; pathsIgnore?: str
     const lists = triggers.map((trigger) => trigger && typeof trigger === "object" && !Array.isArray(trigger) ? normalizeStringArray((trigger as Record<string, unknown>)[key]) : undefined);
     if (lists.some((list) => !list || list.length === 0)) return undefined;
     const patterns = [...new Set(lists.flat() as string[])];
-    return patterns.every((pattern) => PLAIN_GLOB.test(pattern)) ? patterns : undefined;
+    return patterns.every((pattern) => PLAIN_GLOB.test(pattern) && !hasPartialGlobstar(pattern)) ? patterns : undefined;
   };
   return { paths: collect("paths"), pathsIgnore: collect("paths-ignore") };
+}
+
+/**
+ * Whether `pattern` has a `**` the planner's matcher would read more narrowly than GitHub: one that is not a
+ * whole path segment between slashes (`**.js`, `src**`, `{**,x}`), or a bare `**`. GitHub lets those cross
+ * directories, but the planner reads them as `*`, so a filter of `'**'` would only match top-level files.
+ */
+function hasPartialGlobstar(pattern: string): boolean {
+  if (pattern === "**") return true;
+  for (const match of pattern.matchAll(/\*{2,}/g)) {
+    const before = pattern[match.index - 1];
+    const after = pattern[match.index + match[0].length];
+    if (match[0].length !== 2 || (before !== undefined && before !== "/") || (after !== undefined && after !== "/")) return true;
+  }
+  return false;
 }
 
 function normalizeStringArray(value: unknown): string[] | undefined {

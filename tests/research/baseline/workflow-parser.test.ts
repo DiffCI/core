@@ -152,6 +152,13 @@ describe("parseRepositoryWorkflows (yaml dependency regression)", () => {
     assert.equal(filtered("on:\n  workflow_dispatch:").pathGlobs, undefined);
   });
 
+  it("keeps no filter when a ** is not a whole path segment, which the planner would read as *", () => {
+    for (const pattern of ["'**'", "'**.js'", "'src**'", "'{**,docs/*}'", "'a/***'"]) {
+      assert.equal(filtered(`on:\n  pull_request:\n    paths: [${pattern}]`).pathGlobs, undefined, pattern);
+    }
+    assert.deepEqual(filtered("on:\n  pull_request:\n    paths: ['**/*.ts', 'api/**', 'a/**/b', '{api,web}/**']").pathGlobs, ["**/*.ts", "api/**", "a/**/b", "{api,web}/**"]);
+  });
+
   it("gives the registry task the workflow's filter as its inputs", () => {
     filtered("on:\n  pull_request:\n    paths: ['api/**']");
     const registry = buildGenericTaskRegistry(repoProfile(".github/workflows/api.yml"), "typescript", parseRepositoryWorkflows(repoProfile(".github/workflows/api.yml"), dir));
