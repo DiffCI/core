@@ -21,7 +21,7 @@ export interface AdapterContribution {
   testFiles: string[];
   testPackages: Record<string, string>;
   /** Cargo target roots; a lib/bin root represents the crate's unit tests. */
-  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
+  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example"; requiredFeatures?: string[] }>;
   /** Rust files that may read documentation: workspace build scripts, and sources naming a
    * documentation path in a string literal. */
   rustDocumentationReaders?: string[];

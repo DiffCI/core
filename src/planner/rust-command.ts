@@ -36,11 +36,22 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
       return refuse("Invalid Cargo package or test target");
     }
   }
+  // A target with `required-features` runs only when Cargo enables those features for its package.
+  // Naming it (`--test name`) makes Cargo fail instead of skipping it, so its package stays whole:
+  // `cargo test -p name` runs exactly the targets the full run runs for that package.
+  const gated = new Set(paths.filter(path => targets[path]!.requiredFeatures !== undefined).map(path => packages[path]!));
+  for (const path of paths) {
+    const required = targets[path]!.requiredFeatures;
+    if (required !== undefined && (!Array.isArray(required) || !required.length || required.some(feature => typeof feature !== "string"))) {
+      return refuse("Invalid Cargo package or test target");
+    }
+  }
   const groups: SelectiveTestCommandGroup[] = [];
   const cratePackages: string[] = [];
   const cratePaths: string[] = [];
   for (const pkg of [...new Set(paths.map(path => packages[path]!))].sort()) {
     const owned = paths.filter(path => packages[path] === pkg);
+    if (gated.has(pkg)) { cratePackages.push(pkg); cratePaths.push(...owned); continue; }
     const ordinary = owned.filter(path => ["lib", "bin", "test"].includes(targets[path]!.kind));
     if (ordinary.length) {
       // A crate unit-test root represents the whole crate, including doctests. Do not narrow it to

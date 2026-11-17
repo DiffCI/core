@@ -185,7 +185,7 @@ test("Cargo dependency edges select the changed crate and transitive normal/dev/
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("workspace build scripts are scoped to their crate; proc macros and feature-gated targets", () => {
+test("workspace build scripts are scoped to their crate; proc macros and required-feature targets do not block", () => {
   const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["gen", "leaf", "other"]\n' };
   for (const name of ["gen", "leaf", "other"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "", [`${name}/tests/api.rs`]: "#[test] fn works() {}" });
   files["gen/build.rs"] = 'fn main() { println!("cargo:rerun-if-changed=build.rs"); let _ = std::fs::read_dir("."); }';
@@ -205,8 +205,12 @@ test("workspace build scripts are scoped to their crate; proc macros and feature
     assert.ok(!graph.transitiveDependentsOf("leaf/src/lib.rs").includes("other/tests/api.rs"));
     const procMacro = analyzeRustMetadata(context, metadata(root, [packages[0]!, { ...packages[1]!, targets: [target(root, "leaf/src/lib.rs", "leaf", "proc-macro")] }, packages[2]!]));
     assert.deepEqual(procMacro.blockers, []);
-    const featureTarget = analyzeRustMetadata(context, metadata(root, [packages[0]!, { ...packages[1]!, targets: [{ ...packages[1]!.targets[0]!, "required-features": ["extra"] }] }, packages[2]!]));
-    assert.ok(featureTarget.blockers.some(reason => reason.includes("targets requiring features")));
+    // A target with required features no longer blocks the repository: it is recorded so the planner
+    // keeps its package whole, and Cargo decides whether it runs, as in the full run.
+    const featureTarget = analyzeRustMetadata(context, metadata(root, [packages[0]!, { ...packages[1]!, targets: [packages[1]!.targets[0]!, { ...packages[1]!.targets[1]!, "required-features": ["extra", "base"] }] }, packages[2]!]));
+    assert.deepEqual(featureTarget.blockers, []);
+    assert.deepEqual(featureTarget.rustTestTargets?.["leaf/tests/api.rs"], { name: "api", kind: "test", requiredFeatures: ["base", "extra"] });
+    assert.deepEqual(featureTarget.rustTestTargets?.["leaf/src/lib.rs"], { name: "leaf", kind: "lib" });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -573,4 +577,43 @@ test("Cargo metadata without default members falls back", () => {
     assert.ok(result.blockers.some(reason => reason.includes("without default workspace members")));
     assert.deepEqual(result.testFiles, []);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a required-feature target keeps its package whole, so the selected command runs what plain cargo test runs", { skip: !cargoAvailable }, () => {
+  // `gated` has an always-on integration test and one that needs the `extra` feature, which only the
+  // `enabler` crate turns on. The full run enables it (feature unification across the workspace);
+  // `cargo test -p gated` alone does not, and the feature check must catch that.
+  for (const enabled of [false, true]) {
+    const files: Record<string, string> = {
+      "Cargo.toml": '[workspace]\nmembers = ["gated", "other"' + (enabled ? ', "enabler"' : "") + ']\nresolver = "2"\n',
+      "gated/Cargo.toml": manifest("gated") + '\n[features]\nextra = []\n\n[[test]]\nname = "needs_extra"\nrequired-features = ["extra"]\n',
+      "gated/src/lib.rs": "pub fn value() -> u8 { 1 }\n", "gated/tests/plain.rs": "#[test] fn plain() { assert_eq!(gated::value(), 1); }\n",
+      "gated/tests/needs_extra.rs": "#[test] fn needs_extra() {}\n",
+      "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "#[cfg(test)] mod tests { #[test] fn other() {} }\n",
+    };
+    if (enabled) Object.assign(files, { "enabler/Cargo.toml": manifest("enabler") + '\n[dependencies]\ngated = { path = "../gated", features = ["extra"] }\n', "enabler/src/lib.rs": "pub use gated::value;\n" });
+    const root = fixture(files);
+    try {
+      assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
+      const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
+      assert.deepEqual(result.blockers, [], String(enabled));
+      assert.deepEqual(result.rustTestTargets?.["gated/tests/needs_extra.rs"], { name: "needs_extra", kind: "test", requiredFeatures: ["extra"] });
+      const list = (args: string[]) => {
+        const run = spawnSync("cargo", ["test", "--offline", "--locked", ...args, "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 120_000 });
+        assert.equal(run.status, 0, run.stderr);
+        return [...run.stdout.matchAll(/^\w+: test$/gm)].map(match => match[0]).sort();
+      };
+      const full = list([]);
+      assert.equal(full.includes("needs_extra: test"), enabled);
+      if (!enabled) {
+        // Without the enabler, the gated target is skipped by the full run and by `-p gated` alike.
+        assert.deepEqual(result.rustFeatureCoverage, { deficits: {}, units: [] });
+        assert.deepEqual(list(["-p", "gated"]).filter(name => name !== "other: test"), full.filter(name => name !== "other: test"));
+      } else {
+        // `-p gated` alone would skip needs_extra; the coverage record says gated needs enabler.
+        assert.deepEqual(result.rustFeatureCoverage?.deficits.gated, ["gated v0.1.0"]);
+        assert.ok(list(["-p", "gated", "-p", "enabler"]).includes("needs_extra: test"));
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
 });

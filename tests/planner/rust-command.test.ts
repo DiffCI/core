@@ -36,6 +36,20 @@ describe("Rust selective command synthesis", () => {
     assert.deepEqual(plan.groups.flatMap(group => group.paths).sort(), ["cli/src/main.rs", "crates/core/src/lib.rs", "crates/core/tests/one.rs"]);
   });
 
+  it("keeps a package whole when a selected target has required features", () => {
+    const p = profile();
+    p.rustTestTargets!["crates/core/tests/two.rs"] = { name: "second", kind: "test", requiredFeatures: ["extra"] };
+    // Naming the gated target would make Cargo fail when the feature is off; `-p` lets Cargo skip it
+    // exactly as the full run does, and still runs the other selected integration test.
+    const plan = planSelectiveTestCommands(p, ["crates/core/tests/one.rs", "crates/core/tests/two.rs"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core"] }]);
+    // An unselected gated target does not widen an integration-only selection.
+    assert.deepEqual(planSelectiveTestCommands(p, ["crates/core/tests/one.rs"]).commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "--test", "custom-integration"] }]);
+    p.rustTestTargets!["crates/core/tests/two.rs"] = { name: "second", kind: "test", requiredFeatures: [] };
+    refuses(p, ["crates/core/tests/two.rs"]);
+  });
+
   it("selects custom integration target names instead of deriving names from paths", () => {
     const plan = planSelectiveTestCommands(profile(), ["crates/core/tests/one.rs"]);
     assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "--test", "custom-integration"] }]);

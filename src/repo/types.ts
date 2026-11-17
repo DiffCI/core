@@ -53,7 +53,7 @@ export interface RepositoryProfile {
   mavenTestModules?: Record<string, string>;
   /** Cargo target source to owning package name and target, verified by metadata. */
   rustTestPackages?: Record<string, string>;
-  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
+  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example"; requiredFeatures?: string[] }>;
   rustSources?: string[];
   /** Rust files that may read documentation (adapters/rust.ts). While one exists, documentation
    * changes keep the full suite; otherwise they follow the shared documentation classification. */

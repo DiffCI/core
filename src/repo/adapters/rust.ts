@@ -413,7 +413,13 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
         }
         result.testFiles.push(path);
         result.testPackages[path] = pkg.name;
-        result.rustTestTargets[path] = { name: target.name, kind };
+        // Plain `cargo test` builds and runs a target with `required-features` only when Cargo enabled
+        // those features for its package, and skips it silently otherwise. The planner keeps such a
+        // package whole (`-p name`, never `--test name`), so Cargo makes the same decision for the
+        // selected command as for the full run: the feature check below gives the package the full
+        // run's features.
+        const requiredFeatures = target["required-features"]?.length ? [...target["required-features"]].sort() : undefined;
+        result.rustTestTargets[path] = { name: target.name, kind, ...(requiredFeatures ? { requiredFeatures } : {}) };
       }
     }
     const moduleTrees = packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path)))
@@ -469,9 +475,6 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     for (const id of buildScriptCrates) {
       const anchor = anchors.get(id)!;
       for (const other of packages) if (other.manifest !== anchor) result.edges.push({ from: anchor, to: other.manifest, kind: "import" });
-    }
-    if (packages.some(({ pkg }) => pkg.targets.some(target => target["required-features"]?.length))) {
-      result.blockers.push("Cargo targets requiring features need an explicitly supported test invocation; full validation required");
     }
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
