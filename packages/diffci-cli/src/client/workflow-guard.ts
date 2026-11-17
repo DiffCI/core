@@ -427,9 +427,13 @@ function runInvokesEnforcePolicy(run: string): boolean {
   return runInvokesDiffCiVerification(run) && /--policy[=\s]+["']?enforce\b/.test(commandText(run));
 }
 
-/** `npm run test` and `npm test` are the same command; so are the pnpm/yarn/bun pairs. */
+/**
+ * `npm run test` and `npm test` are the same command; so are the pnpm and yarn pairs. Bun's are not:
+ * `bun test` starts Bun's own test runner and never reads scripts.test, so only `bun run test` is the
+ * test script.
+ */
 function normalizeTestCommand(command: string): string {
-  return command.trim().replace(/\s+/g, " ").replace(/^(npm|pnpm|yarn|bun) run test$/, "$1 test");
+  return command.trim().replace(/\s+/g, " ").replace(/^(npm|pnpm|yarn) run test$/, "$1 test");
 }
 
 function runInvokesFullCommand(run: string, fullCommand: string): boolean {

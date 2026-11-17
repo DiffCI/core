@@ -137,13 +137,15 @@ export function inferFullCommand(repoPath: string): FullCommandDecision {
       return { reason: "package.json has no test script" };
     }
     const manager = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
-    if (manager === "pnpm" || manager === "yarn" || manager === "bun") {
+    // `bun test` is Bun's own test runner and ignores scripts.test; `bun run test` runs the script.
+    if (manager === "bun") return { command: "bun run test", reason: "package.json test script via bun" };
+    if (manager === "pnpm" || manager === "yarn") {
       return { command: `${manager} test`, reason: `package.json test script via ${manager}` };
     }
     if (manager && manager !== "npm") return { reason: `unsupported package manager: ${manager}` };
     if (existsSync(join(repoPath, "pnpm-lock.yaml"))) return { command: "pnpm test", reason: "package.json test script with pnpm lockfile" };
     if (existsSync(join(repoPath, "yarn.lock"))) return { command: "yarn test", reason: "package.json test script with Yarn lockfile" };
-    if (existsSync(join(repoPath, "bun.lock")) || existsSync(join(repoPath, "bun.lockb"))) return { command: "bun test", reason: "package.json test script with Bun lockfile" };
+    if (existsSync(join(repoPath, "bun.lock")) || existsSync(join(repoPath, "bun.lockb"))) return { command: "bun run test", reason: "package.json test script with Bun lockfile" };
     return { command: "npm test", reason: "package.json test script" };
   }
 
