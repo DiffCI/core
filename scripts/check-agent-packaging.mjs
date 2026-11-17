@@ -88,6 +88,16 @@ assert(museCatalogEntry?.version === version, "Muse marketplace version must mat
 assert(museCatalogEntry?.install?.transport === "local-path" && museCatalogEntry.install.source === "integrations/muse-plugin", "Muse marketplace must install the native package.");
 assert(/^sha256:[a-f0-9]{64}$/.test(museCatalogEntry?.integrity?.digest ?? ""), "Muse marketplace must carry a package SHA-256 digest.");
 
+// Azure DevOps extension (2026-11-17): the extension version is the CLI version, the task version is
+// 1.<CLI minor>.<CLI patch>, and the task's default CLI is the same release.
+const azureExtension = readJson("integrations/azure-devops/vss-extension.json");
+const azureTask = readJson("integrations/azure-devops/DiffCIObserve/task.json");
+const [, cliMinor, cliPatch] = version.split(/[.+-]/).map(Number);
+assert(azureExtension.version === version, "Azure DevOps extension version must match the CLI package version.");
+assert(azureTask.version?.Major === 1 && azureTask.version?.Minor === cliMinor && azureTask.version?.Patch === cliPatch, `Azure DevOps task version must be 1.${cliMinor}.${cliPatch}.`);
+assert(readText("integrations/azure-devops/DiffCIObserve/index.js").includes(`const DEFAULT_CLI_VERSION = "${version}";`), "Azure DevOps task must default to the CLI package version.");
+assert(azureTask.execution?.Node24 && azureTask.execution?.Node20_1 && !azureTask.restrictions, "Azure DevOps task must declare the Node24 and Node20_1 handlers and no restrictions.");
+
 const installationGuide = readText("docs/agent-installation.md");
 assert(installationGuide.includes(`@diffci.com/diffci@${version}`), "Agent installation guide must pin the CLI package version.");
 const stalePins = [...installationGuide.matchAll(/@diffci\.com\/diffci@(\d+\.\d+\.\d+)/g)].map((match) => match[1]).filter((pinned) => pinned !== version);

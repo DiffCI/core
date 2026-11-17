@@ -98,7 +98,7 @@ function surfaceOf(env: NodeJS.ProcessEnv): UsageSurface {
 }
 
 function isCi(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(env.CI && env.CI !== "false" && env.CI !== "0") || Boolean(env.GITHUB_ACTIONS || env.GITLAB_CI || env.BUILDKITE || env.CIRCLECI);
+  return Boolean(env.CI && env.CI !== "false" && env.CI !== "0") || Boolean(env.GITHUB_ACTIONS || env.GITLAB_CI || env.TF_BUILD || env.BUILDKITE || env.CIRCLECI);
 }
 
 export function telemetryNotice(mode: TelemetryMode): string {

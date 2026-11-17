@@ -58,7 +58,7 @@ export interface ObservationRepository {
 }
 
 export interface ObservationCi {
-  provider: "github-actions" | "gitlab-ci" | "local" | "unknown";
+  provider: "github-actions" | "gitlab-ci" | "azure-pipelines" | "local" | "unknown";
   runId?: string;
   runAttempt?: string;
   workflow?: string;

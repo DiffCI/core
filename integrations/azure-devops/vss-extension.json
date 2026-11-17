@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "id": "diffci",
+  "name": "DiffCI change impact",
+  "version": "0.3.52",
+  "publisher": "diffci",
+  "public": false,
+  "description": "Shows which tests and checks a pull request affects, and why, in every Azure Pipelines run. Observation only; never fails the pipeline.",
+  "categories": ["Azure Pipelines"],
+  "tags": ["testing", "test impact analysis", "test selection", "pull request", "AI coding agents"],
+  "targets": [{ "id": "Microsoft.VisualStudio.Services" }],
+  "icons": { "default": "images/diffci-128.png" },
+  "content": { "details": { "path": "overview.md" } },
+  "links": {
+    "home": { "uri": "https://diffci.com" },
+    "repository": { "uri": "https://github.com/DiffCI/core" },
+    "issues": { "uri": "https://github.com/DiffCI/core/issues" },
+    "license": { "uri": "https://github.com/DiffCI/core/blob/main/LICENSE" }
+  },
+  "repository": { "type": "git", "uri": "https://github.com/DiffCI/core" },
+  "files": [
+    { "path": "DiffCIObserve" },
+    { "path": "images", "addressable": true }
+  ],
+  "contributions": [
+    {
+      "id": "diffci-observe-task",
+      "type": "ms.vss-distributed-task.task",
+      "targets": ["ms.vss-distributed-task.tasks"],
+      "properties": { "name": "DiffCIObserve" }
+    }
+  ]
+}

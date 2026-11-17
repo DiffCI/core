@@ -28,7 +28,7 @@ export interface ObservationEnvironment {
 }
 
 export interface CiEnvironmentFacts {
-  provider: "github-actions" | "gitlab-ci" | "local" | "unknown";
+  provider: "github-actions" | "gitlab-ci" | "azure-pipelines" | "local" | "unknown";
   ownerName?: string;
   providerRepositoryId?: string;
   defaultBranch?: string;
@@ -91,8 +91,33 @@ function readGitlabEnvironment(env: ObservationEnvironment): CiEnvironmentFacts 
   };
 }
 
+/** Azure Pipelines build reasons with no change of their own to analyse (2026-11-17). */
+const AZURE_SYNTHETIC_REASONS = new Set(["Manual", "Schedule", "ResourceTrigger", "BuildCompletion"]);
+
+/** Azure Pipelines sets `TF_BUILD=True` on every agent job. */
+export function isAzurePipelines(env: ObservationEnvironment): boolean {
+  return env.TF_BUILD?.toLowerCase() === "true";
+}
+
+function readAzureEnvironment(env: ObservationEnvironment): CiEnvironmentFacts {
+  const event = asString(env.BUILD_REASON);
+  return {
+    provider: "azure-pipelines",
+    ownerName: asString(env.BUILD_REPOSITORY_NAME),
+    providerRepositoryId: asString(env.BUILD_REPOSITORY_ID),
+    runId: asString(env.BUILD_BUILDID),
+    runAttempt: asString(env.SYSTEM_JOBATTEMPT),
+    workflow: asString(env.BUILD_DEFINITIONNAME),
+    job: asString(env.SYSTEM_JOBDISPLAYNAME),
+    event,
+    ref: asString(env.BUILD_SOURCEBRANCH),
+    syntheticTrigger: event !== undefined && AZURE_SYNTHETIC_REASONS.has(event),
+  };
+}
+
 export function readCiEnvironment(env: ObservationEnvironment): CiEnvironmentFacts {
   if (env.GITLAB_CI === "true") return readGitlabEnvironment(env);
+  if (isAzurePipelines(env)) return readAzureEnvironment(env);
   if (env.GITHUB_ACTIONS !== "true") {
     return { provider: env.CI === "true" ? "unknown" : "local" };
   }
@@ -162,8 +187,61 @@ const DEEPEN_HINT =
 const GITLAB_DEEPEN_HINT =
   "the commit is not in this checkout - set `GIT_DEPTH: \"0\"` in the variables of the job that runs DiffCI (this does not affect any other job)";
 
+/** Azure Pipelines checks out shallow (`fetchDepth: 1`) by default in pipelines created since 2022. */
+const AZURE_DEEPEN_HINT =
+  "the commit is not in this checkout - set `fetchDepth: 0` on the `checkout` step of the job that runs DiffCI (this does not affect any other job)";
+
 function deepenHint(env: ObservationEnvironment): string {
-  return env.GITLAB_CI === "true" ? GITLAB_DEEPEN_HINT : DEEPEN_HINT;
+  if (env.GITLAB_CI === "true") return GITLAB_DEEPEN_HINT;
+  return isAzurePipelines(env) ? AZURE_DEEPEN_HINT : DEEPEN_HINT;
+}
+
+/**
+ * Azure Pipelines (2026-11-17), for the DiffCIObserve task and the CLI run directly in a pipeline.
+ *
+ *   - A pull request build checks out a merge commit Azure created (`refs/pull/<n>/merge`), like GitHub's
+ *     merge ref. Its second parent is the source head (`System.PullRequest.SourceCommitId`) and its first
+ *     parent the target branch tip the merge was made against. The range is the merge base of the two up
+ *     to the source head, so commits that reached the target branch since are not counted.
+ *   - Push builds (`IndividualCI`, `BatchedCI`) carry no "before" commit, so the head's parent is used and
+ *     labelled `head-parent`: a batched build with several commits is described by its last commit only.
+ *
+ * Returns undefined for build reasons with no range (manual, schedule, ...), which take the generic
+ * HEAD^ path with `syntheticTrigger` recorded.
+ */
+function resolveAzureRange(env: ObservationEnvironment, git: GitRunner): CommitRangeResolution | undefined {
+  const hint = AZURE_DEEPEN_HINT;
+  const reason = env.BUILD_REASON;
+
+  if (reason === "PullRequest") {
+    const secondParent = resolveSha(git, "HEAD^2");
+    const headSha = asString(env.SYSTEM_PULLREQUEST_SOURCECOMMITID) ?? secondParent;
+    if (!headSha) return { ok: false, reason: "pull request build carried no System.PullRequest.SourceCommitId and HEAD is not a merge commit" };
+    if (!commitExists(git, headSha)) {
+      return { ok: false, reason: `pull request head ${headSha.slice(0, 12)} is not present locally: ${hint}` };
+    }
+    // The target tip: the merge commit's first parent when its second parent is the source head, else
+    // the fetched target branch.
+    let targetTip = secondParent === headSha ? resolveSha(git, "HEAD^1") : undefined;
+    const targetBranch = asString(env.SYSTEM_PULLREQUEST_TARGETBRANCH)?.replace(/^refs\/heads\//, "");
+    if (!targetTip && targetBranch) targetTip = resolveSha(git, `refs/remotes/origin/${targetBranch}`);
+    if (!targetTip) {
+      return { ok: false, reason: `the pull request's target branch${targetBranch ? ` ${targetBranch}` : ""} is not present locally: ${hint}` };
+    }
+    const common = mergeBase(git, targetTip, headSha);
+    if (!common) return { ok: false, reason: `no merge base between the pull request head and its target branch in this checkout: ${hint}` };
+    return { ok: true, range: { baseSha: common, headSha, source: "pull-request-event", mergeBaseSha: common !== targetTip ? common : undefined } };
+  }
+
+  if (reason === "IndividualCI" || reason === "BatchedCI") {
+    const headSha = asString(env.BUILD_SOURCEVERSION) ?? resolveSha(git, "HEAD");
+    if (!headSha) return { ok: false, reason: "could not determine the head commit of this build" };
+    const parent = resolveSha(git, `${headSha}^`);
+    if (!parent) return { ok: false, reason: `the head commit has no parent in this checkout: ${hint}` };
+    return { ok: true, range: { baseSha: parent, headSha, source: "head-parent" } };
+  }
+
+  return undefined;
 }
 
 /**
@@ -246,7 +324,7 @@ export function resolveCommitRangeFetchingHistory(options: ResolveCommitRangeOpt
   const first = resolveCommitRange(options);
   if (first.ok) return first;
   const { env, git } = options;
-  if (env.GITHUB_ACTIONS !== "true" && env.GITLAB_CI !== "true") return first;
+  if (env.GITHUB_ACTIONS !== "true" && env.GITLAB_CI !== "true" && !isAzurePipelines(env)) return first;
   const shallow = git(["rev-parse", "--is-shallow-repository"]);
   if (!shallow.ok || shallow.stdout.trim() !== "true") return first;
   const fetched = git(["fetch", "--quiet", "--no-tags", "--unshallow", "origin"]);
@@ -271,6 +349,11 @@ export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRa
   if (env.GITLAB_CI === "true") {
     const gitlab = resolveGitlabRange(env, git);
     if (gitlab) return gitlab;
+  }
+
+  if (isAzurePipelines(env)) {
+    const azure = resolveAzureRange(env, git);
+    if (azure) return azure;
   }
 
   const payload = readEventPayload(env);

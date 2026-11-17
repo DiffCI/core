@@ -295,3 +295,67 @@ describe("GitLab CI context", () => {
     assert.equal(facts.provider, "local");
   });
 });
+
+describe("Azure Pipelines context", () => {
+  const azure = (vars: Record<string, string>) => ({ TF_BUILD: "True", ...vars });
+  const MERGE = "d".repeat(40);
+  const TARGET = "e".repeat(40);
+
+  it("reads the pipeline's facts and marks manual and scheduled builds synthetic", () => {
+    const facts = readCiEnvironment(azure({
+      BUILD_REASON: "PullRequest", BUILD_REPOSITORY_NAME: "acme/app", BUILD_REPOSITORY_ID: "42", BUILD_BUILDID: "7",
+      SYSTEM_JOBATTEMPT: "2", BUILD_DEFINITIONNAME: "CI", SYSTEM_JOBDISPLAYNAME: "Observe", BUILD_SOURCEBRANCH: "refs/pull/9/merge",
+    }));
+    assert.deepEqual(facts, {
+      provider: "azure-pipelines", ownerName: "acme/app", providerRepositoryId: "42", runId: "7", runAttempt: "2",
+      workflow: "CI", job: "Observe", event: "PullRequest", ref: "refs/pull/9/merge", syntheticTrigger: false,
+    });
+    assert.equal(readCiEnvironment(azure({ BUILD_REASON: "Schedule" })).syntheticTrigger, true);
+    assert.equal(readCiEnvironment(azure({ BUILD_REASON: "Manual" })).syntheticTrigger, true);
+  });
+
+  it("resolves a pull request from the merge checkout: merge base of the target tip and the source head", () => {
+    const git = fakeGit({ known: [HEAD], revs: { "HEAD^2": HEAD, "HEAD^1": TARGET }, mergeBase: MERGE_BASE });
+    const result = resolveCommitRange({ env: azure({ BUILD_REASON: "PullRequest", SYSTEM_PULLREQUEST_SOURCECOMMITID: HEAD }), git });
+    assert.deepEqual(result, { ok: true, range: { baseSha: MERGE_BASE, headSha: HEAD, source: "pull-request-event", mergeBaseSha: MERGE_BASE } });
+  });
+
+  it("falls back to the fetched target branch when HEAD is not the merge commit", () => {
+    const git = fakeGit({ known: [HEAD], revs: { "refs/remotes/origin/main": TARGET }, mergeBase: TARGET });
+    const result = resolveCommitRange({
+      env: azure({ BUILD_REASON: "PullRequest", SYSTEM_PULLREQUEST_SOURCECOMMITID: HEAD, SYSTEM_PULLREQUEST_TARGETBRANCH: "refs/heads/main" }), git,
+    });
+    assert.deepEqual(result, { ok: true, range: { baseSha: TARGET, headSha: HEAD, source: "pull-request-event", mergeBaseSha: undefined } });
+  });
+
+  it("refuses with the fetchDepth hint when the source head or the target branch is missing", () => {
+    const noHead = resolveCommitRange({ env: azure({ BUILD_REASON: "PullRequest", SYSTEM_PULLREQUEST_SOURCECOMMITID: HEAD }), git: fakeGit({}) });
+    assert.equal(noHead.ok, false);
+    assert.match(noHead.ok ? "" : noHead.reason, /fetchDepth: 0/);
+    const noTarget = resolveCommitRange({
+      env: azure({ BUILD_REASON: "PullRequest", SYSTEM_PULLREQUEST_SOURCECOMMITID: HEAD, SYSTEM_PULLREQUEST_TARGETBRANCH: "refs/heads/main" }),
+      git: fakeGit({ known: [HEAD] }),
+    });
+    assert.equal(noTarget.ok, false);
+    assert.match(noTarget.ok ? "" : noTarget.reason, /target branch main is not present locally.*fetchDepth: 0/);
+  });
+
+  it("uses the head's parent for push builds, and refuses when the checkout has no parent", () => {
+    const git = fakeGit({ revs: { [`${HEAD}^`]: BASE } });
+    assert.deepEqual(resolveCommitRange({ env: azure({ BUILD_REASON: "IndividualCI", BUILD_SOURCEVERSION: HEAD }), git }),
+      { ok: true, range: { baseSha: BASE, headSha: HEAD, source: "head-parent" } });
+    const shallow = resolveCommitRange({ env: azure({ BUILD_REASON: "BatchedCI", BUILD_SOURCEVERSION: HEAD }), git: fakeGit({}) });
+    assert.equal(shallow.ok, false);
+    assert.match(shallow.ok ? "" : shallow.reason, /fetchDepth: 0/);
+  });
+
+  it("gives a manual build the generic HEAD^ range with the Azure hint", () => {
+    const result = resolveCommitRange({ env: azure({ BUILD_REASON: "Manual" }), git: fakeGit({ revs: { HEAD } }) });
+    assert.equal(result.ok, false);
+    assert.match(result.ok ? "" : result.reason, /fetchDepth: 0/);
+  });
+
+  it("does not read Azure variables outside Azure Pipelines", () => {
+    assert.equal(readCiEnvironment({ BUILD_REASON: "PullRequest", BUILD_REPOSITORY_NAME: "acme/app" }).provider, "local");
+  });
+});

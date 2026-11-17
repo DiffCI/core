@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Microsoft/azure-pipelines-task-lib/master/tasks.schema.json",
+  "id": "6157fbfe-00a7-4efc-8703-5c62b44eb1b2",
+  "name": "DiffCIObserve",
+  "friendlyName": "DiffCI change impact",
+  "description": "Shows which tests and checks a change affects, and why. Observation only: runs nothing, skips nothing, sends nothing, and never fails the pipeline.",
+  "helpUrl": "https://github.com/DiffCI/core/blob/main/integrations/azure-devops/README.md",
+  "helpMarkDown": "Shows which tests and checks a pull request affects. [More information](https://github.com/DiffCI/core/blob/main/integrations/azure-devops/README.md)",
+  "category": "Test",
+  "author": "DiffCI",
+  "version": { "Major": 1, "Minor": 3, "Patch": 52 },
+  "instanceNameFormat": "DiffCI change impact",
+  "inputs": [
+    { "name": "repositoryPath", "type": "string", "label": "Repository path", "defaultValue": "$(Build.SourcesDirectory)", "required": false, "helpMarkDown": "The checkout to observe." },
+    { "name": "cliVersion", "type": "string", "label": "DiffCI CLI version", "defaultValue": "", "required": false, "helpMarkDown": "Exact published `@diffci.com/diffci` version. Empty: the version this task was released with." },
+    { "name": "redactPaths", "type": "boolean", "label": "Redact paths", "defaultValue": "false", "required": false, "helpMarkDown": "Replace every file path in the report with a stable 12-character digest." },
+    { "name": "uploadArtifact", "type": "boolean", "label": "Upload the report", "defaultValue": "true", "required": false, "helpMarkDown": "Keep the JSON report and summary as a pipeline artifact." },
+    { "name": "artifactName", "type": "string", "label": "Artifact name", "defaultValue": "diffci-observation", "required": false },
+    { "name": "failOnError", "type": "boolean", "label": "Fail on error", "defaultValue": "false", "required": false, "helpMarkDown": "Fail this step when observation refuses or errors. Off by default, so a DiffCI problem never becomes the pipeline's result. Turn it on only while debugging an installation." }
+  ],
+  "outputVariables": [
+    { "name": "status", "description": "OBSERVED, REFUSED or ERROR." },
+    { "name": "fullSuiteRequired", "description": "\"false\" only when DiffCI narrowed this change cleanly; \"true\" on any fallback, refusal or error." },
+    { "name": "affectedTests", "description": "JSON array of the affected test files when fullSuiteRequired is \"false\" and paths are not redacted. Empty otherwise." },
+    { "name": "affectedTestCount", "description": "Number of affected test files. Empty without an observation." },
+    { "name": "totalTestCount", "description": "Number of test files the full suite runs. Empty without an observation." },
+    { "name": "reason", "description": "One line on why the full suite is required. Empty when it is not." }
+  ],
+  "execution": {
+    "Node24": { "target": "index.js" },
+    "Node20_1": { "target": "index.js" }
+  }
+}
