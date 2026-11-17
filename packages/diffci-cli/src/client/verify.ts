@@ -768,7 +768,29 @@ function redactReceipt(report: VerificationReport, result: ObservationReport["re
     ...(report.command !== undefined ? { command: scrub(report.command) } : {}),
     ...(report.commands ? { commands: report.commands.map(scrub) } : {}),
     ...(report.first_pass ? { first_pass: { ...report.first_pass, commands: report.first_pass.commands.map(scrub) } } : {}),
-    ...(report.execution ? { execution: { ...report.execution, command: scrub(report.execution.command) } } : {}),
+    ...(report.execution ? { execution: redactMeasurement(report.execution, scrub) } : {}),
+    // Gate checks name the changed files in their reasons, and a NARROWED check's command lists them.
+    ...(report.checks ? { checks: report.checks.map((check) => ({ ...check, command: scrub(check.command), reason: scrub(check.reason) })) } : {}),
+    ...(report.failure_baseline ? {
+      failure_baseline: {
+        ...report.failure_baseline,
+        reason: scrub(report.failure_baseline.reason),
+        preexisting: report.failure_baseline.preexisting.map(scrub),
+        introduced: report.failure_baseline.introduced.map(scrub),
+      },
+    } : {}),
+  };
+}
+
+/** The run's command, output tails, failing test names and per-file results, with the known paths as digests. */
+function redactMeasurement(execution: CommandMeasurement, scrub: (text: string) => string): CommandMeasurement {
+  return {
+    ...execution,
+    command: scrub(execution.command),
+    stdoutTail: scrub(execution.stdoutTail),
+    stderrTail: scrub(execution.stderrTail),
+    ...(execution.failingTests ? { failingTests: execution.failingTests.map(scrub) } : {}),
+    ...(execution.testResults ? { testResults: execution.testResults.map((result) => ({ ...result, file: scrub(result.file) })) } : {}),
   };
 }
 

@@ -42,7 +42,7 @@ test("--redact-paths still runs the selected tests, and the receipt carries only
     assert.deepEqual(report.selected_tests, [digest("test/a.test.js")]);
     assert.deepEqual(Object.keys(report.selection_reasons ?? {}), [digest("test/a.test.js")]);
     assert.equal(report.selection_reasons?.[digest("test/a.test.js")]?.changed_file, digest("src/a.js"));
-    const receipt = JSON.stringify({ ...report, execution: { ...report.execution, stdoutTail: "", stderrTail: "", testResults: undefined } });
+    const receipt = JSON.stringify(report);
     assert.equal(receipt.includes("test/a.test.js"), false, "the receipt names no selected test path");
     assert.equal(receipt.includes("src/a.js"), false, "the receipt names no changed path");
   } finally {
@@ -57,6 +57,30 @@ test("without --redact-paths the receipt keeps the real paths", async () => {
     assert.equal(report.selection, "selected", report.reason);
     assert.deepEqual(report.selected_tests, ["test/a.test.js"]);
     assert.match(report.command ?? "", /test\/a\.test\.js/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("--redact-paths keeps the paths out of gate checks, test results and output of a failing run", async () => {
+  const repo = fixture();
+  try {
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "fixture", private: true, type: "module", scripts: { test: "node --test", check: "node scripts/check.js" } }));
+    mkdirSync(join(repo, "scripts"));
+    writeFileSync(join(repo, "scripts", "check.js"), `import "../src/a.js";\n`);
+    writeFileSync(join(repo, "test", "a.test.js"), `import { test } from "node:test";\nimport { a } from "../src/a.js";\ntest("a", () => { if (a === 2) throw new Error("a is 2"); });\n`);
+    writeFileSync(join(repo, "src", "a.js"), "export const a = 1;\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "a check, and a test that fails when a is 2");
+    writeFileSync(join(repo, "src", "a.js"), "export const a = 2;\n");
+    const report = await verifyChanged({ repoPath: repo, env: {}, version: "test", timeoutMs: 60_000, tailBytes: 4_000, redactPaths: true, reuse: false });
+    assert.equal(report.verification, "failed", report.reason);
+    assert.equal(report.selection, "selected", report.reason);
+    assert.ok(report.checks?.length, "the gate check ran");
+    assert.ok(report.execution?.testResults?.length, "the run has per-file results");
+    const receipt = JSON.stringify(report);
+    assert.equal(receipt.includes("test/a.test.js"), false, "the receipt names no selected test path");
+    assert.equal(receipt.includes("src/a.js"), false, "the receipt names no changed path");
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
