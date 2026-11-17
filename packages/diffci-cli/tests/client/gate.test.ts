@@ -213,6 +213,13 @@ test("steps that would start after the time limit is used up are not run", async
     assert.equal(report.tests?.full.status, "not_run");
     assert.equal(report.gate.status, "failed");
     assert.deepEqual(report.summary.misses, []);
+    // The unrun steps did not fail: the summary must not print them as FAIL, and the totals leave them out.
+    const summary = formatGateSummary(report).split("\n");
+    const check = report.checks[1]!.id;
+    assert.ok(summary.some((line) => line.startsWith(`  --   ${check} 0.0s (not run) - DiffCI:`)), summary.join("\n"));
+    assert.ok(summary.some((line) => line.startsWith("  --   tests 0.0s (not run) - DiffCI:")), summary.join("\n"));
+    assert.ok(summary.some((line) => line.startsWith(`  FAIL ${report.checks[0]!.id} `)), summary.join("\n"));
+    assert.equal(report.summary.basis, "estimated");
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
   }
