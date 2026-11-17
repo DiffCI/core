@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { analyzeRepository } from "../../src/repo/analyzer.js";
 import { hydrateDependencyGraph } from "../../src/repo/graph.js";
@@ -429,6 +430,50 @@ test("Cargo executable includes optional and dev-dependencies without changing C
     assert.ok(result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "consumer/Cargo.toml"));
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a member that shares its name with a dependency is named NAME@VERSION for Cargo", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers=["dup", "app"]\n', "dup/Cargo.toml": manifest("dup"), "dup/src/lib.rs": "",
+    "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const member = { ...pkg(root, "dup", "dup"), version: "0.2.0" };
+    const older = { id: "registry+https://github.com/rust-lang/crates.io-index#dup@0.1.0", name: "dup", version: "0.1.0", source: "registry+https://github.com/rust-lang/crates.io-index",
+      manifest_path: join(tmpdir(), "registry", "dup-0.1.0", "Cargo.toml"), targets: [target(tmpdir(), "registry/dup-0.1.0/src/lib.rs", "dup")], dependencies: [], features: {} };
+    const app = pkg(root, "app", "app");
+    const resolve = { nodes: [{ id: member.id, dependencies: [older.id] }, { id: older.id, dependencies: [] }, { id: app.id, dependencies: [] }] };
+    const result = analyzeRustMetadata(context, metadata(root, [member, older, app], { workspace_members: [member.id, app.id], workspace_default_members: [member.id, app.id], resolve }));
+    assert.deepEqual(result.blockers, []);
+    assert.deepEqual(result.testPackages, { "dup/src/lib.rs": "dup@0.2.0", "app/src/lib.rs": "app" });
+    // Without a version, or with the same version, nothing can tell Cargo which one is meant.
+    for (const version of [undefined, "0.1.0"]) {
+      const unversioned = { ...member, version };
+      const blocked = analyzeRustMetadata(context, metadata(root, [unversioned, older, app], { workspace_members: [member.id, app.id], workspace_default_members: [member.id, app.id], resolve }));
+      assert.ok(blocked.blockers.some(reason => reason.includes("Cargo package dup has no unambiguous package specification")), String(version));
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Cargo executable runs a member that shares its name with a Git dependency", { skip: !cargoAvailable || spawnSync("git", ["--version"]).status !== 0 }, () => {
+  const upstream = mkdtempSync(join(tmpdir(), "diffci-rust-git-"));
+  const files = { "Cargo.toml": '[workspace]\nmembers=["dup", "app"]\nresolver="2"\n', "dup/src/lib.rs": "#[cfg(test)] mod t { #[test] fn ok() {} }",
+    "dup/Cargo.toml": '[package]\nname = "dup"\nversion = "0.2.0"\nedition = "2021"\n\n[dependencies]\n'
+      + `old = { package = "dup", git = "${pathToFileURL(upstream).href}", default-features = false }\n`,
+    "app/Cargo.toml": manifest("app") + '\n[dependencies]\ndup = { path = "../dup" }\n', "app/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    writeFileSync(join(upstream, "Cargo.toml"), '[package]\nname = "dup"\nversion = "0.1.0"\nedition = "2021"\n\n[features]\ndefault = ["std"]\nstd = []\n');
+    mkdirSync(join(upstream, "src")); writeFileSync(join(upstream, "src/lib.rs"), "");
+    const git = (...args: string[]) => assert.equal(spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: upstream, windowsHide: true }).status, 0, args.join(" "));
+    git("init", "-q"); git("add", "-A"); git("commit", "-qm", "init");
+    assert.equal(spawnSync("cargo", ["generate-lockfile"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
+    const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
+    assert.deepEqual(result.blockers, []);
+    assert.equal(result.testPackages["dup/src/lib.rs"], "dup@0.2.0");
+    const run = spawnSync("cargo", ["test", "--offline", "--locked", "-p", result.testPackages["dup/src/lib.rs"]!], { cwd: root, encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(upstream, { recursive: true, force: true }); }
 });
 
 test("Cargo configuration cannot silently change the metadata command or build context", () => {
