@@ -80,7 +80,28 @@ make DiffCI the default:
      `diffci_select_tests` returns.
    - Do not commit or push when `safe_to_continue` is false, and do not bypass the
      pre-push hook with `--no-verify` unless the user asks.
+
+   Before a commit, verify what you will commit. Stage your own files by path
+   (`git add -- <your files>`), then run:
+
+       npx "@diffci.com/diffci@latest" verify --staged --json
+
+   It verifies HEAD plus the staged files only, in a temporary worktree, so other
+   uncommitted work in this checkout (another agent session's, for example) can
+   neither fail nor pass your commit. `verify --paths <file...>` does the same for
+   named files without staging them; pair it with `git commit -- <file...>`. With
+   MCP: `diffci_select_tests` with `scope: "staged"` (or `scope: "paths"` and
+   `paths`) returns the one command to run.
    ```
+
+5. **Several sessions in one checkout.** `verify --changed` verifies every
+   uncommitted file, whoever wrote it. When agent sessions share a checkout and each
+   commits only its own files, use `verify --staged` or `verify --paths` before each
+   commit: the receipt (`scope: "staged"` or `"paths"`) lists the verified files in
+   `scoped.verified_files` and the other sessions' files in
+   `scoped.excluded_dirty_paths`, and `safe_to_continue` covers only the scoped change.
+   The pre-push hook then reuses that pass when the pushed commit has the same tree.
+   `npm run diffci:verify:staged` is the package script `diffci init` adds for it.
 
 ### Short snippet
 

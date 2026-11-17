@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+import type { DependencyGraphResult } from "@diffci.com/core/repo/types";
 
 import { appendToCommand, batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
 import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
@@ -9,19 +12,38 @@ import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecisio
 import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
 import { makeGitRunner, observe } from "./observe.js";
-import type { ObservationCommitRange, ObservationReport, SelectionReason } from "./report.js";
+import { redactPath, type ObservationCommitRange, type ObservationReport, type SelectionReason } from "./report.js";
+import { createIsolatedWorktree } from "./isolated-worktree.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
 import { outcomeLogPath, readOutcomes, reusablePass } from "./outcome-log.js";
 import { likelyFailures, rankTests, testHistory } from "./test-ranking.js";
 import { assignShards, type ShardSpec, type TimingsFile } from "./test-shards.js";
 import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
-import { captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type WorkingTreeSnapshot } from "./working-tree.js";
+import { captureScopedTree, captureWorkingTreeSnapshot, snapshotChanges, type SnapshotChange, type VerificationTreeScope, type WorkingTreeSnapshot } from "./working-tree.js";
 
 export const VERIFICATION_SCHEMA = "diffci.verification.v1" as const;
 
 export type VerificationStatus = "passed" | "failed" | "blocked";
-export type VerificationScope = "working-tree" | "commit-range";
+/** `staged` and `paths` (2026-11-17) verify HEAD plus only the index, or only the named files, in a temporary worktree. */
+export type VerificationScope = "working-tree" | "commit-range" | "staged" | "paths";
+
+/** What a `staged` or `paths` receipt covered, and what in the checkout it left out (verifyScoped). */
+export interface ScopedVerification {
+  kind: "staged" | "paths";
+  /** Always a temporary worktree of HEAD plus the verified files. */
+  isolation: "temporary-worktree";
+  /** Files that differ from HEAD in the verified tree (digests under --redact-paths). */
+  verified_files: string[];
+  /** Files in the checkout that differ from the verified tree: other work left out, verified at HEAD. */
+  excluded_dirty_files: number;
+  /** The first 50 of them. */
+  excluded_dirty_paths: string[];
+  /** Verified files that import an excluded dirty file, which was verified at its HEAD version. */
+  head_version_imports?: Array<{ file: string; imports: string[] }>;
+  /** Set when the temporary worktree could not be removed; `git worktree prune` after deleting it. */
+  cleanup_failed?: string;
+}
 
 export interface VerificationReport {
   schema: typeof VERIFICATION_SCHEMA;
@@ -97,6 +119,8 @@ export interface VerificationReport {
   first_pass?: { tests: number; commands: string[]; stopped_full_suite: boolean };
   /** Tests the coverage map added to the selection (coverage-map.ts), when it added any. */
   coverage_added?: string[];
+  /** Present for `--staged` and `--paths`: the verified files and the excluded dirty ones. */
+  scoped?: ScopedVerification;
 }
 
 interface VerifyOptions {
@@ -122,9 +146,15 @@ interface VerifyOptions {
   timings?: TimingsFile;
   /** False ignores the coverage map (`--no-coverage`). */
   coverage?: boolean;
+  /** Receives the dependency graph the analysis built (verifyScoped reads its edges). */
+  onGraph?: (result: DependencyGraphResult) => void;
 }
 
 export interface VerifyChangedOptions extends VerifyOptions {}
+
+export interface VerifyScopedOptions extends VerifyOptions {
+  scope: VerificationTreeScope;
+}
 
 export interface VerifyRangeOptions extends VerifyOptions {
   baseOverride?: string;
@@ -557,11 +587,117 @@ async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<Ver
       redactPaths: options.redactPaths,
       reportPath: join(temporaryDirectory, "observation.json"),
       selectTestPhases: true,
+      ...(options.onGraph ? { onGraph: options.onGraph } : {}),
     });
     return await executeObservation({ ...options, repoPath }, "working-tree", before, observation);
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Verify HEAD plus only the staged content (`--staged`) or only the named files (`--paths`), 2026-11-17.
+ *
+ * The scoped tree is checked out in a temporary worktree of HEAD (isolated-worktree.ts) and verified
+ * there exactly as `--changed` verifies a checkout, so every other uncommitted file in this checkout is
+ * at its HEAD version for analysis and for the tests: it can neither fail nor rescue the result. The
+ * receipt names the verified files and the excluded dirty ones. Its tree is the tree a commit of the
+ * staged files has, so the pre-push hook reuses a pass of it (outcome-log.ts, reusablePass).
+ */
+/** The scoped tree, the files it changes from HEAD, and the checkout's other changed files (excluded). */
+export function scopedChanges(repoPath: string, scope: VerificationTreeScope): { scoped: WorkingTreeSnapshot; verified: SnapshotChange[]; excluded: SnapshotChange[] } {
+  const scoped = captureScopedTree(repoPath, scope);
+  const checkout = captureWorkingTreeSnapshot(repoPath);
+  return {
+    scoped,
+    verified: snapshotChanges(repoPath, `${scoped.baseSha}^{tree}`, scoped.treeSha),
+    excluded: snapshotChanges(repoPath, scoped.treeSha, checkout.treeSha),
+  };
+}
+
+export async function verifyScoped(options: VerifyScopedOptions): Promise<VerificationReport> {
+  return stamped(await verifyScopedTree(options), options.version);
+}
+
+async function verifyScopedTree(options: VerifyScopedOptions): Promise<VerificationReport> {
+  const repoPath = resolve(options.repoPath);
+  const kind = options.scope.kind;
+  const shown = (path: string) => options.redactPaths ? redactPath(path, (input) => createHash("sha256").update(input).digest("hex")) : path;
+  let scoped: WorkingTreeSnapshot;
+  let verified: SnapshotChange[];
+  let excluded: SnapshotChange[];
+  try {
+    ({ scoped, verified, excluded } = scopedChanges(repoPath, options.scope));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return blocked(unknownSnapshot(), kind, message, { status: "ERROR", stage: "context", fallback_reasons: [], error: message });
+  }
+  const scopedField: ScopedVerification = {
+    kind,
+    isolation: "temporary-worktree",
+    verified_files: verified.map((change) => shown(change.path)),
+    excluded_dirty_files: excluded.length,
+    excluded_dirty_paths: excluded.slice(0, 50).map((change) => shown(change.path)),
+  };
+
+  if (!scoped.changed) {
+    return {
+      ...baseReport(scoped, kind),
+      verification: "passed",
+      safe_to_continue: true,
+      reason: kind === "staged" ? "nothing is staged: the index matches HEAD" : "the given paths do not differ from HEAD",
+      changed_files: 0,
+      tests_available: 0,
+      tests_selected: 0,
+      selection: "none",
+      snapshot: { ...baseReport(scoped, kind).snapshot, after_base_sha: scoped.baseSha, after_tree_sha: scoped.treeSha, unchanged: true },
+      analysis: { status: "not_needed", fallback_reasons: [] },
+      required_actions: [],
+      scoped: scopedField,
+    };
+  }
+
+  const worktree = createIsolatedWorktree(repoPath, scoped.baseSha, scoped.treeSha);
+  if ("error" in worktree) {
+    return { ...blocked(scoped, kind, worktree.error, { status: "not_needed", fallback_reasons: [] }, { changedFiles: verified.length }), scoped: scopedField };
+  }
+  let forward: Record<string, string[]> | undefined;
+  let inner: VerificationReport;
+  let cleaned: boolean;
+  try {
+    inner = await verifyChangedSnapshot({ ...options, repoPath: worktree.path, onGraph: (graph) => { forward = graph.graph.forward; } });
+  } finally {
+    cleaned = worktree.dispose();
+  }
+  if (!cleaned) scopedField.cleanup_failed = worktree.path;
+
+  // Excluded dirty files a verified file imports were verified at their HEAD version: say which.
+  const excludedPaths = new Set(excluded.map((change) => change.path));
+  const imports = forward
+    ? verified.flatMap((change) => {
+        const targets = (forward![change.path] ?? []).filter((target) => excludedPaths.has(target));
+        return targets.length ? [{ file: shown(change.path), imports: [...new Set(targets)].sort().map(shown) }] : [];
+      })
+    : [];
+  if (imports.length) scopedField.head_version_imports = imports;
+
+  // The verdict is for the tree captured at the start: HEAD and the scoped files must still be it.
+  let after: WorkingTreeSnapshot | undefined;
+  try { after = captureScopedTree(repoPath, options.scope); } catch { after = undefined; }
+  const moved = !after ? "could not re-read the verified files after the run"
+    : after.baseSha !== scoped.baseSha ? "HEAD moved while verification was running"
+    : after.treeSha !== scoped.treeSha ? (kind === "staged" ? "the index changed while verification was running (another session may have staged files)" : "the given files changed while verification was running")
+    : inner.snapshot.before_tree_sha !== scoped.treeSha ? "the temporary worktree did not reproduce the verified files"
+    : undefined;
+  const importNote = imports.length
+    ? `; ${imports.length} verified file(s) import files changed outside the scope, verified at their HEAD version (${imports.slice(0, 3).map((entry) => `${entry.file} -> ${entry.imports.join(", ")}`).join("; ")})`
+    : "";
+  const report: VerificationReport = { ...inner, scope: kind, reason: `${inner.reason}${importNote}`, scoped: scopedField };
+  if (moved) {
+    const reason = `${moved}; rerun DiffCI for the new ${kind === "staged" ? "index" : "files"}`;
+    return { ...report, verification: "blocked", safe_to_continue: false, reason, required_actions: [reason] };
+  }
+  return report;
 }
 
 /** Verify a real commit range and bind the receipt to the clean commit that was actually executed. */
@@ -630,6 +766,13 @@ export function formatVerificationSummary(report: VerificationReport): string {
     `  snapshot: ${report.snapshot.before_tree_sha.slice(0, 12)} (${report.snapshot.unchanged ? "unchanged" : "not confirmed"})`,
   ];
   if (report.commit_range) lines.splice(2, 0, `  range: ${report.commit_range.base_sha.slice(0, 12)}..${report.commit_range.head_sha.slice(0, 12)}`);
+  const scoped = report.scoped;
+  if (scoped) {
+    const list = (paths: readonly string[], total: number) => `${paths.slice(0, 5).join(", ")}${total > 5 ? `, ${total - 5} more` : ""}`;
+    lines.splice(2, 0, `  verified files (HEAD + ${scoped.kind === "staged" ? "index" : "given paths"}, temporary worktree): ${scoped.verified_files.length}${scoped.verified_files.length ? ` (${list(scoped.verified_files, scoped.verified_files.length)})` : ""}`);
+    if (scoped.excluded_dirty_files) lines.splice(3, 0, `  excluded: ${scoped.excluded_dirty_files} other changed file(s) in this checkout, verified at HEAD (${list(scoped.excluded_dirty_paths, scoped.excluded_dirty_files)})`);
+    if (scoped.cleanup_failed) lines.push(`  warning: could not remove the temporary worktree ${scoped.cleanup_failed}; delete it and run git worktree prune`);
+  }
   const lineEndings = report.snapshot.line_ending_only_changes;
   if (lineEndings?.length) {
     lines.push(`  line endings only: ${lineEndings.length}${lineEndings.length === 20 ? "+" : ""} checked-out file(s) differ from HEAD only by CRLF (${lineEndings.slice(0, 3).join(", ")}${lineEndings.length > 3 ? ", ..." : ""}); verified as checked out`);

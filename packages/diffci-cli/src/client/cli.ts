@@ -41,7 +41,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { observe, isInsideRepository } from "./observe.js";
 import { resolveObservationAgent } from "./agent-identity.js";
@@ -58,7 +58,7 @@ import { formatJobSummary } from "./job-summary.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage, telemetryNotice } from "./telemetry.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
-import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, type VerificationReport } from "./verify.js";
+import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, verifyScoped, type VerificationReport } from "./verify.js";
 import { startWatch } from "./watch.js";
 import { captureWorkingTreeSnapshot } from "./working-tree.js";
 import { decideStop, HOOK_AGENTS, maxAttempts, parseStopPayload, sessionAttempts, stopRepoPath, type HookAgent } from "./agent-stop.js";
@@ -103,6 +103,14 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     }
     const key = token.slice(2);
     const next = args[i + 1];
+    if (key === "paths") {
+      // `--paths a b c` takes every value up to the next flag, and repeats add to it; NUL separates
+      // them because no path contains one.
+      const values: string[] = typeof flags.paths === "string" ? flags.paths.split("\0") : [];
+      while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("--")) values.push(args[++i]!);
+      flags.paths = values.length ? values.join("\0") : true;
+      continue;
+    }
     if (next !== undefined && !next.startsWith("--")) {
       flags[key] = next;
       i++;
@@ -222,6 +230,12 @@ function defaultReportPath(env: NodeJS.ProcessEnv): string {
 // PowerShell, where an unquoted leading `@` is parsed as the splatting operator.
 const PUBLIC_AGENT_DEFAULT_COMMAND = 'npx "@diffci.com/diffci@latest" verify --changed --json';
 
+/** The pre-commit form of the agent command: the `diffci:verify:staged` script, or `--staged` in place of `--changed`. */
+function stagedCommand(command: string): string {
+  if (/ run diffci:verify$/.test(command)) return `${command}:staged`;
+  return command.replace("--changed", "--staged");
+}
+
 function agentInstructions(command: string): string {
   return `# DiffCI Agent Instructions
 
@@ -238,6 +252,14 @@ Use it instead of choosing test files yourself and instead of re-running the ful
 - Run it once after each change and before every commit. Do not pick individual test files to run instead; a hand-picked set misses tests that depend on your change through imports, fixtures and scripts.
 - Do not run the full test suite to be safe. DiffCI already falls back to the full suite when it cannot prove a smaller set is enough, and says why in \`reason\`.
 - When the MCP server is available, \`diffci_select_tests\` returns the one exact \`command\` to run; run that command as given.
+
+Before a commit, verify what you will commit. Stage your own files by path (\`git add -- <your files>\`), then run:
+
+\`\`\`bash
+${stagedCommand(command)}
+\`\`\`
+
+It verifies HEAD plus the staged files only, in a temporary worktree, so other uncommitted work in this checkout (another agent session's, for example) can neither fail nor pass your commit; the receipt lists those files under \`scoped.excluded_dirty_paths\`. \`diffci verify --paths <file...>\` does the same for named files without staging them; pair it with \`git commit -- <file...>\`. With MCP: \`diffci_select_tests\` with \`scope: "staged"\` (or \`scope: "paths"\` and \`paths\`) returns the one command to run.
 
 What this does:
 
@@ -551,8 +573,12 @@ ${formatVerificationSummary(report)}`;
 
 async function runVerifyCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): Promise<number> {
   const changed = flags.changed === true;
-  if (changed && (flags.base !== undefined || flags.head !== undefined)) {
-    console.error("diffci verify accepts either --changed or --base/--head, not both");
+  const staged = flags.staged === true;
+  const scopedPaths = flags.paths !== undefined || flags["paths-from"] !== undefined;
+  const range = flags.base !== undefined || flags.head !== undefined;
+  const modes = [changed && "--changed", staged && "--staged", scopedPaths && "--paths", range && "--base/--head"].filter(Boolean);
+  if (modes.length > 1) {
+    console.error(`diffci verify accepts one of --changed, --staged, --paths/--paths-from or --base/--head; got ${modes.join(" and ")}`);
     return 2;
   }
   const policy = flags.policy === true ? "" : stringFlag(flags, "policy");
@@ -560,11 +586,20 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     console.error(`diffci verify --policy accepts only "enforce", got ${JSON.stringify(policy)}`);
     return 2;
   }
-  if (policy !== undefined && changed) {
-    console.error("diffci verify --policy enforce applies to a commit range, not --changed");
+  if (policy !== undefined && (changed || staged || scopedPaths)) {
+    console.error(`diffci verify --policy enforce applies to a commit range, not ${modes[0]}`);
     return 2;
   }
   const repoPath = resolve(stringFlag(flags, "repo") ?? env.GITHUB_WORKSPACE ?? process.cwd());
+  let paths: string[] | undefined;
+  if (scopedPaths) {
+    const read = await scopedPathArguments(flags, repoPath);
+    if ("error" in read) {
+      console.error(`diffci verify: ${read.error}`);
+      return 2;
+    }
+    paths = read.paths;
+  }
   const out = stringFlag(flags, "out");
   const reportPath = out ? resolve(out) : undefined;
   if (reportPath && (reportPath === repoPath || isInsideRepository(repoPath, reportPath))) {
@@ -611,12 +646,22 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
   };
   const report = changed
     ? await verifyChanged(common)
+    : staged
+    ? await verifyScoped({ ...common, scope: { kind: "staged" } })
+    : paths
+    ? await verifyScoped({ ...common, scope: { kind: "paths", paths } })
     : await verifyRange({
         ...common,
         baseOverride: stringFlag(flags, "base"),
         headOverride: stringFlag(flags, "head"),
         policy,
       });
+  if (changed) {
+    const outside = filesOutsideIndex(repoPath);
+    if (outside > 0) {
+      console.error(`diffci: ${outside} changed file(s) here are not staged and were verified too. If other sessions share this checkout, stage your own files and run \`diffci verify --staged\` (or \`diffci verify --paths <file...>\`) to verify HEAD plus only those, in a temporary worktree.`);
+    }
+  }
   await recordUsage("verify", report.verification, identity.version, flags, env, repoPath);
   if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   if (reportPath) {
@@ -629,6 +674,54 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     if (reportPath) console.log(`  receipt: ${reportPath}`);
   }
   return verificationExitCode(report);
+}
+
+/** Unstaged or untracked (non-ignored) files, for the `--changed` hint. Zero when Git cannot say. */
+function filesOutsideIndex(repoPath: string): number {
+  const status = spawnSync("git", ["status", "--porcelain", "-z", "--untracked-files=all"], { cwd: repoPath, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  if (status.status !== 0) return 0;
+  const entries = (status.stdout ?? "").split("\0");
+  let count = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (entry.length < 4) continue;
+    if (entry.startsWith("??") || entry[1] !== " ") count++;
+    // A rename's source path follows as its own field.
+    if (entry[0] === "R" || entry[0] === "C") i++;
+  }
+  return count;
+}
+
+/**
+ * The paths for `--paths a b` and `--paths-from <file|->` (one per line, or NUL-separated), as
+ * repository-relative paths. Relative paths are read from the current directory when it is inside the
+ * repository, as Git reads them, and from the repository root otherwise.
+ */
+async function scopedPathArguments(flags: Record<string, string | boolean>, repoPath: string): Promise<{ paths: string[] } | { error: string }> {
+  const given: string[] = [];
+  if (flags.paths === true) return { error: "--paths needs at least one file" };
+  if (typeof flags.paths === "string") given.push(...flags.paths.split("\0"));
+  const from = flags["paths-from"];
+  if (from === true) return { error: "--paths-from needs a file, or - for standard input" };
+  if (typeof from === "string") {
+    let text: string;
+    try { text = from === "-" ? await readStdin() : readFileSync(resolve(from), "utf8"); }
+    catch (error) { return { error: `could not read --paths-from ${from}: ${error instanceof Error ? error.message : String(error)}` }; }
+    given.push(...text.split(/\0|\r?\n/));
+  }
+  const cwd = process.cwd();
+  const root = isInsideRepository(repoPath, cwd) || resolve(cwd) === repoPath ? cwd : repoPath;
+  const paths: string[] = [];
+  for (const raw of given) {
+    const path = raw.trim();
+    if (!path) continue;
+    const absolute = resolve(root, path);
+    const rel = relative(repoPath, absolute);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return { error: `${path} is not a file inside ${repoPath}` };
+    paths.push(rel.split(sep).join("/"));
+  }
+  if (paths.length === 0) return { error: "--paths/--paths-from named no files" };
+  return { paths: [...new Set(paths)] };
 }
 
 function runCoverageCommand(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv): number {
@@ -1390,7 +1483,8 @@ Usage:
   diffci watch [--repo <path>] [--checks] [--debounce-ms <ms>] [--no-log]
   diffci agent-stop --agent claude|codex|cursor|copilot   (run by the agent stop hooks init installs; reads the hook JSON on stdin)
   diffci mcp
-  diffci verify [--changed | --base <sha> --head <sha>] [--policy enforce] [--repo <path>] [--out <file>] [--json]
+  diffci verify [--changed | --staged | --paths <file...> | --paths-from <file|-> | --base <sha> --head <sha>]
+                [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
                 [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
                 [--shard <i/N> [--timings <file>]] [--no-coverage]
@@ -1444,7 +1538,11 @@ verify --changed snapshots staged, unstaged, and non-ignored untracked changes, 
 executable verification (or full fallback), and exits zero only when that exact snapshot passes.
 verify first runs the rest of the repository's gate (the check script's lint, typecheck and check-script
 leaves) and stops at the first failure; --no-checks skips them, and they are skipped in CI unless --checks.
-verify without --changed resolves the CI event range (or HEAD^..HEAD locally), requires a clean checkout,
+verify --staged verifies HEAD plus the index only, and --paths (or --paths-from, one path per line, - for
+stdin) HEAD plus only those working-tree files, in a temporary worktree with node_modules linked in: other
+uncommitted files stay at their HEAD version and are listed in the receipt (scoped.excluded_dirty_paths).
+Use it before a commit when other sessions share the checkout. The pre-push hook reuses a pass of the tree.
+verify without these flags resolves the CI event range (or HEAD^..HEAD locally), requires a clean checkout,
 and exits zero only when the analyzed head is the commit that actually passed verification.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
 plan prints Core's advisory JSON plan for a clean checkout at --head; save it before the full suite runs.

@@ -87,6 +87,8 @@ export interface ObserveOptions {
   };
   /** Opt-in agent identity (src/client/agent-identity.ts); absent means the report carries none. */
   agent?: ObservationAgent;
+  /** Called with the dependency graph once built, for callers that read its edges (scoped verify). */
+  onGraph?: (result: DependencyGraphResult) => void;
 }
 
 export function makeGitRunner(repoPath: string): GitRunner {
@@ -295,6 +297,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
       try { options.graphCache.save(graphCacheKey, graphResult); } catch { /* caching never fails an observation */ }
     }
     markPhase(cachedGraph ? "graphCached" : "graph");
+    try { options.onGraph?.(graphResult); } catch { /* a reader of the graph never fails an observation */ }
     if (graphResult.graph.nodes.length === 0) {
       return finish("REFUSED", "graph", {
         reason:

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -105,6 +105,29 @@ function crlfCheckouts(repoPath: string, baseTreeSha: string, indexEnvironment: 
  * used only by DiffCI's existing commit-to-commit analyzer.
  */
 export function captureWorkingTreeSnapshot(repoPathInput: string): WorkingTreeSnapshot {
+  return captureTree(repoPathInput, { kind: "working-tree" });
+}
+
+/** What a scoped verification covers: HEAD plus the index (`--staged`), or HEAD plus these working-tree paths (`--paths`). */
+export type VerificationTreeScope = { kind: "staged" } | { kind: "paths"; paths: readonly string[] };
+
+/**
+ * The tree a scoped verification checks (2026-11-17): HEAD plus only the staged content, or HEAD plus only
+ * the named working-tree paths, built in a temporary index like the working-tree snapshot.
+ *
+ * WHY. Several agent sessions shared one DentalPresence checkout; `verify --changed` before a 3-file commit
+ * verified another session's 30 uncommitted files too (341 of 638 test files, about 8 minutes, failed on
+ * the other session's code). HEAD plus those 3 files alone selected 12 test files and passed in 12 s.
+ *
+ * `--staged` reads a copy of the real index, so another session staging at the same moment can never see a
+ * half-written index of ours, and ours is never rewritten. `--paths` are literal pathspecs: Next.js route
+ * folders such as `app/[slug]` are names, not globs. A path deleted in the working tree is a deletion.
+ */
+export function captureScopedTree(repoPathInput: string, scope: VerificationTreeScope): WorkingTreeSnapshot {
+  return captureTree(repoPathInput, scope);
+}
+
+function captureTree(repoPathInput: string, scope: { kind: "working-tree" } | VerificationTreeScope): WorkingTreeSnapshot {
   const repoPath = resolve(repoPathInput);
   const baseSha = requireGit(repoPath, ["rev-parse", "--verify", "HEAD^{commit}"], "could not resolve repository HEAD");
   const baseTreeSha = requireGit(repoPath, ["rev-parse", "--verify", "HEAD^{tree}"], "could not resolve repository HEAD tree");
@@ -115,11 +138,23 @@ export function captureWorkingTreeSnapshot(repoPathInput: string): WorkingTreeSn
   const temporaryIndex = join(temporaryDirectory, "index");
   const indexEnvironment = { GIT_INDEX_FILE: temporaryIndex };
   try {
-    requireGit(repoPath, ["read-tree", baseSha], "could not initialize the verification snapshot", indexEnvironment);
-    requireGit(repoPath, ["add", "-A", "--", "."], "could not capture the working tree", indexEnvironment);
-    const lineEndingOnly = crlfCheckouts(repoPath, baseTreeSha, indexEnvironment);
-    if (lineEndingOnly.length > 0) {
-      requireGit(repoPath, ["reset", "-q", baseSha, "--pathspec-from-file=-", "--pathspec-file-nul"], "could not leave line-ending-only files out of the snapshot", indexEnvironment, `${lineEndingOnly.join("\0")}\0`);
+    let lineEndingOnly: string[] = [];
+    if (scope.kind === "staged") {
+      const indexPath = resolve(repoPath, requireGit(repoPath, ["rev-parse", "--git-path", "index"], "could not locate the repository index"));
+      if (existsSync(indexPath)) copyFileSync(indexPath, temporaryIndex);
+      else requireGit(repoPath, ["read-tree", baseSha], "could not initialize the verification snapshot", indexEnvironment);
+    } else {
+      requireGit(repoPath, ["read-tree", baseSha], "could not initialize the verification snapshot", indexEnvironment);
+      if (scope.kind === "working-tree") {
+        requireGit(repoPath, ["add", "-A", "--", "."], "could not capture the working tree", indexEnvironment);
+      } else {
+        if (scope.paths.length === 0) throw new Error("--paths needs at least one path");
+        requireGit(repoPath, ["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"], "could not capture the given paths", indexEnvironment, `${scope.paths.join("\0")}\0`);
+      }
+      lineEndingOnly = crlfCheckouts(repoPath, baseTreeSha, indexEnvironment);
+      if (lineEndingOnly.length > 0) {
+        requireGit(repoPath, ["reset", "-q", baseSha, "--pathspec-from-file=-", "--pathspec-file-nul"], "could not leave line-ending-only files out of the snapshot", indexEnvironment, `${lineEndingOnly.join("\0")}\0`);
+      }
     }
     const treeSha = requireGit(repoPath, ["write-tree"], "could not write the verification tree", indexEnvironment);
     const identityEnvironment = {
@@ -141,6 +176,11 @@ export function captureWorkingTreeSnapshot(repoPathInput: string): WorkingTreeSn
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/** The tree of HEAD, for comparing a snapshot with the checked-out commit. */
+export function headTree(repoPathInput: string): string {
+  return requireGit(resolve(repoPathInput), ["rev-parse", "--verify", "HEAD^{tree}"], "could not resolve repository HEAD tree");
 }
 
 /** The paths that differ between two snapshot trees of the same repository. */

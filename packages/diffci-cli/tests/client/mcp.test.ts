@@ -82,6 +82,31 @@ describe("DiffCI MCP server", () => {
     ]);
   });
 
+  it("offers diffci_select_tests a staged or paths scope and rejects malformed scope arguments", async () => {
+    const child = spawn(process.execPath, [MCP], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stdin.write(frame({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }));
+    child.stdin.write(frame({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "diffci_select_tests", arguments: { repo: ROOT, scope: "paths" } } }));
+    child.stdin.write(frame({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "diffci_select_tests", arguments: { repo: ROOT, scope: "everything" } } }));
+    child.stdin.write(frame({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "diffci_select_tests", arguments: { repo: ROOT, scope: "paths", paths: [1] } } }));
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { clearInterval(poll); child.kill(); reject(new Error("timed out waiting for MCP responses")); }, 10_000);
+      const poll = setInterval(() => {
+        if (parseFrames(stdout).length >= 4) { clearTimeout(timeout); clearInterval(poll); resolve(); }
+      }, 25);
+    });
+    child.kill();
+    const messages = parseFrames(stdout) as Array<{ id: number; result?: { tools?: Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> } }> }; error?: { code: number; message: string } }>;
+    const select = messages.find((message) => message.id === 1)?.result?.tools?.find((tool) => tool.name === "diffci_select_tests");
+    assert.deepEqual(select?.inputSchema.properties.scope?.enum, ["working-tree", "staged", "paths"]);
+    assert.ok(select?.inputSchema.properties.paths);
+    assert.match(messages.find((message) => message.id === 2)?.error?.message ?? "", /needs a non-empty paths array/);
+    assert.equal(messages.find((message) => message.id === 3)?.error?.message, "invalid argument: scope");
+    assert.equal(messages.find((message) => message.id === 4)?.error?.message, "invalid argument: paths");
+  });
+
   it("returns a structured verification receipt", async () => {
     const repo = mkdtempSync(join(tmpdir(), "diffci-mcp-verify-"));
     try {

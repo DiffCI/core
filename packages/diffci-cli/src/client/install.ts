@@ -17,6 +17,7 @@ export interface PackageScriptResult {
 
 const DIFFCI_SCRIPTS: Readonly<Record<string, string>> = {
   "diffci:verify": "diffci verify --changed --json",
+  "diffci:verify:staged": "diffci verify --staged --json",
   "diffci:check": "diffci check",
   "diffci:observe": "diffci observe --no-send",
 };

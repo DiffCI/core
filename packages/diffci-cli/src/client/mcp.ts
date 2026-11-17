@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { agentChangedFiles, agentSelection, selectionInstruction } from "./agent-selection.js";
+import { agentChangedFiles, agentScopedSelection, agentSelection, selectionInstruction } from "./agent-selection.js";
 import { requireDiffciPackageIdentity } from "./package-identity.js";
 
 type JsonRpcId = string | number | null;
@@ -28,12 +28,16 @@ const tools = [
       ? "Reanalyze and verify the current working-tree snapshot with affected tests or conservative full fallback. Required CI remains authoritative."
       : name === "diffci_changed_files"
       ? "List staged, unstaged and non-ignored untracked changed paths relative to HEAD, with a snapshot identity. Builds no dependency graph and runs no tests."
-      : "Inspect current staged, unstaged and non-ignored untracked changes and return a snapshot-bound affected-test plan and fallback reasons. Runs no tests; a plan is not a passing receipt.",
+      : "Inspect current staged, unstaged and non-ignored untracked changes and return a snapshot-bound affected-test plan and fallback reasons. Runs no tests; a plan is not a passing receipt. With scope \"staged\" or \"paths\", plans HEAD plus only the index or only the given files in a temporary worktree, and returns the one `diffci verify --staged`/`--paths` command to run; use it before a commit when other sessions share the checkout.",
     inputSchema: {
       type: "object",
       properties: {
         repo: { type: "string", description: "Absolute repository path; defaults to server working directory. Always pass the edited repository when using a plugin." },
         ...(name === "diffci_run_affected_tests" ? { timeoutMs: { type: "number", minimum: 0 } } : {}),
+        ...(name === "diffci_select_tests" || name === "diffci_explain_selection" ? {
+          scope: { type: "string", enum: ["working-tree", "staged", "paths"], description: "working-tree (default): every uncommitted change. staged: HEAD plus the index only. paths: HEAD plus only `paths`." },
+          paths: { type: "array", items: { type: "string" }, description: "Repository-relative files for scope \"paths\"." },
+        } : {}),
       },
       additionalProperties: false,
     },
@@ -243,8 +247,11 @@ async function handle(request: JsonRpcRequest): Promise<void> {
       }
       const properties = tool.inputSchema.properties;
       for (const [key, value] of Object.entries(args)) {
-        const property = properties[key as keyof typeof properties] as { type: string } | undefined;
-        if (!property || typeof value !== property.type || (key === "timeoutMs" && (!Number.isFinite(value) || (value as number) < 0))) {
+        const property = properties[key as keyof typeof properties] as { type: string; enum?: string[] } | undefined;
+        const typed = property?.type === "array"
+          ? Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim() !== "")
+          : property !== undefined && typeof value === property.type && (!property.enum || property.enum.includes(value as string));
+        if (!typed || (key === "timeoutMs" && (!Number.isFinite(value) || (value as number) < 0))) {
           failure(id, -32602, `invalid argument: ${key}`);
           return;
         }
@@ -256,7 +263,15 @@ async function handle(request: JsonRpcRequest): Promise<void> {
           success(id, { content: [{ type: "text", text: JSON.stringify(changes) }], structuredContent: changes, isError: changes.status === "blocked" });
           return;
         }
-        const plan = await agentSelection(repo);
+        const scope = stringArg(args, "scope") ?? "working-tree";
+        const paths = Array.isArray(args.paths) ? (args.paths as string[]) : undefined;
+        if ((scope === "paths") !== (paths !== undefined && paths.length > 0)) {
+          failure(id, -32602, scope === "paths" ? "scope \"paths\" needs a non-empty paths array" : "paths applies only to scope \"paths\"");
+          return;
+        }
+        const plan = scope === "staged" ? await agentScopedSelection(repo, { kind: "staged" })
+          : scope === "paths" ? await agentScopedSelection(repo, { kind: "paths", paths: paths!.map((path) => path.replace(/\\/g, "/")) })
+          : await agentSelection(repo);
         success(id, { content: [{ type: "text", text: `${selectionInstruction(plan)}\n\n${JSON.stringify(plan)}` }], structuredContent: plan, isError: plan.status === "blocked" });
         return;
       }

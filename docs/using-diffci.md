@@ -32,6 +32,21 @@ npx @diffci.com/diffci@latest watch
 
 `watch` verifies the uncommitted changes after each save, the way `verify --changed` does, so the selection, result reuse, test order and coverage map all apply. A pass prints one line; anything else prints the full summary, failing tests included. It runs tests only; `--checks` adds lint, typecheck and the other checks. Saves made during a run start one more run after it, and files a run writes do not start another. Each run analyses the repository afresh, so it takes as long as `verify --changed`. Agents get the same answer without watching: `diffci init` installs a stop hook that verifies when the agent finishes a turn (see `docs/agent-installation.md`).
 
+## Verify only what you will commit
+
+```sh
+git add -- src/lib/auth/identity-errors.ts src/lib/auth/identity-errors.test.ts
+npx @diffci.com/diffci@latest verify --staged --json
+npx @diffci.com/diffci@latest verify --json --paths src/lib/auth/identity-errors.ts src/lib/auth/identity-errors.test.ts
+git diff --name-only | npx @diffci.com/diffci@latest verify --json --paths-from -
+```
+
+`verify --changed` verifies every uncommitted file in the checkout. When several people or agent sessions share one checkout and each commits only its own files, that verifies everyone's work in progress, and another session's failing test blocks a correct commit. `verify --staged` verifies HEAD plus the index only; `verify --paths` (or `--paths-from <file|->`, one path per line) verifies HEAD plus only the named working-tree files. Paths are literal, so `app/[slug]/page.tsx` is a file name, not a pattern.
+
+Both check the scoped tree out in a temporary detached worktree of HEAD, link the checkout's `node_modules` directories into it (a junction on Windows), and run the same analysis, gate checks and tests `verify --changed` runs, there. Every other uncommitted file is at its HEAD version for the analysis and at runtime, so it can neither fail nor rescue the result. The receipt has `scope: "staged"` or `"paths"` and a `scoped` section: `verified_files`, `excluded_dirty_files` (a count) and `excluded_dirty_paths` (the first 50; digests under `--redact-paths`). When a verified file imports an excluded file, `scoped.head_version_imports` names both and the reason says the import was verified at its HEAD version. When a root lockfile in the scoped tree differs from the checkout's, the installed dependencies do not match it and verification is blocked (exit 2). The worktree and its links are removed on success, failure, timeout and interruption. If HEAD, the index (for `--staged`) or the named files change during the run, the verdict is blocked.
+
+A pass of `--staged` is recorded for the tree a commit of the index has, so the pre-push hook reuses it when the pushed commit has that tree and nothing runs twice. `verify --changed` prints a hint to stderr when it finds files that are not staged.
+
 ## The outcome log, result reuse and test order
 
 Each `verify` run is appended to `.git/diffci/outcomes.jsonl`: the selection and why, the checks, the result, each test file's result and duration, and the failing tests. The file sits inside `.git`, so it is never committed and never sent. `diffci outcomes` summarises it. `--no-log` or `DIFFCI_OUTCOME_LOG=0` skips writing it.
