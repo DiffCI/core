@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 
 /**
@@ -203,4 +203,47 @@ export function installPrePushHook(repoPath: string, command: string, force: boo
   writeFileSync(hookPath, content, "utf8");
   try { chmodSync(hookPath, 0o755); } catch { /* Git for Windows runs hooks through sh regardless of mode. */ }
   return `wrote ${shown} (verifies pushed commits; skip once with git push --no-verify)`;
+}
+
+/** The DiffCI command a managed hook was written for, read from its in-place verify line (every version has it). */
+export function hookCommandOf(hook: string): string | undefined {
+  const match = /^[ \t]*(\S.*?) verify --base "\$base" --head "\$local_sha" <\/dev\/null[ \t]*$/m.exec(hook.replace(/\r\n/g, "\n"));
+  return match?.[1];
+}
+
+/**
+ * Keeps an installed DiffCI pre-push hook current (2026-11-17).
+ *
+ * WHY. Repositories keep the hook `diffci init` wrote first, so hook fixes never reached them. DentalPresence's
+ * hook of 8 Nov predated the not-installed fix: pushing from a worktree without node_modules, npx printed a
+ * 404, the old hook read it as failing tests and blocked a correct push. The current hook says it could not
+ * verify and lets the push through.
+ *
+ * WHAT. When it differs from the hook this version writes for the same command, a hook with DiffCI's marker is
+ * replaced; any other hook is never touched. The new file is written beside it and renamed over it, so a
+ * hook another push is running keeps reading the old file. Callers run it only outside the hook's own
+ * commands (verify of the working tree, the index or paths, never `verify --base/--head`) and ignore any
+ * error. `DIFFCI_HOOK_REFRESH=0` turns it off.
+ */
+export function refreshPrePushHook(repoPath: string): string | undefined {
+  const hooksDir = execFileSync("git", ["rev-parse", "--git-path", "hooks"], { cwd: repoPath, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  const hookPath = join(isAbsolute(hooksDir) ? hooksDir : join(repoPath, hooksDir), "pre-push");
+  if (!existsSync(hookPath)) return undefined;
+  const existing = readFileSync(hookPath, "utf8");
+  if (!existing.includes(HOOK_MARKER)) return undefined;
+  const command = hookCommandOf(existing);
+  if (!command) return undefined;
+  const content = prePushHook(command);
+  if (existing.replace(/\r\n/g, "\n") === content) return undefined;
+  const temporary = `${hookPath}.diffci-${process.pid}`;
+  writeFileSync(temporary, content, "utf8");
+  try { chmodSync(temporary, 0o755); } catch { /* Git for Windows runs hooks through sh regardless of mode. */ }
+  try {
+    renameSync(temporary, hookPath);
+  } catch (error) {
+    try { unlinkSync(temporary); } catch { /* nothing left to clean */ }
+    throw error;
+  }
+  const shown = relative(repoPath, hookPath).replace(/\\/g, "/") || hookPath;
+  return `diffci: updated the DiffCI pre-push hook ${shown} to this version's (same command: ${command}); DIFFCI_HOOK_REFRESH=0 turns this off`;
 }

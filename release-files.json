@@ -298,6 +298,7 @@
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",
     "packages/diffci-cli/tests/client/check.test.ts",
     "packages/diffci-cli/tests/client/cli-agent.test.ts",
+    "packages/diffci-cli/tests/client/hook-refresh.test.ts",
     "packages/diffci-cli/tests/client/hook.test.ts",
     "packages/diffci-cli/tests/client/shallow-history.test.ts",
     "packages/diffci-cli/tests/client/comparator-selection-observability.test.ts",
@@ -406,6 +407,7 @@
     "packages/diffci-cli/tests/client/fixtures/check-plan/provenance.json",
     "packages/diffci-cli/tests/client/fixtures/check-plan/source.json",
     "packages/diffci-cli/tests/client/fixtures/check-plan/vitest-default.xml",
-    "packages/diffci-cli/tests/client/fixtures/check-plan/vitest-explicit.xml"
+    "packages/diffci-cli/tests/client/fixtures/check-plan/vitest-explicit.xml",
+    "packages/diffci-cli/tests/client/fixtures/pre-push-2026-11-08.sh"
   ]
 }

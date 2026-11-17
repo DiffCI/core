@@ -47,7 +47,7 @@ import { observe, isInsideRepository } from "./observe.js";
 import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
-import { hookCommand, installPrePushHook, isGitRepository } from "./hook.js";
+import { hookCommand, installPrePushHook, isGitRepository, refreshPrePushHook } from "./hook.js";
 import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATHS, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
 import type { ObservationReport, WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
@@ -661,6 +661,13 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     if (outside > 0) {
       console.error(`diffci: ${outside} changed file(s) here are not staged and were verified too. If other sessions share this checkout, stage your own files and run \`diffci verify --staged\` (or \`diffci verify --paths <file...>\`) to verify HEAD plus only those, in a temporary worktree.`);
     }
+  }
+  // Never from the hook's own `verify --base/--head`, and never in CI, where no hook is installed.
+  if ((changed || staged || paths) && env.DIFFCI_HOOK_REFRESH !== "0" && !(Boolean(env.CI) && env.CI !== "false")) {
+    try {
+      const refreshed = refreshPrePushHook(repoPath);
+      if (refreshed) console.error(refreshed);
+    } catch { /* keeping an old hook never fails verification */ }
   }
   await recordUsage("verify", report.verification, identity.version, flags, env, repoPath);
   if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
@@ -1533,6 +1540,8 @@ and adds diffci:verify, diffci:check, and diffci:observe package scripts without
 --verification-workflow adds a blocking GitHub check that uploads a commit-bound verification receipt.
 The pre-push hook runs diffci verify on the commits being pushed and blocks the push
 when verification fails (git push --no-verify skips it; DIFFCI_HOOK_STRICT=1 also blocks when it cannot verify).
+verify --changed, --staged and --paths replace an outdated DiffCI-written hook with this version's, same
+command (DIFFCI_HOOK_REFRESH=0 turns it off; a hook DiffCI did not write is never touched).
 mcp runs the stdio MCP server for native agent integrations.
 verify --changed snapshots staged, unstaged, and non-ignored untracked changes, runs the minimum
 executable verification (or full fallback), and exits zero only when that exact snapshot passes.

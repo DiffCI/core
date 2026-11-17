@@ -59,6 +59,10 @@ make DiffCI the default:
    Actions minutes run out and builds move elsewhere), set `DIFFCI_API_URL` and `DIFFCI_TOKEN` in the
    environment you push from: the hook then also sends the observation report for each pushed range.
    Sending never blocks the push.
+   An installed hook stays current: when `diffci verify --changed`, `--staged` or `--paths` runs and
+   the DiffCI-written hook differs from the one this version writes, DiffCI replaces it (same command)
+   and says so on stderr. It never touches a hook DiffCI did not write, never refreshes from inside a
+   push or in CI, and `DIFFCI_HOOK_REFRESH=0` turns it off.
 
 3. **One exact command from the MCP server.** `diffci_select_tests` now starts with a
    plain line such as `DiffCI selected 3 of 580 test files. Run exactly: <command>`
