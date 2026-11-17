@@ -171,4 +171,17 @@ describe("Rust selective command synthesis", () => {
     assert.equal(plan.refusalReason, undefined);
     assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "a", "-p", "b", "-p", "d"] }]);
   });
+
+  it("adds covering units whose crates are named NAME@VERSION, and never other unit names", () => {
+    const p = profile();
+    p.rustFeatureCoverage = { deficits: { "actual-core": ["shared v1.0.0"] }, units: [{ crates: ["actual-core", "cli@0.3.0"], covers: ["shared v1.0.0"] }] };
+    const plan = planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli@0.3.0"] }]);
+    for (const name of ["cli@0.3", "--workspace", "cli 0.3.0"]) {
+      const q = profile();
+      q.rustFeatureCoverage = { deficits: { "actual-core": ["shared v1.0.0"] }, units: [{ crates: ["actual-core", name], covers: ["shared v1.0.0"] }] };
+      refuses(q);
+    }
+  });
 });
