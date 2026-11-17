@@ -204,21 +204,30 @@ function globPattern(glob: string): NonNullable<ImportRef["patterns"]>[number] |
   const firstWild = body.search(/[*?{[]/);
   const cut = body.lastIndexOf("/", firstWild < 0 ? body.length : firstWild);
   if (cut < 0 || body.includes("[")) return undefined;
-  let regex = "";
-  const rest = body.slice(cut + 1);
-  for (let i = 0; i < rest.length; i++) {
-    const char = rest[i]!;
-    if (rest.startsWith("**/", i)) { regex += "(?:.*/)?"; i += 2; }
-    else if (rest.startsWith("**", i)) { regex += ".*"; i += 1; }
-    else if (char === "*") regex += "[^/]*";
-    else if (char === "?") regex += "[^/]";
-    else if (char === "{") {
-      const close = rest.indexOf("}", i);
-      if (close < 0) return undefined;
-      regex += `(?:${rest.slice(i + 1, close).split(",").map(escapeRegex).join("|")})`;
-      i = close;
-    } else regex += escapeRegex(char);
-  }
+  // Brace alternatives are globs too (`{index,*-icon}.ts`); escaping them as literals matched only the
+  // literal ones and dropped the rest. Nested braces are not translated and keep the load computed.
+  const translate = (text: string): string | undefined => {
+    let regex = "";
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i]!;
+      if (text.startsWith("**/", i)) { regex += "(?:.*/)?"; i += 2; }
+      else if (text.startsWith("**", i)) { regex += ".*"; i += 1; }
+      else if (char === "*") regex += "[^/]*";
+      else if (char === "?") regex += "[^/]";
+      else if (char === "{") {
+        const close = text.indexOf("}", i);
+        if (close < 0 || text.slice(i + 1, close).includes("{")) return undefined;
+        const alternatives = text.slice(i + 1, close).split(",").map(translate);
+        if (alternatives.some((alternative) => alternative === undefined)) return undefined;
+        regex += `(?:${alternatives.join("|")})`;
+        i = close;
+      } else if (char === "}") return undefined;
+      else regex += escapeRegex(char);
+    }
+    return regex;
+  };
+  const regex = translate(body.slice(cut + 1));
+  if (regex === undefined) return undefined;
   // Vite resolves a glob starting with "/" from its project root, not the filesystem root.
   return { base: body.slice(0, cut + 1), regex, negated, ...(body.startsWith("/") ? { viteRoot: true } : {}) };
 }
