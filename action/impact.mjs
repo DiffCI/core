@@ -76,6 +76,16 @@ export function commentMarker(key) {
   return `<!-- diffci-change-impact:${String(key).replace(/>/g, "")} -->`;
 }
 
+/**
+ * True when the evidence shows the checkout may have changed: a before/after pair differs or went missing.
+ * With no evidence at all the path was not a git checkout and the observation refused; nothing could have
+ * changed, so no warning (#278). Narrowing still requires worktreeUnchanged, above.
+ */
+function worktreeChangeSuspected(evidence) {
+  if (!evidence || evidence.worktreeUnchanged !== false) return false;
+  return [evidence.headShaBefore, evidence.headShaAfter, evidence.worktreeDigestBefore, evidence.worktreeDigestAfter].some((value) => value !== undefined);
+}
+
 /** A short PR comment: the headline and why, with the full detail one click away in the job summary. */
 export function formatComment(report, { marker, runUrl }) {
   const lines = [marker, "### DiffCI: what this change affects", ""];
@@ -112,7 +122,7 @@ export function formatComment(report, { marker, runUrl }) {
       lines.push("", "</details>");
     }
   }
-  if (report.nonInterference?.worktreeUnchanged === false) {
+  if (worktreeChangeSuspected(report.nonInterference)) {
     lines.push("", "> [!WARNING]", "> The working tree changed while DiffCI observed it. Please report this at https://github.com/DiffCI/core/issues.");
   }
   lines.push(
