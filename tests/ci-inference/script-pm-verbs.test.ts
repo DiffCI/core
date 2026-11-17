@@ -35,3 +35,9 @@ test("a flag before the script name is not a script name", () => {
 test("a missing nested script is still unresolved", () => {
   assert.deepEqual(unresolvedNames(resolveIn({ ci: "yarn install && yarn lint" }, "ci")), ["lint"]);
 });
+
+test("a script reached through two branches is not a cycle", () => {
+  const nodes = resolveIn({ ci: "npm run build && npm run test", test: "npm run build && jest", build: "tsc" }, "ci");
+  assert.equal(nodes[0]!.resolution, "RESOLVED", JSON.stringify(nodes.filter((n) => n.resolution !== "RESOLVED")));
+  assert.ok(!nodes.some((n) => /cycle/.test(n.reason ?? "")));
+});
