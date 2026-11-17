@@ -1403,13 +1403,16 @@ export class ImpactAnalyzer {
     }
     const layout = this.layout;
     const scripts = profile.packageJson.scripts;
+    // A .py file the Python adapter modelled is code like a .js file: pytest runs a test that reads the
+    // changed file without anything naming the test, so it must not be followed as a script.
+    const pythonSources = new Set(profile.pythonSources ?? []);
     const resolution = resolveFileReferences(changedPath, {
       files: this.sortedRepositoryFiles,
       read: this.readRepositoryFile,
       isTestFile: this.isTestFile,
       isDocumentation: (path) => layout.isDocumentationPath(path) || isAgentConfigurationPath(path),
       inGraph: (path) => hasNode(graph, path),
-      isCodeFile: isSourceFilePath,
+      isCodeFile: (path) => isSourceFilePath(path) || pythonSources.has(path),
       workflowFeedsTests: (content, names) => workflowFeedsTests(content, names, scripts),
       contentCleared: this.contentCleared,
       implicitReadersUnresolvable,
