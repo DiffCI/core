@@ -23,7 +23,10 @@ function tags(xml: string, name: string): string[] {
 
 function first(xml: string, name: string): string | undefined { return tags(xml, name)[0]; }
 
-function parsePom(path: string, xml: string): Pom {
+function parsePom(path: string, source: string): Pom {
+  // Commented-out elements are not part of the model: an old <artifactId> in a comment must not
+  // become the module's identity.
+  const xml = source.replace(/<!--[\s\S]*?-->/g, "");
   const dir = posix.dirname(path) === "." ? "" : posix.dirname(path);
   const parent = first(xml, "parent");
   const own = xml.replace(/<parent\b[^>]*>[\s\S]*?<\/parent>/, "");
