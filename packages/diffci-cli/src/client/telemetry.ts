@@ -93,7 +93,8 @@ export function repositoryName(repoPath: string | undefined, env: NodeJS.Process
 
 function surfaceOf(env: NodeJS.ProcessEnv): UsageSurface {
   if (env.DIFFCI_MCP === "1") return "local-mcp";
-  if (env.DIFFCI_SURFACE === "github-action" || env.DIFFCI_SURFACE === "gitlab-component") return env.DIFFCI_SURFACE;
+  // Each CI wrapper sets its own value: action/, integrations/gitlab and integrations/azure-devops (#303).
+  if (env.DIFFCI_SURFACE === "github-action" || env.DIFFCI_SURFACE === "gitlab-component" || env.DIFFCI_SURFACE === "azure-devops-task") return env.DIFFCI_SURFACE;
   return "cli";
 }
 

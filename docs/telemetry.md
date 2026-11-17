@@ -7,7 +7,7 @@ sends nothing.
 ## What is sent
 
 One small HTTPS request to `https://app.diffci.com/v1/usage-events` after each `plan`, `check`,
-`observe` and `verify` run (including runs from the GitHub Action, the GitLab component and the MCP
+`observe` and `verify` run (including runs from the GitHub Action, the GitLab component, the Azure DevOps task and the MCP
 server). It contains:
 
 | Field | Example | Notes |
@@ -15,7 +15,7 @@ server). It contains:
 | `command` | `plan` | `plan`, `check`, `observe` or `verify` |
 | `outcome` | `selective` | for example `selective`, `full`, `passed`, `failed`, `observed`, `error` |
 | `version` | `0.3.30` | CLI version |
-| `surface` | `github-action` | `cli`, `local-mcp`, `github-action` or `gitlab-component` |
+| `surface` | `github-action` | `cli`, `local-mcp`, `github-action`, `gitlab-component` or `azure-devops-task` |
 | `ci` | `true` | whether the run happened in CI |
 | `activity` | `external` | `internal` when labelled with `--internal-usage` or `DIFFCI_USAGE_INTERNAL=1` |
 | `installation_id` | random UUID | sent only after `diffci telemetry --mode repo` creates and saves one in `~/.diffci/telemetry.json`; a default, never-configured installation sends none; not tied to a person |
