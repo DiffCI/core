@@ -148,30 +148,25 @@ export function parseNameStatus(buffer: Buffer): ChangedFile[] {
   return files;
 }
 
-function parseNumstatRecord(record: string): { path: string; isBinary: boolean } | undefined {
-  if (!record) return undefined;
-
-  const fields = record.split("\t");
-  if (fields.length < 3) return undefined;
-
-  const isBinary = fields[0]?.trimStart().startsWith("-") ?? false;
-  const hasRename = fields.length >= 4;
-  const newPath = hasRename ? fields[fields.length - 1] : fields[2];
-
-  if (!newPath) return undefined;
-  return { path: newPath, isBinary };
-}
-
+/**
+ * Parses `git diff-tree --numstat -z`. Each record is `added\tdeleted\tpath\0`, except a rename or copy:
+ * `added\tdeleted\t\0old\0new\0`, an empty path followed by both paths as their own fields (#175).
+ * `-z` leaves paths unquoted, so a path may itself contain a tab.
+ */
 export function parseNumstat(buffer: Buffer): Map<string, boolean> {
-  const text = buffer.toString("utf8");
-  const records = text.split("\0");
+  const tokens = buffer.toString("utf8").split("\0");
   const binaryByNewPath = new Map<string, boolean>();
 
-  for (const record of records) {
-    const parsed = parseNumstatRecord(record);
-    if (parsed) {
-      binaryByNewPath.set(parsed.path, parsed.isBinary);
+  for (let i = 0; i < tokens.length; i++) {
+    const fields = tokens[i]!.split("\t");
+    if (fields.length < 3) continue;
+    const isBinary = fields[0]!.trimStart().startsWith("-");
+    let path = fields.slice(2).join("\t");
+    if (path === "") {
+      path = tokens[i + 2] ?? "";
+      i += 2;
     }
+    if (path) binaryByNewPath.set(path, isBinary);
   }
 
   return binaryByNewPath;
