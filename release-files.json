@@ -232,6 +232,7 @@
     "tests/git/git-diff.temp-repo.test.ts",
     "tests/measurement.test.ts",
     "tests/planner/path-baseline.test.ts",
+    "tests/planner/check-narrowing-extensions.test.ts",
     "tests/planner/check-narrowing.test.ts",
     "tests/planner/pipeline-steps.test.ts",
     "tests/planner/repo-agnostic-engine.test.ts",
