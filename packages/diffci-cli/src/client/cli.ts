@@ -67,7 +67,7 @@ import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVeri
 import { auditEnforceWorkflows, auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
-import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
+import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow, verificationInstallCommands } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import { checkPlan } from "./check-plan.js";
@@ -438,7 +438,7 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   ];
   if (includeWorkflow) writes.push(writeInitFile(repoPath, ".github/workflows/diffci.yml", diffciWorkflow(identity.version), force));
   if (includeVerificationWorkflow) {
-    writes.push(writeInitFile(repoPath, ".github/workflows/diffci-verify.yml", diffciVerificationWorkflow(identity.version), force));
+    writes.push(writeInitFile(repoPath, ".github/workflows/diffci-verify.yml", diffciVerificationWorkflow(identity.version, verificationInstallCommands(repoPath)), force));
   }
   // The hook, MCP server and skill are on by default so an agent meets DiffCI without being told to.
   const skipped: string[] = [];

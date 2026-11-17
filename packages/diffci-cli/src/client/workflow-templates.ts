@@ -1,3 +1,8 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+import { detectPackageManager, type SupportedPackageManager } from "./install.js";
+
 /** GitHub-hosted runner and Node 24 action pins shared by every workflow the CLI generates. */
 export const RUNNER = "ubuntu-26.04";
 export const CHECKOUT_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"; // actions/checkout v7.0.1
@@ -24,7 +29,39 @@ jobs:
 `;
 }
 
-export function diffciVerificationWorkflow(version: string): string {
+/**
+ * The commands that install a JavaScript repository's dependencies in CI, for the verification workflow:
+ * verify runs the repository's tests, which a fresh checkout cannot run before its dependencies are
+ * installed (every receipt then fails, 2026-11-18). Empty when the package manager is not known, or is
+ * Bun, which needs a setup action this template does not pin.
+ */
+export function dependencyInstallCommands(manager: SupportedPackageManager | undefined, hasLockfile: boolean): string[] {
+  switch (manager) {
+    case "npm": return [hasLockfile ? "npm ci" : "npm install"];
+    case "pnpm": return ["corepack enable", "pnpm install --frozen-lockfile"];
+    case "yarn": return ["corepack enable", "yarn install --frozen-lockfile"];
+    default: return [];
+  }
+}
+
+/** How the verification workflow installs `repoPath`'s dependencies before verify runs its tests. */
+export function verificationInstallCommands(repoPath: string): string[] {
+  if (!existsSync(join(repoPath, "package.json"))) return [];
+  let manager: SupportedPackageManager;
+  try { manager = detectPackageManager(repoPath); } catch { return []; }
+  const hasLockfile = ["package-lock.json", "npm-shrinkwrap.json"].some((name) => existsSync(join(repoPath, name)));
+  return dependencyInstallCommands(manager, hasLockfile);
+}
+
+function installStep(commands: readonly string[]): string {
+  if (commands.length === 0) {
+    return "      # Install the repository's dependencies here: verify runs its tests.\n";
+  }
+  const run = commands.length === 1 ? ` ${commands[0]}` : ` |\n${commands.map((command) => `          ${command}`).join("\n")}`;
+  return `      - name: Install dependencies\n        run:${run}\n`;
+}
+
+export function diffciVerificationWorkflow(version: string, installCommands: readonly string[] = []): string {
   return `name: DiffCI verification
 on: [push, pull_request]
 permissions:
@@ -41,7 +78,7 @@ jobs:
       - uses: actions/setup-node@${SETUP_NODE_SHA} # immutable setup-node pin
         with:
           node-version: 22
-      - name: Verify changed code
+${installStep(installCommands)}      - name: Verify changed code
         run: npx "@diffci.com/diffci@${version}" verify --json --out "$RUNNER_TEMP/diffci-verification.json"
       - name: Upload verification receipt
         if: always()
