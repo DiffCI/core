@@ -25,6 +25,9 @@ export interface AdapterContribution {
   /** Rust files that may read documentation: workspace build scripts, and sources naming a
    * documentation path in a string literal. */
   rustDocumentationReaders?: string[];
+  /** Cargo's default workspace members cover every member (so `--workspace`/`--all` is equivalent to
+   * plain `cargo test`). Missing evidence is deliberately false. */
+  rustAllMembersTested?: boolean;
   /** Packages whose Cargo features change when a tested crate runs without the rest of the full invocation. */
   rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
   executionEnv?: Record<string, string>;

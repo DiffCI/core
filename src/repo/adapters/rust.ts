@@ -334,6 +334,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     const defaults = metadata.workspace_default_members;
     if (!defaults) result.blockers.push("Cargo metadata without default workspace members requires full validation; use Cargo 1.71 or later");
     const tested = new Set(defaults ?? []);
+    result.rustAllMembersTested = defaults !== undefined && metadata.workspace_members.every(id => tested.has(id));
     if (new Set(members.map(pkg => pkg.name)).size !== members.length) {
       result.blockers.push("Ambiguous Cargo workspace package names require full validation");
       return result;

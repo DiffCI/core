@@ -392,6 +392,7 @@ for (const nested of [false, true]) test(`Cargo executable maps ${nested ? "nest
     const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
     assert.deepEqual(result.blockers, []);
     assert.equal(result.testPackages[`${child}/tests/check.rs`], "child");
+    assert.equal(result.rustAllMembersTested, true);
     assert.equal(readFileSync(join(root, "Cargo.toml"), "utf8"), files["Cargo.toml"]);
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -558,6 +559,7 @@ test("only crates plain cargo test covers are test targets (root package or defa
       const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
       assert.deepEqual(result.blockers, [], layout);
       assert.deepEqual(Object.values(result.testPackages), ["root"], layout);
+      assert.equal(result.rustAllMembersTested, false, layout);
       assert.ok(result.sourcePaths.includes("member/src/lib.rs"), layout);
     } finally { rmSync(root, { recursive: true, force: true }); }
   }

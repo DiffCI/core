@@ -1113,7 +1113,7 @@ export async function buildDependencyGraph(
     profile.rustTestTargets = { ...rustContribution.rustTestTargets };
     profile.rustSources = [...new Set(rustContribution.sourcePaths)].sort();
     profile.rustAssets = [...new Set(rustContribution.assetPaths)].sort();
-    profile.rustTestInvocation = rustTestInvocation(repoPath, files);
+    profile.rustTestInvocation = rustTestInvocation(repoPath, files, { allMembersTested: rustContribution.rustAllMembersTested });
     if (rustContribution.rustFeatureCoverage) profile.rustFeatureCoverage = rustContribution.rustFeatureCoverage;
     profile.rustDocumentationReaders = [...new Set(rustContribution.rustDocumentationReaders ?? [])].sort();
   }
