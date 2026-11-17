@@ -600,6 +600,8 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | Yes: declare it in `inputs` |
 | `Lockfile readers could not be resolved: …; full validation required` | Change `yarn.lock` while repository code reads it in a way DiffCI cannot trace | No |
 
+_The named `Tool configuration changed` reasons, including the Mocha fallback, were contributed by [@tyza66](https://github.com/tyza66) in [#144](https://github.com/DiffCI/core/pull/144), [#155](https://github.com/DiffCI/core/pull/155) and [#156](https://github.com/DiffCI/core/pull/156)._
+
 ### Dependencies
 
 | Reason | Example change | Narrow |
