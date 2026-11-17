@@ -22,3 +22,11 @@ it("a tail is at most tailBytes bytes and never starts inside a character", () =
   assert.ok(Buffer.byteLength(measurement.stdoutTail, "utf8") <= 3);
   assert.equal(measureCommand(print("abcdef"), { cwd: tmpdir(), timeoutMs: 60_000, tailBytes: 4 }).stdoutTail, "cdef");
 });
+
+it("a selection split into several commands keeps a tail of at most tailBytes bytes too", () => {
+  const measurement = measureCommands([print("abc"), print("\u00e9\u00e9\u00e9")], { cwd: tmpdir(), timeoutMs: 60_000, tailBytes: 3 });
+  assert.equal(measurement.exitCode, 0, measurement.stderrTail);
+  // "abc" + "\u00e9" is 5 bytes and its last 3 are "c\u00e9". Before, the joined parts were cut by characters.
+  assert.equal(measurement.stdoutTail, "c\u00e9");
+  assert.ok(Buffer.byteLength(measurement.stdoutTail, "utf8") <= 3);
+});

@@ -1,6 +1,6 @@
 import { commandArguments } from "./selected-coverage.js";
 import { mergeTestFileResults } from "./test-results.js";
-import { measureCommand, type CommandMeasurement } from "./verify-savings.js";
+import { measureCommand, tail as tailBytes, type CommandMeasurement } from "./verify-savings.js";
 
 /**
  * Selected-test commands too long for the shell (2026-10-21).
@@ -139,7 +139,8 @@ export function measureCommands(commands: readonly string[], options: { cwd: str
   const failingTests = [...new Set(parts.flatMap((part) => part.failingTests ?? []))].sort();
   const counted = ranAll && parts.every((part) => part.runnerTestCount !== undefined);
   const testResults = mergeTestFileResults(...parts.map((part) => part.testResults));
-  const tail = (key: "stdoutTail" | "stderrTail") => parts.map((part) => part[key]).join("").slice(-Math.max(options.tailBytes, 0) || undefined);
+  // The same byte-bounded cut as a single command's tail: by UTF-8 bytes, at a character boundary.
+  const tail = (key: "stdoutTail" | "stderrTail") => tailBytes(parts.map((part) => part[key]).join(""), options.tailBytes);
   return {
     command: commands.join(" && "),
     exitCode: failed ? failed.exitCode : ranAll ? 0 : null,

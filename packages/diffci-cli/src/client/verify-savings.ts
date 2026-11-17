@@ -182,7 +182,7 @@ interface ResolvedSelection {
  * `value.slice(-0)` is the whole string, so `--tail-bytes 0` used to keep the entire output, and a
  * multi-byte tail was cut by characters, not bytes.
  */
-function tail(value: string, bytes: number): string {
+export function tail(value: string, bytes: number): string {
   if (!(bytes > 0)) return "";
   const buffer = Buffer.from(value, "utf8");
   if (buffer.length <= bytes) return value;
