@@ -133,7 +133,9 @@ export function resolveScript(repoPath: string, scriptName: string, evidence: Ev
   // A script that invokes further scripts: follow each.
   const nested: ReferenceNode[] = [];
   for (const m of body.matchAll(/\b(?:npm run|yarn(?: run)?|pnpm(?: run)?)\s+([A-Za-z0-9:_-]+)/g)) {
-    nested.push(...resolveScript(repoPath, m[1]!, bodyEvidence, seen));
+    // `seen` holds this script's ancestors only. A script reached twice through different branches (a
+    // diamond: `ci` runs `build` and `test`, and `test` runs `build` too) is not a cycle.
+    nested.push(...resolveScript(repoPath, m[1]!, bodyEvidence, new Set(seen)));
   }
 
   const expressions = expressionReferences(body, bodyEvidence);
