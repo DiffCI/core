@@ -219,6 +219,7 @@
     "tests/cache/graph-cache.test.ts",
     "tests/cache/vue-analysis-cache.test.ts",
     "tests/cache/economics-context.test.ts",
+    "tests/ci-inference/argv.test.ts",
     "tests/ci-inference/causal.test.ts",
     "tests/ci-inference/dependency-time-boxing.test.ts",
     "tests/ci-inference/executability.test.ts",
