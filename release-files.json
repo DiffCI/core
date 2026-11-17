@@ -223,6 +223,7 @@
     "tests/ci-inference/dependency-time-boxing.test.ts",
     "tests/ci-inference/executability.test.ts",
     "tests/ci-inference/infer.test.ts",
+    "tests/ci-inference/jobs.test.ts",
     "tests/ci-inference/purpose.test.ts",
     "tests/ci-inference/receipt-integrity.test.ts",
     "tests/ci-inference/lockfile-facts.test.ts",
