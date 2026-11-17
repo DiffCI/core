@@ -191,6 +191,16 @@ const GITLAB_DEEPEN_HINT =
 const AZURE_DEEPEN_HINT =
   "the commit is not in this checkout - set `fetchDepth: 0` on the `checkout` step of the job that runs DiffCI (this does not affect any other job)";
 
+/** For a path that is not a git checkout: where the checkout is, not how deep it is (#278). */
+function notACheckoutHint(env: ObservationEnvironment): string {
+  if (env.GITHUB_ACTIONS === "true") {
+    return "set the DiffCI Action's `repository-path` (or `--repo`) to the directory actions/checkout cloned into - its `path:` when the checkout step sets one";
+  }
+  if (env.GITLAB_CI === "true") return "run DiffCI in the cloned project directory, or pass `--repo` with that directory";
+  if (isAzurePipelines(env)) return "set the DiffCIObserve task's `repositoryPath` (or `--repo`) to the directory the `checkout` step cloned into - its `path:` when it sets one";
+  return "pass `--repo` with the directory of a git checkout";
+}
+
 function deepenHint(env: ObservationEnvironment): string {
   if (env.GITLAB_CI === "true") return GITLAB_DEEPEN_HINT;
   return isAzurePipelines(env) ? AZURE_DEEPEN_HINT : DEEPEN_HINT;
@@ -324,6 +334,10 @@ export function resolveCommitRangeFetchingHistory(options: ResolveCommitRangeOpt
   const first = resolveCommitRange(options);
   if (first.ok) return first;
   const { env, git } = options;
+  // A path that is not a git checkout at all (#278): no history depth fixes that, so the deepen hint
+  // would send the user the wrong way. Name the setting that points DiffCI at the checkout instead.
+  const inside = git(["rev-parse", "--is-inside-work-tree"]);
+  if (!inside.ok || inside.stdout.trim() !== "true") return { ok: false, reason: `this path is not a git checkout: ${notACheckoutHint(env)}` };
   if (env.GITHUB_ACTIONS !== "true" && env.GITLAB_CI !== "true" && !isAzurePipelines(env)) return first;
   const shallow = git(["rev-parse", "--is-shallow-repository"]);
   if (!shallow.ok || shallow.stdout.trim() !== "true") return first;

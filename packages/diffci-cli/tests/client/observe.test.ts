@@ -234,6 +234,8 @@ describe("observing a path that is not a git checkout", () => {
       assert.equal(report.nonInterference.worktreeUnchanged, false, "unproven is still not a pass");
       assert.equal(worktreeChangeSuspected(report.nonInterference), false);
       assert.doesNotMatch(formatJobSummary(report, "raw"), /The working tree changed/);
+      assert.match(report.reason ?? "", /not a git checkout/);
+      assert.doesNotMatch(report.reason ?? "", /fetch-depth/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
