@@ -42,7 +42,7 @@ export interface PurposeVerdict {
 }
 
 /** Shell operators that end one command and begin another. */
-const COMMAND_SEPARATOR = /\s*(?:\|\||&&|\||;)\s*/;
+const SEPARATOR_TOKEN = /\|\||&&|\||;/;
 
 /**
  * The tokens of the FIRST command on a line, even when the line as a whole is not safe argv.
@@ -53,7 +53,11 @@ const COMMAND_SEPARATOR = /\s*(?:\|\||&&|\||;)\s*/;
  * statement about the EXECUTOR. It must not delete what the step is for.
  */
 export function firstCommandTokens(line: string): string[] {
-  const [first = ""] = line.trim().split(COMMAND_SEPARATOR);
+  // The first command only: everything before the first separator. Splitting on a separator with
+  // `\s*` edges is quadratic on long runs of spaces (CodeQL alert 37); the whitespace split drops them anyway.
+  const trimmed = line.trim();
+  const cut = trimmed.search(SEPARATOR_TOKEN);
+  const first = cut === -1 ? trimmed : trimmed.slice(0, cut);
   return first.split(/\s+/).filter(Boolean);
 }
 

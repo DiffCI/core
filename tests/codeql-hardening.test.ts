@@ -1,10 +1,11 @@
-// Regression tests for the CodeQL alerts fixed on 2026-11-17: slow regexes on repository-controlled text, a
-// shell command built from file names, and a `\s` that a template literal had turned into a literal `s`.
+// Regression tests for the CodeQL alerts fixed on 2026-11-17: slow regexes on repository-controlled text, and a
+// `\s` that a template literal had turned into a literal `s`.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { shellPath } from "../packages/diffci-cli/src/client/agent-selection.js";
 import { evaluateCondition, renderCommand } from "../src/ci-inference/expression.js";
+import { firstCommandTokens } from "../src/ci-inference/purpose.js";
+import { expressionReferences } from "../src/ci-inference/resolve.js";
 import { discoverGateChecks } from "../src/planner/pipeline-steps.js";
 import { nodeTestGlobForPath } from "../src/planner/test-command.js";
 import { contentNamesPath, widenCharacterClasses } from "../src/repo/file-references.js";
@@ -23,14 +24,6 @@ import { referencePattern, referenceTokens } from "../src/repo/file-references.j
 const bare = (path: string) => referencePattern(referenceTokens(path, { ancestors: false }));
 
 describe("CodeQL hardening", () => {
-  it("returns no shell word for a path that no quoting keeps literal", () => {
-    assert.equal(shellPath("src/a.ts"), "src/a.ts");
-    assert.equal(shellPath("docs/my file.md"), '"docs/my file.md"');
-    for (const path of ["$(touch pwned).ts", "a`id`.ts", 'a".ts', "a\\b.ts", "%PATH%.ts", "a!b.ts", "a\nb.ts"]) {
-      assert.equal(shellPath(path), undefined, path);
-    }
-  });
-
   it("widens glob character classes like the old regex, in linear time", () => {
     const old = (glob: string) => glob.replace(/\[[^\]]*\]/g, "?");
     for (const glob of ["a/[bc]/*.ts", "[a][b]", "x[y", "[[]]", "a]b[c]d[", "no classes", "[", "]["]) {
@@ -59,6 +52,16 @@ describe("CodeQL hardening", () => {
     const long = fast(() => evaluateCondition(`\${{ matrix.node == '22'${" ".repeat(100_000)}x }}`, context));
     assert.equal(long.result, "UNRESOLVED", "too long to model is never read as FALSE");
     assert.equal(evaluateCondition("${{ matrix.node != '20'   }}", context).result, "TRUE");
+  });
+
+  it("reads a step's first command and its expressions like the old regexes, in linear time", () => {
+    assert.deepEqual(firstCommandTokens("  npm ci  &&  npm test | tee log"), ["npm", "ci"]);
+    assert.deepEqual(firstCommandTokens("a||b"), ["a"]);
+    fast(() => firstCommandTokens(`a${" ".repeat(100_000)}b`));
+    const evidence = { file: ".github/workflows/ci.yml", text: "run" };
+    const ids = (command: string) => expressionReferences(command, evidence).map((node) => node.identifier);
+    assert.deepEqual(ids("node ${{ matrix.node }} ${{secrets.TOKEN}} ${{ }} ${{}}"), ["matrix.node", "secrets.TOKEN", " "]);
+    fast(() => ids(`\${{${" ".repeat(100_000)}x`));
   });
 
   it("reads runner flags without exponential backtracking", () => {

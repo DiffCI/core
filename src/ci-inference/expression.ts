@@ -85,7 +85,7 @@ export function resolveExpression(expression: string, context: ExpressionContext
  * Replaces each `${{ body }}` whose body has no `}`, as `/\$\{\{([^}]*)\}\}/g` would, in linear time: the
  * regex rescans to the next `}` from every `${{`, which is quadratic on a line of repeated `${{` (CodeQL alert 12).
  */
-function replaceExpressions(line: string, replace: (body: string) => string): string {
+export function replaceExpressions(line: string, replace: (body: string) => string): string {
   let out = "";
   let from = 0;
   for (let start = line.indexOf("${{"); start !== -1; start = line.indexOf("${{", from)) {

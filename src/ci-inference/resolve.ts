@@ -13,6 +13,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { replaceExpressions } from "./expression.js";
 import type { EvidenceRef, ObservedFact } from "./schema.js";
 import type { ReferenceNode } from "./reference-graph.js";
 
@@ -20,7 +21,19 @@ import type { ReferenceNode } from "./reference-graph.js";
 const OPAQUE_WRAPPERS = /^(kcd-scripts|react-scripts|nx|turbo|lerna|ut|rush|nps)\b/;
 
 /** `${{ ... }}` expressions and shell variables that repository evidence cannot settle. */
-const EXPRESSION = /\$\{\{\s*([^}]+?)\s*\}\}/g;
+/**
+ * The bodies `/\$\{\{\s*([^}]+?)\s*\}\}/g` captured, in linear time (that regex is quadratic on a `${{` followed by a
+ * long run of spaces, CodeQL alert 38). A whitespace-only body still captures its last character, as the regex did.
+ */
+function expressionBodies(command: string): string[] {
+  const bodies: string[] = [];
+  replaceExpressions(command, (inner) => {
+    const body = inner.trim() || inner.slice(-1);
+    if (body) bodies.push(body);
+    return "";
+  });
+  return bodies;
+}
 
 let counter = 0;
 function nextId(prefix: string): string {
@@ -41,8 +54,7 @@ export function resetReferenceIds(): void {
  */
 export function expressionReferences(command: string, evidence: EvidenceRef): ReferenceNode[] {
   const nodes: ReferenceNode[] = [];
-  for (const match of command.matchAll(EXPRESSION)) {
-    const expr = match[1]!;
+  for (const expr of expressionBodies(command)) {
     const isMatrix = /^matrix\./.test(expr);
     const isSecret = /^secrets\./.test(expr);
     nodes.push({
