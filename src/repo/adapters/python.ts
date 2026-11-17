@@ -16,7 +16,8 @@ import { contribution, type AdapterContext, type AdapterContribution, type Repos
  * and, for a file in a directory without `__init__.py`, that directory (pytest's default `prepend`
  * import mode puts it on sys.path). Importing `a.b.c` also reaches `a/__init__.py` and `a/b/__init__.py`,
  * which run on import. Tests follow pytest's `python_files` and `testpaths`; each test also depends on
- * every `conftest.py` from its directory up to the root, which pytest loads before it.
+ * every `conftest.py` from its directory up to the root, which pytest loads before it, and on every
+ * plugin module that `addopts` loads with `-p`.
  *
  * Full validation instead, as global blockers: no Python interpreter, a file that does not parse, an
  * `importlib.import_module` / `__import__` / `pytest_plugins` entry whose name is computed, a first-party
@@ -83,6 +84,8 @@ export interface PytestSettings {
   pythonFiles: string[];
   testpaths: string[];
   pythonpath: string[];
+  /** Plugin modules `addopts` loads with `-p`; every test depends on them. */
+  plugins?: string[];
   /** A key that is present but could not be read; its file makes the analysis fall back. */
   unreadable?: string;
 }
@@ -94,10 +97,15 @@ function splitList(value: string): string[] {
 /** pytest's own configuration, from the first file pytest would use. Only the keys selection depends on. */
 export function readPytestSettings(read: (path: string) => string | undefined): PytestSettings {
   const settings: PytestSettings = { pythonFiles: ["test_*.py", "*_test.py"], testpaths: [], pythonpath: [] };
-  const keys = ["python_files", "testpaths", "pythonpath"] as const;
+  const keys = ["python_files", "testpaths", "pythonpath", "addopts"] as const;
   const apply = (key: (typeof keys)[number], values: string[]) => {
     if (key === "python_files") settings.pythonFiles = values;
-    else settings[key] = values;
+    else if (key === "addopts") {
+      // `-p name` and `-pname` import a plugin module before collection; `-p no:name` disables one.
+      const plugins = values.flatMap((value, index) => value === "-p" ? [values[index + 1] ?? ""] : value.startsWith("-p") && !value.startsWith("--") ? [value.slice(2)] : [])
+        .filter((name) => !name.startsWith("no:"));
+      if (plugins.length) settings.plugins = plugins;
+    } else settings[key] = values;
   };
   for (const [file, header] of [["pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
     const text = read(file);
@@ -108,7 +116,9 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
     for (const key of keys) {
       if (file === "pyproject.toml") {
         const match = new RegExp(`^${key}\\s*=\\s*(\\[[\\s\\S]*?\\]|"[^"]*"|'[^']*')`, "m").exec(body);
-        if (match) apply(key, splitList(match[1]!.replace(/^\[|\]$/g, "")));
+        // A multi-line string would otherwise match as an empty one.
+        if (new RegExp(`^${key}\\s*=\\s*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+        else if (match) apply(key, splitList(match[1]!.replace(/^\[|\]$/g, "")));
         else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
       } else {
         // INI values continue on indented lines.
@@ -203,6 +213,16 @@ export function resolvePythonGraph(files: readonly string[], parsed: Record<stri
     }
     // pytest loads every conftest.py from the rootdir down to the test's directory first.
     if (tests.has(file)) {
+      // Plugins named by `-p` in addopts are imported before any test is collected.
+      for (const plugin of settings.plugins ?? []) {
+        const parts = plugin.split(".");
+        const target = roots.map((root) => moduleFiles(root, parts)).find(Boolean);
+        if (target) add(target);
+        else if (!plugin || firstParty.has(parts[0]!)) {
+          const blocker = `Unresolved pytest plugin in addopts: -p ${plugin}`;
+          if (!blockers.includes(blocker)) blockers.push(blocker);
+        }
+      }
       const segments = dir ? dir.split("/") : [];
       for (let depth = 0; depth <= segments.length; depth += 1) {
         const conftest = [...segments.slice(0, depth), "conftest.py"].join("/");
