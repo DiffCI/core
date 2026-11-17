@@ -244,6 +244,7 @@
     "tests/credit-contributors.test.ts",
     "tests/attach-release-provenance.test.ts",
     "tests/codeql-hardening.test.ts",
+    "tests/fuzz/repository-text.fuzz.test.ts",
     "tests/repo/babel-config-change.test.ts",
     "tests/repo/analyzer-lockfiles.test.ts",
     "tests/repo/analyzer.test.ts",
