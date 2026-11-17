@@ -13,16 +13,6 @@ function expandBraces(pattern: string): string[] {
 const REGEX_SPECIAL = /[.*+?^${}()|[\]\\/]/g;
 const literal = (char: string): string => char.replace(REGEX_SPECIAL, "\\$&");
 
-/** Whether RegExp accepts a compiled `[...]` class; a reversed range such as `[z-a]` throws. */
-function isValidClass(charClass: string): boolean {
-  try {
-    new RegExp(charClass);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Compiles one brace-free glob. `*` and `?` stay within a path segment, `**` crosses segments (a `**`
  * followed by a slash, or a trailing slash and `**`, also matches zero directories), `[...]`/`[!...]` is a character class, `\` escapes the
@@ -45,13 +35,9 @@ function regexFrom(pattern: string): RegExp {
         let body = pattern.slice(i + 1, close);
         const negated = body.startsWith("!") || body.startsWith("^");
         if (negated) body = body.slice(1);
-        const charClass = `[${negated ? "^/" : ""}${body.replace(/[\\\]^[]/g, "\\$&")}]`;
-        // A class RegExp rejects, such as the reversed range in `[z-a]`, is read as literal text.
-        if (isValidClass(charClass)) {
-          source += charClass;
-          i = close;
-          continue;
-        }
+        source += `[${negated ? "^/" : ""}${body.replace(/[\\\]^[]/g, "\\$&")}]`;
+        i = close;
+        continue;
       }
     }
     source += literal(char);
@@ -61,7 +47,17 @@ function regexFrom(pattern: string): RegExp {
 
 function matches(path: string, pattern: string): boolean {
   const normalized = path.replace(/\\/g, "/");
-  return expandBraces(pattern).some((p) => regexFrom(p).test(normalized));
+  return expandBraces(pattern).some((p) => {
+    let regex: RegExp;
+    try {
+      regex = regexFrom(p);
+    } catch {
+      // A class RegExp rejects, such as the reversed range in `[z-a]`, cannot rule a change out: count it
+      // as matching, so the task runs (the same reading as the planner's matcher in #174).
+      return true;
+    }
+    return regex.test(normalized);
+  });
 }
 
 export function matchesAny(path: string, patterns: string[] | undefined): boolean {
