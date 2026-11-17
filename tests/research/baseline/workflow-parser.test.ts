@@ -119,4 +119,16 @@ describe("parseRepositoryWorkflows (yaml dependency regression)", () => {
     assert.equal(parsed.length, 1);
     assert.deepEqual(parsed[0]!.tasks, []);
   });
+
+  // #168: YAML.parse returns null for an empty or comment-only file, which then crashed `diffci plan`.
+  for (const [label, content] of [["an empty", ""], ["a comment-only", "# disabled for now\n"], ["a scalar", "true\n"], ["a list", "- a\n- b\n"]] as const) {
+    it(`returns an empty task list (not a throw) for ${label} workflow file`, () => {
+      mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+      writeFileSync(join(dir, ".github/workflows/empty.yml"), content);
+
+      const parsed = parseRepositoryWorkflows(repoProfile(".github/workflows/empty.yml"), dir);
+      assert.equal(parsed.length, 1);
+      assert.deepEqual(parsed[0]!.tasks, []);
+    });
+  }
 });

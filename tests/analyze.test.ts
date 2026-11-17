@@ -60,3 +60,16 @@ test("workflow changes retain full fallback and always-run security policy", asy
     assert.ok(result.plan.alwaysRunTasks.includes("security:default"));
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
+
+test("an empty workflow file does not stop the analysis (#168)", async () => {
+  const f = fixture();
+  try {
+    mkdirSync(join(f.root, ".github/workflows"), { recursive: true });
+    writeFileSync(join(f.root, ".github/workflows/disabled.yml"), "# disabled for now\n");
+    f.git("add", "."); f.git("commit", "-m", "disabled workflow");
+    writeFileSync(join(f.root, "src/value.js"), "export const value = 3;\n");
+    f.git("add", "."); f.git("commit", "-m", "change");
+    const result = await analyzeCheckout({ repoPath: f.root, base: "HEAD~1", head: "HEAD" });
+    assert.ok(result.plan.selectedTests.includes("src/value.test.js"));
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});
