@@ -225,10 +225,13 @@ async function executeObservation(
   before: WorkingTreeSnapshot,
   observation: ObservationReport,
 ): Promise<VerificationReport> {
-  const enforcement = options.policy === "enforce"
-    ? evaluateEnforcement(collectEnforcementContext(makeGitRunner(options.repoPath), options.env, observation), observation)
+  // The analysis sees real paths, but under --redact-paths enforce keeps treating the paths as redacted.
+  const context = options.policy === "enforce" ? collectEnforcementContext(makeGitRunner(options.repoPath), options.env, observation) : undefined;
+  const enforcement = context
+    ? evaluateEnforcement(options.redactPaths ? { ...context, pathsRedacted: true } : context, observation)
     : undefined;
-  const report = await executeWithPolicy(options, scope, before, observation, enforcement);
+  const executed = await executeWithPolicy(options, scope, before, observation, enforcement);
+  const report = options.redactPaths ? redactReceipt(executed, observation.result) : executed;
   if (!enforcement) return report;
   return { ...report, enforcement: { ...enforcement, applied: enforcement.fired_fallback === null && report.selection === "selected" } };
 }
@@ -584,7 +587,7 @@ async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<Ver
       engineSha: options.engineSha,
       baseOverride: before.baseSha,
       headOverride: before.commitSha,
-      redactPaths: options.redactPaths,
+      // Planned with real paths so the selected tests can run; only the receipt is redacted (redactReceipt).
       reportPath: join(temporaryDirectory, "observation.json"),
       selectTestPhases: true,
       ...(options.onGraph ? { onGraph: options.onGraph } : {}),
@@ -733,7 +736,7 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
       engineSha: options.engineSha,
       baseOverride: options.baseOverride,
       headOverride: options.headOverride,
-      redactPaths: options.redactPaths,
+      // Planned with real paths so the selected tests can run; only the receipt is redacted (redactReceipt).
       reportPath: join(temporaryDirectory, "observation.json"),
       selectTestPhases: true,
     });
@@ -741,6 +744,32 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Under --redact-paths the analysis plans with real paths, so the selected tests can run, and the receipt
+ * carries digests instead (the same sha256-12 as the observation report): the selected tests and their
+ * reasons, and those paths wherever the command and reason text name them.
+ */
+function redactReceipt(report: VerificationReport, result: ObservationReport["result"]): VerificationReport {
+  const digest = (path: string) => redactPath(path, (input) => createHash("sha256").update(input).digest("hex"));
+  const known = [...new Set([...(result?.selectedTests ?? []), ...(result?.testsOutsideFullSuite ?? []), ...(result?.changedFiles ?? [])])]
+    .filter((path) => path.length > 0)
+    .sort((left, right) => right.length - left.length);
+  const scrub = (text: string) => known.reduce((current, path) => current.split(path).join(digest(path)), text);
+  return {
+    ...report,
+    reason: scrub(report.reason),
+    required_actions: report.required_actions.map(scrub),
+    ...(report.selected_tests ? { selected_tests: report.selected_tests.map(digest) } : {}),
+    ...(report.selection_reasons ? {
+      selection_reasons: Object.fromEntries(Object.entries(report.selection_reasons).map(([test, why]) => [digest(test), { ...why, changed_file: digest(why.changed_file) }])),
+    } : {}),
+    ...(report.command !== undefined ? { command: scrub(report.command) } : {}),
+    ...(report.commands ? { commands: report.commands.map(scrub) } : {}),
+    ...(report.first_pass ? { first_pass: { ...report.first_pass, commands: report.first_pass.commands.map(scrub) } } : {}),
+    ...(report.execution ? { execution: { ...report.execution, command: scrub(report.execution.command) } } : {}),
+  };
 }
 
 function checkSummary(checks: readonly CheckResult[]): string {
