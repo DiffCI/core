@@ -78,7 +78,7 @@ const tools = [
         head: { type: "string", description: "Optional head commit SHA." },
         json: { type: "boolean", description: "Print the full JSON observation report." },
         quiet: { type: "boolean", description: "Suppress the human summary." },
-        redactPaths: { type: "boolean", description: "Replace paths with stable digests in the report." },
+        redactPaths: { type: "boolean", description: "Replace paths in the analysis result with stable digests. Workflow findings and some fallback details can still name files." },
       },
       additionalProperties: false,
     },
