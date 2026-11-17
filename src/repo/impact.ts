@@ -61,6 +61,7 @@ function toolConfigurationSubject(filePath: string): string | undefined {
   const base = posix.basename(filePath);
   if (base === ".nvmrc" || base === ".node-version") return "Node version";
   if (base === ".npmrc") return "package manager settings";
+  if (/^tsconfig\.[^/]+\.json$/.test(base) || /^jsconfig\.[^/]+\.json$/.test(base)) return "TypeScript configuration";
   return undefined;
 }
 

@@ -16,6 +16,8 @@ const EXAMPLES = [
   "next.config.mjs",
   "tsconfig.json",
   "jsconfig.json",
+  "tsconfig.base.json",
+  "jsconfig.test.json",
   "eslint.config.js",
   ".eslintrc.json",
   "postcss.config.cjs",
@@ -63,7 +65,7 @@ CONFIG_PATTERNS.forEach((pattern, i) => {
   });
 });
 
-for (const name of ["eslint.rc", "npm-lock.json", "yarn-lock.yaml"]) {
+for (const name of ["eslint.rc", "npm-lock.json", "yarn-lock.yaml", "tsconfig-paths.json"]) {
   test(`no entry matches ${name}, which no tool reads`, () => {
     assert.ok(!CONFIG_PATTERNS.some((pattern) => pattern.test(name)));
   });

@@ -200,6 +200,12 @@ export const CONFIG_PATTERNS = [
   /^next\.config\./,
   /^tsconfig\.json$/,
   /^jsconfig\.json$/,
+  // `tsconfig.base.json`, `tsconfig.test.json`, `jsconfig.build.json`: monorepos keep shared options in
+  // the first and projects carry per-target variants of the rest (issue #141). Deliberately narrower
+  // than type-program.ts's `tsconfig[^/]*\.json`, which would also match the package name
+  // `tsconfig-paths.json`.
+  /^tsconfig\.[^/]+\.json$/,
+  /^jsconfig\.[^/]+\.json$/,
   /^eslint\.config\./,
   /^\.eslint/,
   /^postcss\.config\./,
