@@ -948,6 +948,14 @@ export class ImpactAnalyzer {
         .map((ref) => packageRoot(ref.specifier)).filter((name) => !declared.has(name)))].sort();
       if (undeclared.length) fail(`pnpm lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
     }
+    if (!delta.analysis.dependencyLockfile && delta.files.some((file) => file.path === "package-lock.json")) {
+      // npm hoists transitive packages to the root node_modules, where repository code can import them
+      // without declaring them. Attribution reaches only declared roots, so such an import is not covered.
+      const declared = new Set([...profile.packageJson.dependencies, ...profile.packageJson.devDependencies, ...packages]);
+      const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
+        .map((ref) => packageRoot(ref.specifier)).filter((name) => !declared.has(name)))].sort();
+      if (undeclared.length) fail(`npm lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
+    }
     const scripts = profile.packageJson.scripts;
     const closureBodies = [...testScriptClosure(scripts)].map((name) => scripts[name] ?? "");
     for (const name of packages) {

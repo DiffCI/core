@@ -341,6 +341,7 @@
     "src/repo/pnpm-lockfile.ts",
     "src/repo/yarn-lockfile.ts",
     "tests/repo/fallback-narrowing.test.ts",
+    "tests/repo/npm-lock-undeclared-imports.test.ts",
     "tests/repo/pnpm-lockfile.test.ts",
     "tests/repo/yarn-lockfile.test.ts",
     "packages/diffci-cli/src/client/hook.ts",

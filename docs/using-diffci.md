@@ -608,6 +608,7 @@ _The named `Tool configuration changed` reasons, including the Mocha fallback, w
 | --- | --- | --- |
 | `… (…) cannot be traced without repository contents; full validation required` | Bump a dependency when DiffCI is run without access to the checkout's files | No |
 | `Yarn lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `yarn.lock` while `src/a.js` imports a package not listed in `package.json` | No |
+| `npm lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `package-lock.json` while `src/a.js` imports a hoisted package not listed in `package.json` | No |
 | `pnpm lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `pnpm-lock.yaml` while `src/a.js` imports a hoisted package not listed in `package.json` | No |
 | `… and no repository source imports it; full validation required` | Bump a devDependency such as `eslint` that only tools load | No |
 | `… and the test script runs it; full validation required` | Bump `vitest` when the `test` script runs `vitest` | No |
