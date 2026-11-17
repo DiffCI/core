@@ -6,11 +6,13 @@ import { dirname, join } from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { buildClient } from "../helpers/build-client.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const MCP = join(ROOT, "dist-client", "src", "client", "mcp.js");
 
 before(() => {
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.client.json"], { cwd: ROOT, stdio: "pipe" });
+  buildClient();
 });
 function frame(message: unknown): string {
   const body = JSON.stringify(message);

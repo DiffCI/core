@@ -6,13 +6,13 @@ import { dirname, join } from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { buildClient } from "../helpers/build-client.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(ROOT, "dist-client", "src", "client", "cli.js");
 
 before(() => {
-  const build = spawnSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.client.json"], { cwd: ROOT, encoding: "utf8" });
-  assert.ifError(build.error);
-  assert.equal(build.status, 0, build.stdout + build.stderr);
+  buildClient();
 });
 
 function selection(mode: "SELECTIVE" | "FULL" = "SELECTIVE") {

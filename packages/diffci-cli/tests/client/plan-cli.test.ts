@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { buildClient } from "../helpers/build-client.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(ROOT, "dist-client", "src", "client", "cli.js");
 const CORE_CLI = join(ROOT, "node_modules", "@diffci.com", "core", "dist", "cli.js");
@@ -31,9 +33,7 @@ function run(script: string, args: string[], cwd = temp) {
 }
 
 before(() => {
-  const build = spawnSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.client.json"], { cwd: ROOT, encoding: "utf8" });
-  assert.ifError(build.error);
-  assert.equal(build.status, 0, build.stdout + build.stderr);
+  buildClient();
 
   temp = mkdtempSync(join(tmpdir(), "diffci-plan-"));
   repo = join(temp, "repo");
