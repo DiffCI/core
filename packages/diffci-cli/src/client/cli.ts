@@ -116,7 +116,13 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       flags.paths = values.length ? values.join("\0") : true;
       continue;
     }
-    if (inline !== undefined) {
+    if (inline === "true") {
+      // On/off flags are read with `=== true`, so `--json=true` stored as the string "true" was off
+      // with no error. `=true` turns the flag on and `=false` leaves it off, as if it were not given.
+      flags[key] = true;
+    } else if (inline === "false") {
+      delete flags[key];
+    } else if (inline !== undefined) {
       flags[key] = inline;
     } else if (next !== undefined && !next.startsWith("--")) {
       flags[key] = next;

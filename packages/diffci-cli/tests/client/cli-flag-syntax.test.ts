@@ -33,3 +33,15 @@ it("reads --name=value the same as --name value", () => {
     assert.match(result.stderr, /--shard takes i\/N with 1 <= i <= N, got "3\/2"/, args.join(" "));
   }
 });
+
+// `--changed=true` was stored as the string "true", and on/off flags are read with `=== true`, so the
+// flag was off with no error. Two scope flags together are rejected, which shows whether it was read.
+it("reads --flag=true as the flag and --flag=false as leaving it off", () => {
+  for (const args of [["--changed=true", "--paths", "a"], ["--changed", "--paths", "a"]]) {
+    const result = verify(args);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /accepts one of --changed, --staged, --paths\/--paths-from or --base\/--head; got --changed and --paths/, args.join(" "));
+  }
+  const off = verify(["--changed=false", "--paths", "a"]);
+  assert.doesNotMatch(off.stderr, /accepts one of --changed/);
+});
