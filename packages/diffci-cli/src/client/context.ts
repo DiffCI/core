@@ -179,6 +179,24 @@ function mergeBase(git: GitRunner, a: string, b: string): string | undefined {
   return result.ok ? result.stdout.trim() || undefined : undefined;
 }
 
+/**
+ * The base for a push that created its branch (2026-11-18). There is no `before`, and the head's parent
+ * covers only the last of the commits the push brought, so a change made earlier in the same push was
+ * never analysed. The commits the new branch adds are the ones not on the default branch, so the merge
+ * base with the default branch's remote-tracking ref is the base - the same range a pull request from the
+ * branch would get. Undefined when that ref is not in this checkout, or the head is already on it (nothing
+ * new to compare), and the caller then falls back to the labelled `head-parent` range.
+ */
+function branchCreationBase(git: GitRunner, headSha: string, defaultBranch: string | undefined): string | undefined {
+  if (!defaultBranch || !/^[A-Za-z0-9._/-]+$/.test(defaultBranch) || defaultBranch.startsWith("-") || defaultBranch.includes("..")) {
+    return undefined;
+  }
+  const tip = resolveSha(git, `refs/remotes/origin/${defaultBranch}`);
+  if (!tip) return undefined;
+  const common = mergeBase(git, tip, headSha);
+  return common && common !== headSha && commitExists(git, common) ? common : undefined;
+}
+
 /** The one sentence every "commit missing locally" refusal ends with, so the fix is never a guess. */
 const DEEPEN_HINT =
   "the commit is not in this checkout - add `fetch-depth: 0` to the actions/checkout step in the job that runs DiffCI (this does not affect any other job)";
@@ -293,6 +311,10 @@ function resolveGitlabRange(env: ObservationEnvironment, git: GitRunner): Commit
     if (before && before !== ZERO_SHA && commitExists(git, before)) {
       return { ok: true, range: { baseSha: before, headSha, source: "push-event" } };
     }
+    if (before === ZERO_SHA || before === undefined) {
+      const common = branchCreationBase(git, headSha, asString(env.CI_DEFAULT_BRANCH));
+      if (common) return { ok: true, range: { baseSha: common, headSha, source: "push-event", mergeBaseSha: common } };
+    }
     const parent = resolveSha(git, `${headSha}^`);
     if (!parent) {
       return {
@@ -400,8 +422,14 @@ export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRa
     if (before && before !== ZERO_SHA && commitExists(git, before)) {
       return { ok: true, range: { baseSha: before, headSha, source: "push-event" } };
     }
-    // A branch's first push has no `before`. The head's own parent is the honest substitute and is
-    // labelled as such - it answers "what did this commit change", not "what did this push change".
+    // A branch's first push has no `before`. Its merge base with the default branch covers every commit
+    // the push brought; only when that cannot be computed is the head's own parent used, labelled as
+    // such - it answers "what did this commit change", not "what did this push change".
+    if (before === ZERO_SHA) {
+      const defaultBranch = asString(nested(payload, "repository", "default_branch")) ?? asString(env.GITHUB_DEFAULT_BRANCH);
+      const common = branchCreationBase(git, headSha, defaultBranch);
+      if (common) return { ok: true, range: { baseSha: common, headSha, source: "push-event", mergeBaseSha: common } };
+    }
     const parent = resolveSha(git, `${headSha}^`);
     if (!parent) {
       return {
