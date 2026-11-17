@@ -18,7 +18,7 @@ server). It contains:
 | `surface` | `github-action` | `cli`, `local-mcp`, `github-action` or `gitlab-component` |
 | `ci` | `true` | whether the run happened in CI |
 | `activity` | `external` | `internal` when labelled with `--internal-usage` or `DIFFCI_USAGE_INTERNAL=1` |
-| `installation_id` | random UUID | created locally in `~/.diffci/telemetry.json`; not tied to a person |
+| `installation_id` | random UUID | sent only after `diffci telemetry --mode repo` creates and saves one in `~/.diffci/telemetry.json`; a default, never-configured installation sends none; not tied to a person |
 | `repository` | `github.com/acme/widgets` | host/owner/repo, from `GITHUB_REPOSITORY`, GitLab CI variables or the `origin` remote, with credentials removed |
 
 It never contains source code, file paths, commit SHAs, branch names, test names, reports, IP-based
