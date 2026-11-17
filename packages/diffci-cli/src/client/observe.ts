@@ -159,7 +159,8 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
   const repoPath = resolve(options.repoPath);
   const git = options.git ?? makeGitRunner(repoPath);
   const ci = readCiEnvironment(options.env);
-  const [owner, name] = (ci.ownerName ?? "").split("/");
+  // GitLab's CI_PROJECT_PATH may name subgroups (group/sub/project): keep every segment, not the first two.
+  const ownerName = ci.ownerName && /^[^/]+(?:\/[^/]+)+$/.test(ci.ownerName) ? ci.ownerName : undefined;
 
   const before = { head: headSha(git), worktree: worktreeDigest(git) };
   const hashPath = (path: string): string => (options.redactPaths ? redactPath(path, sha256) : path);
@@ -201,7 +202,7 @@ export async function observe(options: ObserveOptions): Promise<ObservationRepor
       },
       repository: {
         provider: ci.provider === "github-actions" ? "github" : ci.provider === "gitlab-ci" ? "gitlab" : "unknown",
-        ownerName: owner && name ? `${owner}/${name}` : undefined,
+        ownerName,
         defaultBranch: ci.defaultBranch,
         providerRepositoryId: ci.providerRepositoryId,
       },

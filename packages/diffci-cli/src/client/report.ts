@@ -50,7 +50,7 @@ export interface ObservationCommitRange {
 
 export interface ObservationRepository {
   provider: "github" | "gitlab" | "unknown";
-  /** "owner/name". The only repository identifier sent; never a URL carrying a token. */
+  /** "owner/name", or GitLab's full "group/subgroup/name" path. The only repository identifier sent; never a URL carrying a token. */
   ownerName?: string;
   defaultBranch?: string;
   /** GitHub's numeric repository id when the environment supplies it - survives a rename. */

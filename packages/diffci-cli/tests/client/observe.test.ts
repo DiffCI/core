@@ -137,6 +137,21 @@ describe("client-side observation", () => {
     }
   });
 
+  it("keeps a GitLab subgroup project's full path as the repository name", async () => {
+    const repoPath = createFixtureRepo();
+    try {
+      const base = git(repoPath, "rev-parse HEAD").trim();
+      write(repoPath, "src/alpha.ts", "export const alpha = () => 42;\n");
+      git(repoPath, "commit --quiet -am change");
+      const env = { GITLAB_CI: "true", CI_PROJECT_PATH: "group/sub/project" };
+      const report = await observe({ repoPath, env, version: "test", baseOverride: base, headOverride: git(repoPath, "rev-parse HEAD").trim() });
+      assert.equal(report.repository.provider, "gitlab");
+      assert.equal(report.repository.ownerName, "group/sub/project");
+    } finally {
+      rmSync(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it("redacts every path when asked, and says so in the report", async () => {
     const repoPath = createFixtureRepo();
     try {
