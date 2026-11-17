@@ -410,6 +410,8 @@ async function executeWithPolicy(
   const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes, baseline: checkBaseline });
   const checks = checkRun?.results.length ? checkRun.results : undefined;
   const failedCheck = checkRun?.failure?.check;
+  // Checks the time limit left no room for were never run, so the tests must not run (with no limit) either.
+  const unrunChecks = checkRun?.outOfTime ? checkRun.results.filter((check) => check.status === "not_run") : [];
   // Checks that also fail at the base: still a failed verdict (required CI fails either way), but they
   // no longer stop the run before the change's own failures.
   const preexistingChecks = checkRun?.preexisting ?? [];
@@ -419,12 +421,14 @@ async function executeWithPolicy(
   // Every test run goes under a probe that records which `node --test` files started (selected ones must)
   // and each one's duration and result for the outcome log (2026-11-06). Outside node:test it does nothing.
   const expectedNodeTests = selection === "selected" && result ? selectedNodeTests(command, result.selectedTests) : [];
-  const trace = !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
+  const trace = !checkRun?.failure && !unrunChecks.length ? traceNodeTestFiles(options.repoPath) : undefined;
   let startedNodeTests: string[] | undefined;
   let execution: CommandMeasurement;
   try {
     execution = checkRun?.failure
       ? checkRun.failure.measurement
+      : unrunChecks.length
+      ? checksOutOfTime(command, checkRun?.wallMs ?? 0)
       : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
     startedNodeTests = trace?.read();
     const nodeResults = trace?.results() ?? [];
@@ -485,6 +489,8 @@ async function executeWithPolicy(
       ? `the runner reported ${String(execution.runnerTestCount)} test(s) for ${selectedCount} selected test file(s), so some selected tests did not run; run the full test command instead`
     : succeeded
       ? checks ? `${reason}; ${checkSummary(checks)}` : reason
+      : unrunChecks.length
+        ? `gate check(s) ${unrunChecks.map((check) => check.id).join(", ")} did not run within the ${options.timeoutMs}ms time limit; tests were not run`
       : failedCheck
         ? `gate check ${failedCheck.id} ${failedCheck.status === "timed_out" ? "timed out" : `failed with exit code ${String(failedCheck.exit_code)}`}; tests were not run (${failedCheck.command})`
       : execution.timedOut
@@ -493,7 +499,7 @@ async function executeWithPolicy(
           ? `${preexistingChecks.length} gate check(s) failed that also fail at the base commit; nothing this change introduced failed (${preexistingChecks.map((check) => check.id).join(", ")})`
           : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
-  const failureBaseline = verification === "failed" && !failedCheck && !execution.timedOut && options.baselineOnFailure && baselineSha
+  const failureBaseline = verification === "failed" && !failedCheck && !unrunChecks.length && !execution.timedOut && options.baselineOnFailure && baselineSha
     // The base reruns only the parts that ran here: a first-pass failure is compared without the full suite.
     ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands: stoppedInFirstPass ? firstPass.parts : commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
     : undefined;
@@ -741,6 +747,12 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/** The measurement recorded when the time limit ran out during the gate checks, before the tests started. */
+function checksOutOfTime(command: string, wallMs: number): CommandMeasurement {
+  const now = new Date().toISOString();
+  return { command, exitCode: null, signal: null, timedOut: true, startedAt: now, finishedAt: now, wallMs: 0, stdoutTail: "", stderrTail: `gate checks used the time limit (${wallMs}ms); tests were not run` };
 }
 
 function checkSummary(checks: readonly CheckResult[]): string {
