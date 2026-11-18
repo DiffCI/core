@@ -102,7 +102,7 @@ export function makeGitRunner(repoPath: string): GitRunner {
       });
       return { ok: true, stdout };
     } catch (error) {
-      return { ok: false, error: (error as Error).message.split("\n")[0] ?? "git failed" };
+      return { ok: false, error: (error as Error).message.split("\n")[0] ?? "git failed", stderr: String((error as { stderr?: unknown }).stderr ?? "") };
     }
   };
 }

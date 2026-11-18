@@ -56,3 +56,12 @@ test("a changed worktree and a failed delivery are shown outside the collapsed r
   assert.ok(text.indexOf("The working tree changed") < collapsed);
   assert.ok(text.indexOf("Delivery: not sent (network): timeout") < collapsed);
 });
+
+// #278: a refusal on a path that is not a git checkout has no evidence and changed nothing.
+test("a refusal with no checkout to compare does not warn that the working tree changed", () => {
+  const text = formatJobSummary(makeReport({
+    status: "REFUSED", stage: "context", reason: "not a git repository, or HEAD could not be resolved", result: undefined,
+    nonInterference: { worktreeUnchanged: false, reportWrittenOutsideRepository: true, workflowFindings: [] },
+  } as Partial<ObservationReport>), "raw");
+  assert.doesNotMatch(text, /The working tree changed/);
+});

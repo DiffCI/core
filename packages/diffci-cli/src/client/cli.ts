@@ -49,7 +49,7 @@ import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceCompari
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook, isGitRepository, refreshPrePushHook } from "./hook.js";
 import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATHS, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
-import type { ObservationReport, WorkflowFinding } from "./report.js";
+import { worktreeChangeSuspected, type ObservationReport, type WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
 import { GraphCache } from "@diffci.com/core/cache/graph-cache";
@@ -896,7 +896,7 @@ function summarise(report: ObservationReport, executionFollows = false): string 
     }
   }
   lines.push(
-    `  non-interference${executionFollows ? " (analysis phase)" : ""}: worktree ${report.nonInterference.worktreeUnchanged ? "unchanged" : "CHANGED - report this"}, report written ${report.nonInterference.reportWrittenOutsideRepository ? "outside" : "INSIDE"} the checkout`,
+    `  non-interference${executionFollows ? " (analysis phase)" : ""}: worktree ${report.nonInterference.worktreeUnchanged ? "unchanged" : worktreeChangeSuspected(report.nonInterference) ? "CHANGED - report this" : "not a git checkout, nothing to compare"}, report written ${report.nonInterference.reportWrittenOutsideRepository ? "outside" : "INSIDE"} the checkout`,
   );
   const blocking = report.nonInterference.workflowFindings.filter((f) => f.severity === "BLOCKING");
   // `check` is a local trial, not an installation, so it names the count and where to look; `observe`

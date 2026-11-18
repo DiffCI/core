@@ -110,6 +110,17 @@ export interface NonInterferenceEvidence {
   workflowFindings: WorkflowFinding[];
 }
 
+/**
+ * Whether the evidence shows the observer may have changed the checkout: a before/after pair differs,
+ * or evidence captured before is missing after. With no evidence at all - the path is not a git
+ * checkout, so the observation refused - there was nothing to change and nothing to report (#278).
+ * This only decides what is shown; `worktreeUnchanged` stays false, so such a run never narrows.
+ */
+export function worktreeChangeSuspected(evidence: Pick<NonInterferenceEvidence, "headShaBefore" | "headShaAfter" | "worktreeDigestBefore" | "worktreeDigestAfter" | "worktreeUnchanged">): boolean {
+  if (evidence.worktreeUnchanged) return false;
+  return [evidence.headShaBefore, evidence.headShaAfter, evidence.worktreeDigestBefore, evidence.worktreeDigestAfter].some((value) => value !== undefined);
+}
+
 export type WorkflowFindingSeverity = "BLOCKING" | "WARNING" | "INFO";
 
 export interface WorkflowFinding {
