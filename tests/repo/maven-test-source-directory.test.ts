@@ -197,3 +197,14 @@ test("A file under a resolved <testSourceDirectory> is inside the roots (#327)",
     assert.ok(!graph.adapterBlockers?.some((reason) => outsideRoots.test(reason)), graph.adapterBlockers?.join("; "));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Maven falls back for Java under resources when build-helper-maven-plugin could add it as a root (#327)", async () => {
+  const build = "<plugins><plugin><groupId>org.codehaus.mojo</groupId><artifactId>build-helper-maven-plugin</artifactId><executions><execution><goals><goal>add-test-source</goal></goals><configuration><sources><source>src/test/resources/java</source></sources></configuration></execution></executions></plugin></plugins>";
+  const files = reactor(build, "application/src/test/java/example/AppTest.java");
+  files["application/src/test/resources/java/example/ResourceIT.java"] = "package example; class ResourceIT {}";
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, ["Maven application/pom.xml: Java sources outside the standard roots require full validation"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
