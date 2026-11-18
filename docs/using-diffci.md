@@ -596,6 +596,8 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Language/framework configuration changed: …` | Edit `go.mod` or `pom.xml` | No |
 | `Tool configuration changed: … (…); full validation required` | Change `.nvmrc`, `.node-version`, `.npmrc`, `.mocharc.*`, `tsconfig.base.json` or `tsconfig.test.json` | No |
 | `Code that no file imports changed: …; a tool may load it by name, so full validation required` | Edit `karma.conf.js`, `.c8rc.js` or a root-level script that nothing imports | Yes: declare it in `inputs` |
+| `The test script runs …; full validation required` | Edit `scripts/check.mjs` when `package.json` has `"test": "node scripts/check.mjs && node --test"` | Yes: `verify` and the agent tools run that phase instead when it runs the program alone (`node scripts/check.mjs`) |
+| `The test script runs …, which imports …; full validation required` | Edit a module that `scripts/check.mjs` imports, with the same test script | Same as above |
 | `Unknown changed file: …` | Change a file type no adapter models, such as `data.bin` read at runtime | Yes: declare it in `inputs` |
 | `Infrastructure code … is outside the dependency graph; full validation required` | Edit a script under `ops/` that no test imports | Yes: declare it in `inputs` |
 | `Lockfile readers could not be resolved: …; full validation required` | Change `yarn.lock` while repository code reads it in a way DiffCI cannot trace | No |

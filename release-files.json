@@ -370,6 +370,7 @@
     "tests/repo/fallback-narrowing.test.ts",
     "tests/repo/npm-lock-undeclared-imports.test.ts",
     "tests/repo/pnpm-lockfile.test.ts",
+    "tests/repo/test-script-programs.test.ts",
     "tests/repo/yarn-lockfile.test.ts",
     "packages/diffci-cli/src/client/hook.ts",
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",

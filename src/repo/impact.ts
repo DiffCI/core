@@ -8,7 +8,7 @@ import { refineConfidenceForDelta, relevantScopedAdapterBlockers } from "./graph
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
+import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure, testScriptPrograms } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -1265,6 +1265,7 @@ export class ImpactAnalyzer {
     if (changedPath.endsWith(".py") && profile.pythonSources?.includes(changedPath)) {
       this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true });
     }
+    this.coverTestScriptPrograms(changedPath, graph, profile, evidence, riskSignals, fallbackReasons);
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
     this.failToolLoadedOrphan(changedPath, changedImpact, graph, affectedTests, evidence, riskSignals, fallbackReasons, covered);
   }
@@ -1277,6 +1278,41 @@ export class ImpactAnalyzer {
    * name anywhere, or any one at the repository root, that no file imports and that reached no test.
    * An unused module elsewhere (`src/unused.ts`) still selects nothing: no tool loads it by name.
    */
+  /**
+   * A program the root test script runs itself (`node scripts/check.mjs && node --test`) is part of the
+   * suite although no test imports it: the graph saw only an entry point, so a change to it, or to code it
+   * imports, selected nothing for it and `verify` passed while `npm test` failed (2026-11-18). Callers
+   * that run test-script phases run the phase; everyone else gets the full suite.
+   */
+  private coverTestScriptPrograms(
+    changedPath: string,
+    graph: DependencyGraph,
+    profile: RepositoryProfile,
+    evidence: ImpactEvidence[],
+    riskSignals: ImpactRiskSignal[],
+    fallbackReasons: string[],
+  ): void {
+    if (!JS_TS_CODE.test(changedPath) || this.isTestFile(changedPath)) return;
+    const programs = testScriptPrograms(profile.packageJson.scripts);
+    if (programs.size === 0) return;
+    const reached = [changedPath, ...(hasNode(graph, changedPath) ? graph.transitiveDependentsOf(changedPath) : [])];
+    for (const path of reached) {
+      const program = programs.get(path);
+      if (!program || this.isTestFile(path)) continue;
+      if (this.selectTestPhases && program.direct) {
+        for (const phase of program.phases) {
+          this.testPhases.add(phase);
+          evidence.push(makeEvidence("FILE_REFERENCE", changedPath, `the test script runs \`${phase}\`, which ${path === changedPath ? "is" : "imports"} ${changedPath}`));
+        }
+        continue;
+      }
+      const message = path === changedPath ? `The test script runs ${path}; full validation required` : `The test script runs ${path}, which imports ${changedPath}; full validation required`;
+      evidence.push(makeEvidence("CONFIG_GLOBAL", changedPath, message));
+      riskSignals.push({ level: "critical", reason: "CONFIG_GLOBAL", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+    }
+  }
+
   private failToolLoadedOrphan(
     changedPath: string,
     changedImpact: ChangedImpact,
