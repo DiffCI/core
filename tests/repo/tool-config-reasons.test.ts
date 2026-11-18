@@ -55,6 +55,11 @@ const CASES: Array<{ file: string; before: string; after: string; reason: string
   { file: ".nvmrc", before: "22\n", after: "24\n", reason: "Tool configuration changed: Node version" },
   { file: ".node-version", before: "22.5.0\n", after: "24.1.0\n", reason: "Tool configuration changed: Node version" },
   { file: ".npmrc", before: "save-exact=true\n", after: "save-exact=false\n", reason: "Tool configuration changed: package manager settings" },
+  // Tool versions (issue #321): the Node, Python and Bun versions the suite runs on.
+  { file: ".tool-versions", before: "nodejs 22.5.0\n", after: "nodejs 24.1.0\n", reason: "Tool configuration changed: tool versions" },
+  { file: "mise.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
+  { file: ".mise.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
+  { file: ".bun-version", before: "1.1.0\n", after: "1.2.0\n", reason: "Tool configuration changed: Bun version" },
 ];
 
 for (const { file, before, after, reason } of CASES) {

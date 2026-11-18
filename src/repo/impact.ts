@@ -67,6 +67,8 @@ function toolConfigurationSubject(filePath: string): string | undefined {
   if (base === ".npmrc") return "package manager settings";
   if (/^tsconfig\.[^/]+\.json$/.test(base) || /^jsconfig\.[^/]+\.json$/.test(base)) return "TypeScript configuration";
   if (base === ".mocharc" || base.startsWith(".mocharc.")) return "Mocha settings";
+  if (base === ".tool-versions" || base === "mise.toml" || base === ".mise.toml") return "tool versions";
+  if (base === ".bun-version") return "Bun version";
   return undefined;
 }
 

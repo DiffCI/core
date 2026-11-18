@@ -252,6 +252,12 @@ export const CONFIG_PATTERNS = [
   // `.mocharc.js` as code with no importers, so neither reached the configuration signals; both
   // decide how the suite runs.
   /^\.mocharc(?:\.[^/]+)?$/,
+  // Tool versions (issue #321). asdf, mise and Bun pick the toolchain the suite runs on, so a change
+  // falls back to the full suite; these entries make the reason name the file instead of reporting it
+  // as unknown.
+  /^\.tool-versions$/,
+  /^\.?mise\.toml$/,
+  /^\.bun-version$/,
 ];
 
 // Stage 1B fix (2026-08-21, docs/research/2026-08-21-stage1b-*.md): root-caused in Stage 1A's fallback-
