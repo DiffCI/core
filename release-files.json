@@ -238,6 +238,7 @@
     "tests/measurement.test.ts",
     "tests/planner/path-baseline.test.ts",
     "tests/planner/check-narrowing.test.ts",
+    "tests/planner/input-patterns.test.ts",
     "tests/planner/pipeline-steps.test.ts",
     "tests/planner/repo-agnostic-engine.test.ts",
     "tests/planner/rust-command.test.ts",
