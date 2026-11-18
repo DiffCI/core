@@ -99,3 +99,20 @@ target is 100% recall on those 104 with a median selected-check time well under 
 3. Add the repository-script rule from step 3.
 
 Typecheck narrowing is deliberately last: `tsc --incremental` is usually the better tool.
+
+## Python checks (2026-11-18)
+
+A Python repository has no `package.json` gate, so it had no checks at all. A sweep of public CI history
+found PRs red only on a Python type check: in langgenius/dify, 4 of 28 red PRs failed only in
+`make type-check-core` (pyrefly), each on a file the PR changed. `src/planner/python-checks.ts` now reads
+the Python checks a GitHub Actions workflow runs:
+
+- `make [-C dir] <target>` for a check-named target the Makefile defines, unless its recipe rewrites
+  files (`--fix`, `ruff format` without `--check`);
+- direct `mypy`, `pyright`, `basedpyright`, `pyrefly check`, `ruff check` and `ruff format --check`
+  calls, optionally behind `uv run`, `poetry run`, `pdm run`, `hatch run`, `pipenv run` or `python -m`.
+
+Anything not read with certainty adds nothing. A Python-only check (a direct call, or a target whose
+recipe only calls Python tools, directly or through a repository script) is skipped when no Python file,
+Python configuration, the Makefile or one of its scripts, or a workflow changed. Every other check runs
+as written. The CLI skips a check whose program is not installed and says so: CI still runs it.
