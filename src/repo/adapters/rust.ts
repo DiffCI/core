@@ -319,6 +319,89 @@ function navigatesUpward(tokens: ReadonlyArray<{ value: string; literal?: string
   });
 }
 
+/** Doc-comment words that keep a fenced block Rust (rustdoc's doctest attributes). Any other word
+ * (`text`, `toml`, `sh`, ...) makes the block another language unless `rust` is also given. */
+const DOCTEST_ATTRIBUTE = /^(?:rust|ignore(?:-\S+)?|should_panic|no_run|compile_fail|edition\d{4}|standalone_crate|test_harness|allow_fail|E\d{4})$/;
+
+/** Rustdoc compiles and runs the code blocks in doc comments (`///`, `//!`, `/** *\/`, `/*! *\/`)
+ * as doctests, from the crate directory. The input scan skips comments, so this returns the code of
+ * every block that may be Rust: fenced blocks with no other language and indented blocks, with
+ * rustdoc's hidden-line `# ` prefix removed. */
+function doctestCode(source: string): string {
+  const code: string[] = [];
+  for (const group of docComments(source)) {
+    const indent = Math.min(...group.filter(line => line.trim()).map(line => /^\s*/.exec(line)![0].length));
+    let fence: string | undefined; let rust = false; let previousBlank = true; let indented = false;
+    for (const raw of group) {
+      const line = raw.slice(Number.isFinite(indent) ? indent : 0);
+      const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (fence === undefined && marker) {
+        const words = marker[2]!.split(/[\s,{}.]+/).filter(Boolean);
+        fence = marker[1]!; rust = !words.length || words.includes("rust") || words.every(word => DOCTEST_ATTRIBUTE.test(word));
+      } else if (fence !== undefined && marker && marker[1]!.startsWith(fence) && !marker[2]!.trim()) fence = undefined;
+      else if (fence !== undefined) { if (rust) code.push(line.replace(/^\s*#(?: |$)/, "")); }
+      // An indented block (four spaces after a blank line) is a doctest too.
+      else if (/^ {4}/.test(line) && (previousBlank || indented)) { code.push(line.slice(4).replace(/^\s*#(?: |$)/, "")); indented = true; continue; }
+      if (line.trim()) indented = false;
+      previousBlank = !line.trim();
+    }
+  }
+  return code.join("\n");
+}
+
+/** The text of each doc comment in a file, as lines: a run of `///` or `//!` lines, or one `/** *\/`
+ * or `/*! *\/` block (leading `*` removed). Strings, character literals and plain comments are skipped
+ * the way the input scan skips them, so a `"/**"` glob or a commented-out `///` is not a doc comment. */
+function docComments(source: string): string[][] {
+  const groups: string[][] = [];
+  let lineGroup: string[] | undefined; let lineGroupEnd = -1;
+  for (let i = 0; i < source.length;) {
+    if (source.startsWith("//", i)) {
+      const end = source.indexOf("\n", i) < 0 ? source.length : source.indexOf("\n", i);
+      const doc = /^\/\/(?:\/(?!\/)|!)(.*)$/.exec(source.slice(i, end).replace(/\r$/, ""));
+      if (doc) {
+        if (!lineGroup || !/^[ \t]*\r?\n[ \t]*$/.test(source.slice(lineGroupEnd, i))) groups.push(lineGroup = []);
+        lineGroup.push(doc[1]!); lineGroupEnd = end;
+      }
+      i = end; continue;
+    }
+    if (source.startsWith("/*", i)) {
+      const start = i; let depth = 1; i += 2;
+      while (i < source.length && depth) {
+        if (source.startsWith("/*", i)) { depth++; i += 2; }
+        else if (source.startsWith("*/", i)) { depth--; i += 2; }
+        else i++;
+      }
+      if (/^\/\*(?:\*(?![*/])|!)/.test(source.slice(start, start + 4))) {
+        const lines = source.slice(start + 3, depth ? i : i - 2).split(/\r?\n/);
+        const starred = lines.slice(1).filter(line => line.trim()).every(line => /^\s*\*/.test(line));
+        groups.push(starred ? lines.map((line, index) => index ? line.replace(/^\s*\*/, "") : line) : lines);
+      }
+      continue;
+    }
+    const raw = /^[bc]?r(#{0,255})"/.exec(source.slice(i, i + 260));
+    if (raw) { const end = source.indexOf(`"${raw[1]}`, i + raw[0].length); i = end < 0 ? source.length : end + raw[1]!.length + 1; continue; }
+    if (source[i] === '"') { for (i++; i < source.length && source[i] !== '"'; i++) if (source[i] === "\\") i++; i++; continue; }
+    const character = /^'(?:\\.|[^'\\\n])'/.exec(source.slice(i, i + 4));
+    if (character) { i += character[0].length; continue; }
+    const identifier = /^[A-Za-z0-9_]+/.exec(source.slice(i, i + 256));
+    i += identifier ? identifier[0].length : 1;
+  }
+  return groups;
+}
+
+/** The inputs of a Rust file's code and of its doctests. */
+function rustSourceInputs(source: string): ReturnType<typeof rustInputs> {
+  const code = rustInputs(source);
+  const docs = code && rustInputs(doctestCode(source));
+  if (!code || !docs) return undefined;
+  const merged: Record<string, unknown> = { ...code, inputs: [...code.inputs, ...docs.inputs], paths: [...code.paths, ...docs.paths] };
+  // Each flag is set when either scan sets it. Combining them by key keeps that true for a flag
+  // rustInputs gains later (such as one #250 adds), instead of silently dropping the doctests' value.
+  for (const [key, value] of Object.entries(docs)) if (typeof value === "boolean") merged[key] = merged[key] === true || value;
+  return merged as NonNullable<ReturnType<typeof rustInputs>>;
+}
+
 /** A string that names a file or directory rather than ordinary text. */
 function pathLike(value: string): boolean {
   if (!value || value.length > 4096 || /[\0\r\n]/.test(value)) return false;
@@ -503,7 +586,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
       if (!sourceOwner) continue;
-      const scanned = rustInputs(readFileSync(resolve(root, source), "utf8"));
+      const scanned = rustSourceInputs(readFileSync(resolve(root, source), "utf8"));
       if (scanned === undefined) {
         result.blockers.push(`Rust computed includes or path attributes require full validation: ${source}`);
         continue;

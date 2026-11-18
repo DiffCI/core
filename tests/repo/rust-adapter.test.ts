@@ -330,6 +330,38 @@ test("Rust runtime reads of another crate become dependencies; non-rs included c
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("doctest code is scanned like other Rust code; prose and other languages are not", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers=["app", "other"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "",
+    "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]);
+    const scan = (source: string) => {
+      writeFileSync(join(root, "app/src/lib.rs"), source);
+      const result = analyzeRustMetadata(context, output);
+      return { blockers: result.blockers, other: result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "other/Cargo.toml") };
+    };
+    // Rustdoc runs these from the crate directory, so a change to `other` must run app's doctests.
+    for (const source of [
+      '/// ```\n/// let b = std::fs::read_to_string("../other/src/lib.rs").unwrap();\n/// ```\npub fn documented() {}\n',
+      '//! ```no_run\n//! # use std::fs;\n//! let _ = fs::read_dir("../other");\n//! ```\n',
+      '/**\n * ```\n * let b = std::fs::read_to_string("../other/src/lib.rs").unwrap();\n * ```\n */\npub fn documented() {}\n',
+      '/// Reads its neighbour:\n///\n///     let b = std::fs::read_to_string("../other/src/lib.rs").unwrap();\npub fn documented() {}\n',
+    ]) assert.deepEqual(scan(source), { blockers: [], other: true }, source);
+    for (const source of ['/// ```\n/// let b = include_str!("../../other/src/lib.rs");\n/// ```\npub fn documented() {}\n',
+      '/// ```\n/// include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n/// ```\npub fn documented() {}\n']) {
+      assert.ok(scan(source).blockers.some(reason => /Rust (?:computed includes|include outside)/.test(reason)), source);
+    }
+    // Prose, other-language blocks and plain comments name no inputs.
+    for (const source of ['/// Don\'t read "../other" here; see `fs::read_dir("../other")`.\npub fn documented() {}\n',
+      '/// ```text\n/// include_str!("../../other/src/lib.rs")\n/// ```\n/// ```toml\n/// path = "../other"\n/// ```\npub fn documented() {}\n',
+      '// ```\n// let b = std::fs::read_to_string("../other/src/lib.rs");\n// ```\npub fn plain() {}\n']) {
+      assert.deepEqual(scan(source), { blockers: [], other: false }, source);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("ordinary Rust code no longer blocks: fs, process, unsafe, extern crate and metadata fields", () => {
   const source = `extern crate alloc;
 use std::fs::{self, File};
