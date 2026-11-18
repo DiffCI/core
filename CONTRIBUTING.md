@@ -8,7 +8,7 @@ Fork Core, clone your fork, and create a branch. A Node 22 development container
 
 In your PR, explain the changed behavior, include the reproducible fixture and validation results, and identify unsupported cases. Small documentation contributions do not need new tests. Safety and planning changes do.
 
-Open an issue or pull request describing the behavior and a reproducible example. Do not post credentials, customer source, private logs or other confidential data.
+Open an issue or pull request describing the behavior and a reproducible example. To ask before you start, use `#contributing` on the [DiffCI Discord](https://discord.gg/vAftSVeYgk); decisions still get written down in the issue. Do not post credentials, customer source, private logs or other confidential data.
 
 Use Node.js 22.5+ and run `npm ci`, `npm run typecheck`, `npm test`, `npm run build`, `npm run audit:boundary` and `npm run agent:check`, the checks Core CI's `check` job runs (it also runs `npm run benchmark`). `agent:check` fails when a version pinned in the agent plugins, the GitLab and Azure DevOps integrations or `docs/agent-installation.md` differs from the CLI package version. Changes to safety or planning should include a regression test using a synthetic repository. Preserve full-run fallback on insufficient evidence; distinguish advisory selection from executable commands.
 

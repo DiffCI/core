@@ -169,7 +169,7 @@ Each study is a replay on real repositories, with its method, raw data and limit
 | [DiffCI's own CI](https://diffci.com/case-studies/diffci-own-ci) | Cost per job on ephemeral containers, and the bug our own green CI was hiding |
 
 [Star Core](https://github.com/DiffCI/core) · [Volunteer a pilot repository](https://diffci.com/#pilot) · [Find a first contribution](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22).
-Watch → Custom → Releases and Discussions for benchmark results and support updates. [Public roadmap](docs/roadmap.md).
+Watch → Custom → Releases and Discussions for benchmark results and support updates. [Public roadmap](docs/roadmap.md). Quick questions and CI/CD talk: [DiffCI Discord](https://discord.gg/vAftSVeYgk).
 
 This is the standalone Core engine. It analyzes local JavaScript/TypeScript repositories, supported Vue components, root Go modules, conventional Maven reactors, Python projects tested with pytest and, experimentally, Cargo workspaces (Rust support is new and has not yet narrowed a real project's history, so expect full runs there for now), traces dependency impact, infers GitHub Actions structure and proposes test selections with evidence and full-run fallbacks. It works without a DiffCI account, hosted service or API key. See [the release boundary](docs/release-boundary.md) for support limits.
 
