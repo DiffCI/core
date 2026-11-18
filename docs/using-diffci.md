@@ -678,7 +678,7 @@ _Module resource and dependency impact contributed by [@FredApps](https://github
 
 ### Python
 
-These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
+These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.ini`, `.pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
