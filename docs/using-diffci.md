@@ -690,7 +690,7 @@ These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setu
 | `Unresolved relative import in …: ……` | `from .gone import x` after deleting `gone.py` | No |
 | `Unresolved first-party Python import in …: …` | `import shop.generated` where `shop/generated.py` is created by a build step | No |
 | `pytest configuration DiffCI cannot read: …` | `python_files` set to something other than a string or list in `pyproject.toml` | Fix: use a literal string or list |
-| `pytest configuration DiffCI cannot read: …` | A `pytest.toml` or `[tool.pytest]` key that isn't a list of strings, both `[tool.pytest]` and `[tool.pytest.ini_options]` in one `pyproject.toml`, or options above the `[pytest]` table in `pytest.toml` | Fix: use a list of strings, keep one table, and put options under `[pytest]` (pytest 9 rejects all three) |
+| `pytest configuration DiffCI cannot read: …` | A `pytest.toml` or `[tool.pytest]` key that isn't a list of strings, both `[tool.pytest]` and `[tool.pytest.ini_options]` in one `pyproject.toml`, or options above the `[pytest]` table in `pytest.toml`; a quoted or dotted key, or a table header with spaces or quotes inside the brackets; or a `pytest.toml`, `.pytest.toml` or `[tool.pytest]` next to another pytest config that pytest before 9 would read instead | Fix: use a list of strings, keep one table, and put options under `[pytest]` (pytest 9 rejects all three); write bare keys and `[pytest]` / `[tool.pytest]` headers; keep a single pytest config file |
 | `Python analysis found no Python files` | Project files with every `.py` file inside a virtual environment | No |
 
 ### Vue

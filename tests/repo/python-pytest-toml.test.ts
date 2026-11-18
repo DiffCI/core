@@ -17,13 +17,11 @@ describe("pytest 9 pytest.toml and [tool.pytest] (#160)", () => {
     assert.deepEqual(settingsOf({ ".pytest.toml": "[pytest]\ntestpaths = [\"integration\"]\n" }).testpaths, ["integration"]);
   });
 
-  it("puts pytest.toml before .pytest.toml, and both before pytest.ini, pyproject.toml, tox.ini and setup.cfg", () => {
+  it("puts pytest.toml before .pytest.toml, and both before [tool.pytest] in pyproject.toml", () => {
     const rest = {
-      "pytest.ini": "[pytest]\ntestpaths = ini\n",
-      ".pytest.ini": "[pytest]\ntestpaths = hidden-ini\n",
       "pyproject.toml": "[tool.pytest]\ntestpaths = [\"pyproject\"]\n",
-      "tox.ini": "[pytest]\ntestpaths = tox\n",
-      "setup.cfg": "[tool:pytest]\ntestpaths = cfg\n",
+      "tox.ini": "[tox]\nenvlist = py\n",
+      "setup.cfg": "[metadata]\nname = x\n",
     };
     assert.deepEqual(settingsOf({ "pytest.toml": "[pytest]\ntestpaths = [\"a\"]\n", ".pytest.toml": "[pytest]\ntestpaths = [\"b\"]\n", ...rest }).testpaths, ["a"]);
     assert.deepEqual(settingsOf({ ".pytest.toml": "[pytest]\ntestpaths = [\"b\"]\n", ...rest }).testpaths, ["b"]);
@@ -59,7 +57,9 @@ describe("pytest 9 pytest.toml and [tool.pytest] (#160)", () => {
   });
 
   it("uses whichever pyproject.toml table has options when the other is empty", () => {
-    assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest]\ntestpaths = [\"a\"]\n[tool.pytest.ini_options]\n" }).testpaths, ["a"]);
+    // pytest 9 reads [tool.pytest] here, but pytest 8 reads the empty [tool.pytest.ini_options].
+    assert.equal(settingsOf({ "pyproject.toml": "[tool.pytest]\ntestpaths = [\"a\"]\n[tool.pytest.ini_options]\n" }).unreadable,
+      "pyproject.toml [tool.pytest] is ignored before pytest 9, which reads [tool.pytest.ini_options]");
     assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest]\n# nothing yet\n[tool.pytest.ini_options]\ntestpaths = \"b\"\n" }).testpaths, ["b"]);
     assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest]\n", "tox.ini": "[pytest]\ntestpaths = tox\n" }).testpaths, ["tox"]);
   });
@@ -71,5 +71,54 @@ describe("pytest 9 pytest.toml and [tool.pytest] (#160)", () => {
       assert.equal(computeAnalysis([{ path, changeType: "modified" }]).configChanged, true, path);
     }
     assert.equal(computeAnalysis([{ path: "docs/pytest.toml", changeType: "modified" }]).configChanged, false);
+  });
+
+  it("reads indented keys in every TOML pytest table", () => {
+    assert.deepEqual(settingsOf({ "pytest.toml": "[pytest]\n  python_files = ['check_*.py']\n\ttestpaths = [\"tests\"]\n" }),
+      { ...defaults, pythonFiles: ["check_*.py"], testpaths: ["tests"] });
+    assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest]\n  python_files = [\"check_*.py\"]\n" }).pythonFiles, ["check_*.py"]);
+    assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest.ini_options]\n  python_files = \"check_*.py\"\n  testpaths = [\"t\"]\n" }),
+      { ...defaults, pythonFiles: ["check_*.py"], testpaths: ["t"] });
+    assert.equal(settingsOf({ "pytest.toml": "[pytest]\n  testpaths = \"tests\"\n" }).unreadable, "pytest.toml testpaths");
+  });
+
+  it("can't read a TOML pytest table with a quoted or dotted key", () => {
+    for (const files of <Array<Record<string, string>>>[
+      { "pytest.toml": "[pytest]\n\"testpaths\" = [\"tests\"]\n" },
+      { "pytest.toml": "[pytest]\n  'python_files' = ['check_*.py']\n" },
+      { "pyproject.toml": "[tool.pytest.ini_options]\n\"python_files\" = \"check_*.py\"\n" },
+      { "pyproject.toml": "[tool.pytest]\noptions.testpaths = [\"tests\"]\n" },
+    ]) assert.match(settingsOf(files).unreadable ?? "", /key DiffCI can't classify$/, JSON.stringify(files));
+    // A quoted string inside an array is a value, not a key.
+    assert.deepEqual(settingsOf({ "pytest.toml": "[pytest]\ntestpaths = [\n  \"a\",\n  \"b=c\",\n]\n" }).testpaths, ["a", "b=c"]);
+  });
+
+  it("reads a pytest table header followed by a comment", () => {
+    assert.deepEqual(settingsOf({ "pytest.toml": "[pytest] # selection\npython_files = [\"check_*.py\"]\n" }).pythonFiles, ["check_*.py"]);
+    assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest]  # native\ntestpaths = [\"a\"]\n" }).testpaths, ["a"]);
+    assert.deepEqual(settingsOf({ "pyproject.toml": "[tool.pytest.ini_options] # ini\ntestpaths = \"b\"\n" }).testpaths, ["b"]);
+    assert.deepEqual(settingsOf({ "tox.ini": "[pytest] ; for pytest\ntestpaths = tox\n" }).testpaths, ["tox"]);
+    assert.deepEqual(settingsOf({ "setup.cfg": "[tool:pytest] # for pytest\ntestpaths = cfg\n" }).testpaths, ["cfg"]);
+  });
+
+  it("can't read a TOML pytest table header written with spaces or quotes", () => {
+    for (const files of <Array<Record<string, string>>>[
+      { "pytest.toml": "[ pytest ]\ntestpaths = [\"tests\"]\n" },
+      { "pyproject.toml": "[tool.\"pytest\"]\ntestpaths = [\"tests\"]\n" },
+      { "pyproject.toml": "[tool . pytest . ini_options]\ntestpaths = \"tests\"\n" },
+    ]) assert.match(settingsOf(files).unreadable ?? "", /pytest table header DiffCI can't read$/, JSON.stringify(files));
+  });
+
+  it("can't read a native config when pytest before 9 would read another file", () => {
+    const toml = "[pytest]\ntestpaths = [\"a\"]\n";
+    for (const [older, text] of [["pytest.ini", ""], [".pytest.ini", "[pytest]\ntestpaths = b\n"], ["tox.ini", "[pytest]\ntestpaths = b\n"], ["setup.cfg", "[tool:pytest]\n"]] as const) {
+      assert.equal(settingsOf({ "pytest.toml": toml, [older]: text }).unreadable, `pytest.toml is ignored before pytest 9, which reads ${older}`);
+    }
+    assert.equal(settingsOf({ ".pytest.toml": "", "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = \"b\"\n" }).unreadable,
+      ".pytest.toml is ignored before pytest 9, which reads pyproject.toml");
+    assert.equal(settingsOf({ "pyproject.toml": "[tool.pytest]\ntestpaths = [\"a\"]\n", "setup.cfg": "[tool:pytest]\ntestpaths = b\n" }).unreadable,
+      "pyproject.toml is ignored before pytest 9, which reads setup.cfg");
+    // Files pytest doesn't take its configuration from don't matter.
+    assert.deepEqual(settingsOf({ "pytest.toml": toml, "tox.ini": "[tox]\nenvlist = py\n", "setup.cfg": "[metadata]\nname = x\n" }).testpaths, ["a"]);
   });
 });

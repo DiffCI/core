@@ -163,68 +163,107 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
       if (plugins.length) settings.plugins = plugins;
     } else settings[key] = values;
   };
-  const section = (text: string, header: string): string | undefined =>
-    new RegExp(`^\\[${header.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text)?.[1];
+  const escape = (text: string) => text.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  const isToml = (file: string) => file.endsWith(".toml");
+  // A table header may be indented and followed by a comment (`[pytest] # selection`). TOML also allows
+  // spaces inside the brackets and quoted keys (`[ pytest ]`, `[tool."pytest"]`), which this reader doesn't
+  // match: a header that only matches with spaces and quotes removed makes the file unreadable instead.
+  const section = (file: string, text: string, header: string): string | undefined => {
+    const comment = isToml(file) ? "#" : "#;";
+    return new RegExp(`^[ \\t]*\\[${escape(header)}\\][ \\t]*(?:[${comment}].*)?$([\\s\\S]*?)(?=^[ \\t]*\\[|(?![\\s\\S]))`, "m").exec(text)?.[1];
+  };
+  const looseHeader = (file: string, text: string, header: string): boolean =>
+    isToml(file) && [...text.matchAll(/^[ \t]*\[([^\]\n]*)\]/gm)].some((match) =>
+      match[1]!.replace(/[\s"']/g, "") === header && section(file, match[0]!.trim(), header) === undefined);
   const hasEntries = (body: string) => /^[ \t]*[^\s#]/m.test(body);
+  const keyAt = (key: string) => `^[ \\t]*${key}[ \\t]*=`;
+  // A quoted or dotted key (`"testpaths" = …`, `ini_options.testpaths = …`) can't be told apart from the
+  // keys selection reads, so a TOML table with one is unreadable.
+  const unclassified = (body: string) => /^[ \t]*(?:"[^"\n]*"|'[^'\n]*'|[A-Za-z0-9_-]+)[ \t]*\./m.test(body) ||
+    /^[ \t]*(?:"[^"\n]*"|'[^'\n]*')[ \t]*=/m.test(body);
   // pytest 9's native TOML mode (`pytest.toml`, `[tool.pytest]`): every key selection reads is a list of
   // strings, and each `addopts` item is one argument. Any other type is an error in pytest, so it can't be read.
   const readNative = (file: string, body: string) => {
+    if (unclassified(body)) { settings.unreadable = `${file} key DiffCI can't classify`; return settings; }
     for (const key of keys) {
-      const array = new RegExp(`^${key}\\s*=\\s*(?=\\[)`, "m").exec(body);
+      const array = new RegExp(`${keyAt(key)}[ \\t]*(?=\\[)`, "m").exec(body);
       if (array) {
         const values = readTomlStringArray(body, array.index + array[0].length);
         if (values) apply(key, values);
         else settings.unreadable = `${file} ${key}`;
-      } else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+      } else if (new RegExp(keyAt(key), "m").test(body)) settings.unreadable = `${file} ${key}`;
     }
     return settings;
+  };
+  const order = [["pytest.toml", "pytest"], [".pytest.toml", "pytest"], ["pytest.ini", "pytest"], [".pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const;
+  // pytest before 9 ignores `pytest.toml`, `.pytest.toml` and `[tool.pytest]`, and uses the first of the
+  // other files that matches. When a native config wins and such a file also exists, the answer depends on
+  // the installed pytest, so it can't be read.
+  const olderPytestFile = (from: number): string | undefined => {
+    for (const [file, header] of order.slice(from)) {
+      const text = read(file);
+      if (text === undefined || file === ".pytest.toml") continue;
+      if (file === "pytest.ini" || file === ".pytest.ini" || section(file, text, header) !== undefined) return file;
+    }
+    return undefined;
+  };
+  const native = (file: string, body: string | undefined, index: number) => {
+    const older = olderPytestFile(index);
+    if (older) { settings.unreadable = `${file} is ignored before pytest 9, which reads ${older}`; return settings; }
+    return body === undefined ? settings : readNative(file, body);
   };
   // pytest's search order. `pytest.toml`, `.pytest.toml`, `pytest.ini` and `.pytest.ini` match even when
   // empty or without their `[pytest]` table, and then pytest uses its defaults; the other files only match
   // with their section. The first match wins and options are never merged.
-  for (const [file, header] of [["pytest.toml", "pytest"], [".pytest.toml", "pytest"], ["pytest.ini", "pytest"], [".pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
+  for (const [index, [file, header]] of order.entries()) {
     const text = read(file);
     if (text === undefined) continue;
-    if (file === "pytest.toml" || file === ".pytest.toml") {
-      const body = section(text, "pytest");
-      if (body !== undefined) return readNative(file, body);
-      // pytest rejects options written above any table.
-      if (hasEntries(text.split(/^\[/m, 1)[0]!)) settings.unreadable = `${file} options outside [pytest]`;
+    if (looseHeader(file, text, "pytest") || looseHeader(file, text, "tool.pytest") || looseHeader(file, text, "tool.pytest.ini_options")) {
+      settings.unreadable = `${file} pytest table header DiffCI can't read`;
       return settings;
+    }
+    if (file === "pytest.toml" || file === ".pytest.toml") {
+      const body = section(file, text, "pytest");
+      // pytest rejects options written above any table.
+      if (body === undefined && hasEntries(text.split(/^[ \t]*\[/m, 1)[0]!)) { settings.unreadable = `${file} options outside [pytest]`; return settings; }
+      return native(file, body, index + 1);
     }
     if (file === "pyproject.toml") {
       // `[tool.pytest]` holds native TOML values, `[tool.pytest.ini_options]` INI-style ones. pytest refuses a
       // file that sets both, and an `ini_options` key inside `[tool.pytest]` is a form this reader doesn't parse.
-      const native = section(text, "tool.pytest");
-      const ini = section(text, header);
-      if (native !== undefined && /^ini_options\s*[.=]/m.test(native)) { settings.unreadable = `${file} [tool.pytest] ini_options`; return settings; }
-      if (native !== undefined && hasEntries(native)) {
+      const nativeBody = section(file, text, "tool.pytest");
+      const ini = section(file, text, header);
+      if (nativeBody !== undefined && new RegExp(`^[ \\t]*ini_options[ \\t]*[.=]`, "m").test(nativeBody)) { settings.unreadable = `${file} [tool.pytest] ini_options`; return settings; }
+      if (nativeBody !== undefined && hasEntries(nativeBody)) {
         if (ini !== undefined && hasEntries(ini)) { settings.unreadable = `${file} [tool.pytest] and [tool.pytest.ini_options]`; return settings; }
-        return readNative(file, native);
+        // An empty [tool.pytest.ini_options] beside it is what pytest 8 reads.
+        if (ini !== undefined) { settings.unreadable = `${file} [tool.pytest] is ignored before pytest 9, which reads [tool.pytest.ini_options]`; return settings; }
+        return native(file, nativeBody, index + 1);
       }
     }
-    const body = section(text, header);
+    const body = section(file, text, header);
     if (body === undefined) {
       if (file === "pytest.ini" || file === ".pytest.ini") return settings;
       continue;
     }
+    if (file === "pyproject.toml" && unclassified(body)) { settings.unreadable = `${file} key DiffCI can't classify`; return settings; }
     for (const key of keys) {
       if (file === "pyproject.toml") {
-        const match = new RegExp(`^${key}\\s*=\\s*("[^"]*"|'[^']*')`, "m").exec(body);
-        const array = new RegExp(`^${key}\\s*=\\s*(?=\\[)`, "m").exec(body);
+        const match = new RegExp(`${keyAt(key)}[ \\t]*("[^"]*"|'[^']*')`, "m").exec(body);
+        const array = new RegExp(`${keyAt(key)}[ \\t]*(?=\\[)`, "m").exec(body);
         // A multi-line string would otherwise match as an empty one. Its contents are read as one string;
         // a basic string's line-ending backslash only joins lines. An unterminated one cannot be read.
-        const multiline = new RegExp(`^${key}\\s*=\\s*("""|'{3})([\\s\\S]*?)\\1`, "m").exec(body);
+        const multiline = new RegExp(`${keyAt(key)}[ \\t]*("""|'{3})([\\s\\S]*?)\\1`, "m").exec(body);
         if (multiline) apply(key, splitList(multiline[1] === '"""' ? multiline[2]!.replace(/\\\r?\n/g, " ") : multiline[2]!));
-        else if (new RegExp(`^${key}\\s*=\\s*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+        else if (new RegExp(`${keyAt(key)}[ \\t]*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
         else if (array) {
           const values = readTomlStringArray(body, array.index + array[0].length);
           if (values) apply(key, key === "addopts" ? values.flatMap(splitList) : values);
           else settings.unreadable = `${file} ${key}`;
         } else if (match) apply(key, splitList(match[1]!));
-        else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+        else if (new RegExp(keyAt(key), "m").test(body)) settings.unreadable = `${file} ${key}`;
       } else {
-        // INI values continue on indented lines.
+        // INI values continue on indented lines, so a key starts at the beginning of a line.
         const match = new RegExp(`^${key}\\s*=\\s*(.*(?:\\r?\\n[ \\t]+.*)*)`, "m").exec(body);
         if (match) apply(key, splitList(match[1]!));
       }
