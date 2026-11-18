@@ -262,6 +262,7 @@
     "tests/repo/go-runtime-inputs.test.ts",
     "tests/repo/go-scope-local-replace.test.ts",
     "tests/repo/export-reach.test.ts",
+    "tests/repo/maven-failsafe-names.test.ts",
     "tests/repo/path-literals.test.ts",
     "tests/repo/graph.project-references.test.ts",
     "tests/repo/graph.test.ts",
