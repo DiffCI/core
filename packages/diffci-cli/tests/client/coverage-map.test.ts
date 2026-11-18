@@ -37,6 +37,26 @@ test("maps each node:test file to the modules it loads, the files it reads and t
   }
 });
 
+test("records a file a test reads by a path relative to its working directory", () => {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-coverage-relative-"));
+  try {
+    execFileSync("git", ["init", "--quiet"], { cwd: dir });
+    write(dir, "package.json", JSON.stringify({ type: "module" }));
+    write(dir, "fixtures/orders.json", "[1, 2]\n");
+    write(dir, "locales/en.json", "{}\n");
+    write(dir, "test/orders.test.js", [
+      "import test from 'node:test'; import assert from 'node:assert/strict'; import { readFileSync, readdirSync } from 'node:fs';",
+      "test('orders', () => { assert.equal(JSON.parse(readFileSync('fixtures/orders.json', 'utf8')).length, 2); assert.equal(readdirSync('locales').length, 1); });",
+    ].join("\n"));
+    const run = buildCoverageMap(dir, "node --test test/orders.test.js", { timeoutMs: 120_000, nodeOptions: "" });
+    assert.equal(run.execution.exitCode, 0, run.execution.stderrTail);
+    assert.ok(run.map!.tests["test/orders.test.js"]!.includes("fixtures/orders.json"), "a fixture read by a relative path");
+    assert.ok(run.map!.tests["test/orders.test.js"]!.includes("locales/"), "a directory listed by a relative path");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("reports when no node:test process ran under the probe", () => {
   const dir = mkdtempSync(join(tmpdir(), "diffci-coverage-none-"));
   try {

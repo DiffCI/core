@@ -7,7 +7,8 @@
  * the refusal has to happen here.
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -357,5 +358,105 @@ describe("Azure Pipelines context", () => {
 
   it("does not read Azure variables outside Azure Pipelines", () => {
     assert.equal(readCiEnvironment({ BUILD_REASON: "PullRequest", BUILD_REPOSITORY_NAME: "acme/app" }).provider, "local");
+  });
+});
+
+describe("a push that creates its branch", () => {
+  const ORIGIN_MAIN = "refs/remotes/origin/main";
+  const MAIN_TIP = "d".repeat(40);
+
+  it("uses the merge base with the default branch on GitHub, so every pushed commit is in the range", () => {
+    const event = withEventPayload({ before: ZERO, repository: { default_branch: "main" } });
+    try {
+      const result = resolveCommitRange({
+        env: { GITHUB_EVENT_NAME: "push", GITHUB_SHA: HEAD, GITHUB_EVENT_PATH: event.path },
+        git: fakeGit({ known: [HEAD, MERGE_BASE], revs: { [ORIGIN_MAIN]: MAIN_TIP, [`${HEAD}^`]: BASE }, mergeBase: MERGE_BASE }),
+      });
+      assert.deepEqual(result, { ok: true, range: { baseSha: MERGE_BASE, headSha: HEAD, source: "push-event", mergeBaseSha: MERGE_BASE } });
+    } finally {
+      rmSync(event.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the merge base with CI_DEFAULT_BRANCH on GitLab", () => {
+    const result = resolveCommitRange({
+      env: { GITLAB_CI: "true", CI_PIPELINE_SOURCE: "push", CI_COMMIT_SHA: HEAD, CI_COMMIT_BEFORE_SHA: ZERO, CI_DEFAULT_BRANCH: "main" },
+      git: fakeGit({ known: [HEAD, MERGE_BASE], revs: { [ORIGIN_MAIN]: MAIN_TIP, [`${HEAD}^`]: BASE }, mergeBase: MERGE_BASE }),
+    });
+    assert.deepEqual(result, { ok: true, range: { baseSha: MERGE_BASE, headSha: HEAD, source: "push-event", mergeBaseSha: MERGE_BASE } });
+  });
+
+  it("falls back to the labelled head-parent range when the default branch is not in the checkout", () => {
+    const event = withEventPayload({ before: ZERO, repository: { default_branch: "main" } });
+    try {
+      const result = resolveCommitRange({
+        env: { GITHUB_EVENT_NAME: "push", GITHUB_SHA: HEAD, GITHUB_EVENT_PATH: event.path },
+        git: fakeGit({ known: [HEAD], revs: { [`${HEAD}^`]: BASE }, mergeBase: MERGE_BASE }),
+      });
+      assert.deepEqual(result, { ok: true, range: { baseSha: BASE, headSha: HEAD, source: "head-parent" } });
+    } finally {
+      rmSync(event.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to head-parent when the head is already on the default branch, or the branch name is not a plain ref", () => {
+    for (const [defaultBranch, mergeBase] of [["main", HEAD], ["--output=x", MERGE_BASE], ["a..b", MERGE_BASE]] as const) {
+      const event = withEventPayload({ before: ZERO, repository: { default_branch: defaultBranch } });
+      try {
+        const result = resolveCommitRange({
+          env: { GITHUB_EVENT_NAME: "push", GITHUB_SHA: HEAD, GITHUB_EVENT_PATH: event.path },
+          git: fakeGit({ known: [HEAD, MERGE_BASE], revs: { [`refs/remotes/origin/${defaultBranch}`]: MAIN_TIP, [`${HEAD}^`]: BASE }, mergeBase }),
+        });
+        assert.deepEqual(result, { ok: true, range: { baseSha: BASE, headSha: HEAD, source: "head-parent" } }, defaultBranch);
+      } finally {
+        rmSync(event.dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("covers an earlier commit of the same push in a real repository", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-first-push-"));
+    const run = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+      return result.stdout.trim();
+    };
+    const realGit: GitRunner = (args) => {
+      const result = spawnSync("git", args, { cwd: dir, encoding: "utf8" });
+      return result.status === 0 ? { ok: true, stdout: result.stdout } : { ok: false, error: result.stderr };
+    };
+    try {
+      run("init", "--quiet", "-b", "main");
+      run("config", "user.email", "test@diffci.local");
+      run("config", "user.name", "Test");
+      mkdirSync(join(dir, "src"));
+      writeFileSync(join(dir, "src/alpha.js"), "export const alpha = () => 1;\n");
+      writeFileSync(join(dir, "src/beta.js"), "export const beta = () => 2;\n");
+      run("add", "-A");
+      run("commit", "--quiet", "-m", "initial");
+      const mainTip = run("rev-parse", "HEAD");
+      run("update-ref", "refs/remotes/origin/main", mainTip);
+      run("checkout", "--quiet", "-b", "feature");
+      writeFileSync(join(dir, "src/alpha.js"), "export const alpha = () => 5;\n");
+      run("commit", "--quiet", "-am", "change alpha");
+      writeFileSync(join(dir, "src/beta.js"), "export const beta = () => 2; // tidy\n");
+      run("commit", "--quiet", "-am", "touch beta");
+      const head = run("rev-parse", "HEAD");
+
+      const event = withEventPayload({ before: ZERO, repository: { default_branch: "main" } });
+      try {
+        const result = resolveCommitRange({ env: { GITHUB_EVENT_NAME: "push", GITHUB_SHA: head, GITHUB_EVENT_PATH: event.path }, git: realGit });
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
+        assert.equal(result.range.baseSha, mainTip);
+        assert.equal(result.range.source, "push-event");
+        const changed = run("diff", "--name-only", `${result.range.baseSha}..${result.range.headSha}`).split("\n").sort();
+        assert.deepEqual(changed, ["src/alpha.js", "src/beta.js"]);
+      } finally {
+        rmSync(event.dir, { recursive: true, force: true });
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

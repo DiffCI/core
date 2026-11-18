@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { analyzeRepository } from "../../src/repo/analyzer.js";
 import { hydrateDependencyGraph } from "../../src/repo/graph.js";
@@ -187,7 +188,7 @@ test("Cargo dependency edges select the changed crate and transitive normal/dev/
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("workspace build scripts are scoped to their crate; proc macros and feature-gated targets", () => {
+test("workspace build scripts are scoped to their crate; proc macros and required-feature targets do not block", () => {
   const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["gen", "leaf", "other"]\n' };
   for (const name of ["gen", "leaf", "other"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "", [`${name}/tests/api.rs`]: "#[test] fn works() {}" });
   files["gen/build.rs"] = 'fn main() { println!("cargo:rerun-if-changed=build.rs"); let _ = std::fs::read_dir("."); }';
@@ -207,8 +208,12 @@ test("workspace build scripts are scoped to their crate; proc macros and feature
     assert.ok(!graph.transitiveDependentsOf("leaf/src/lib.rs").includes("other/tests/api.rs"));
     const procMacro = analyzeRustMetadata(context, metadata(root, [packages[0]!, { ...packages[1]!, targets: [target(root, "leaf/src/lib.rs", "leaf", "proc-macro")] }, packages[2]!]));
     assert.deepEqual(procMacro.blockers, []);
-    const featureTarget = analyzeRustMetadata(context, metadata(root, [packages[0]!, { ...packages[1]!, targets: [{ ...packages[1]!.targets[0]!, "required-features": ["extra"] }] }, packages[2]!]));
-    assert.ok(featureTarget.blockers.some(reason => reason.includes("targets requiring features")));
+    // A target with required features no longer blocks the repository: it is recorded so the planner
+    // keeps its package whole, and Cargo decides whether it runs, as in the full run.
+    const featureTarget = analyzeRustMetadata(context, metadata(root, [packages[0]!, { ...packages[1]!, targets: [packages[1]!.targets[0]!, { ...packages[1]!.targets[1]!, "required-features": ["extra", "base"] }] }, packages[2]!]));
+    assert.deepEqual(featureTarget.blockers, []);
+    assert.deepEqual(featureTarget.rustTestTargets?.["leaf/tests/api.rs"], { name: "api", kind: "test", requiredFeatures: ["base", "extra"] });
+    assert.deepEqual(featureTarget.rustTestTargets?.["leaf/src/lib.rs"], { name: "leaf", kind: "lib" });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -267,6 +272,27 @@ test("Rust includes model literal crate-local inputs and reject external or comp
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("byte and C raw strings cannot hide an include or path attribute", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers = ["app", "other"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "",
+    "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]);
+    // A raw string takes no escapes, so its closing quote follows the backslash. The trailing comment
+    // keeps the quote count even, as an editor or rustfmt would leave it.
+    for (const prefix of ["br", "cr", "br#", "cr#"]) {
+      const close = prefix.endsWith("#") ? '"#' : '"';
+      for (const hidden of ['include!(concat!(env!("OUT_DIR"), "/generated.rs"));', '#[path = "../../other/src/lib.rs"] mod external;']) {
+        writeFileSync(join(root, "app/src/lib.rs"), `pub const P: &[u8] = ${prefix}"\\${close};\n${hidden}\n// "\n`);
+        assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => /Rust (?:computed includes|include outside)/.test(reason)), `${prefix}: ${hidden}`);
+      }
+    }
+    writeFileSync(join(root, "app/src/lib.rs"), 'pub const P: &[u8] = br#"include_str!("missing") and \\"#;\npub const C: &core::ffi::CStr = cr"\\";\n');
+    assert.deepEqual(analyzeRustMetadata(context, output).blockers, []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Rust runtime reads of another crate become dependencies; non-rs included code still falls back", () => {
   const files = { "Cargo.toml": '[workspace]\nmembers=["app", "other", "third"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "",
     "app/src/body.inc": 'const VALUE: &str = include_str!("../../other/src/lib.rs");', "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "",
@@ -306,6 +332,38 @@ test("Rust runtime reads of another crate become dependencies; non-rs included c
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("doctest code is scanned like other Rust code; prose and other languages are not", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers=["app", "other"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "",
+    "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]);
+    const scan = (source: string) => {
+      writeFileSync(join(root, "app/src/lib.rs"), source);
+      const result = analyzeRustMetadata(context, output);
+      return { blockers: result.blockers, other: result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "other/Cargo.toml") };
+    };
+    // Rustdoc runs these from the crate directory, so a change to `other` must run app's doctests.
+    for (const source of [
+      '/// ```\n/// let b = std::fs::read_to_string("../other/src/lib.rs").unwrap();\n/// ```\npub fn documented() {}\n',
+      '//! ```no_run\n//! # use std::fs;\n//! let _ = fs::read_dir("../other");\n//! ```\n',
+      '/**\n * ```\n * let b = std::fs::read_to_string("../other/src/lib.rs").unwrap();\n * ```\n */\npub fn documented() {}\n',
+      '/// Reads its neighbour:\n///\n///     let b = std::fs::read_to_string("../other/src/lib.rs").unwrap();\npub fn documented() {}\n',
+    ]) assert.deepEqual(scan(source), { blockers: [], other: true }, source);
+    for (const source of ['/// ```\n/// let b = include_str!("../../other/src/lib.rs");\n/// ```\npub fn documented() {}\n',
+      '/// ```\n/// include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n/// ```\npub fn documented() {}\n']) {
+      assert.ok(scan(source).blockers.some(reason => /Rust (?:computed includes|include outside)/.test(reason)), source);
+    }
+    // Prose, other-language blocks and plain comments name no inputs.
+    for (const source of ['/// Don\'t read "../other" here; see `fs::read_dir("../other")`.\npub fn documented() {}\n',
+      '/// ```text\n/// include_str!("../../other/src/lib.rs")\n/// ```\n/// ```toml\n/// path = "../other"\n/// ```\npub fn documented() {}\n',
+      '// ```\n// let b = std::fs::read_to_string("../other/src/lib.rs");\n// ```\npub fn plain() {}\n']) {
+      assert.deepEqual(scan(source), { blockers: [], other: false }, source);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("ordinary Rust code no longer blocks: fs, process, unsafe, extern crate and metadata fields", () => {
   const source = `extern crate alloc;
 use std::fs::{self, File};
@@ -335,6 +393,28 @@ mod tests {
     const result = analyzeRustMetadata({ repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) }, metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]));
     assert.deepEqual(result.blockers, []);
     assert.ok(!result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "other/Cargo.toml"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("literal paths from the workspace root reach the crate they name", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers=["crates/app", "crates/other", "crates/third"]\n',
+    ".cargo/config.toml": '[env]\nCARGO_WORKSPACE_DIR = { value = "", relative = true }\n',
+    "crates/app/Cargo.toml": manifest("app"), "crates/app/src/lib.rs": "", "crates/other/Cargo.toml": manifest("other"), "crates/other/src/lib.rs": "",
+    "crates/third/Cargo.toml": manifest("third"), "crates/third/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "crates/app", "app"), pkg(root, "crates/other", "other"), pkg(root, "crates/third", "third")]);
+    const reads = (source: string) => {
+      writeFileSync(join(root, "crates/app/src/lib.rs"), source);
+      const result = analyzeRustMetadata(context, output);
+      assert.deepEqual(result.blockers, [], source);
+      return result.edges.filter(edge => edge.from === "crates/app/Cargo.toml" && edge.to.endsWith("Cargo.toml")).map(edge => edge.to).sort();
+    };
+    assert.deepEqual(reads('#[test] fn header() { let p = std::path::Path::new(env!("CARGO_WORKSPACE_DIR")).join("crates/other/src/lib.rs"); std::fs::read_to_string(p).unwrap(); }'), ["crates/other/Cargo.toml"]);
+    assert.deepEqual(reads('#[test] fn all() { let _ = std::fs::read_dir(concat!(env!("CARGO_WORKSPACE_DIR"), "crates/")); }'), ["crates/other/Cargo.toml", "crates/third/Cargo.toml"]);
+    // The root itself, or a path that only makes sense inside the crate, is not a read of another crate.
+    assert.deepEqual(reads('#[test] fn local() { let _ = std::fs::read("tests/data/input.bin"); let _ = format!("{}/{}", "a", "b"); let _ = std::path::Path::new("/"); }'), []);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -422,6 +502,13 @@ test("Cargo rejects symlink escapes and duplicate target source identities", (t)
 });
 
 const cargoAvailable = spawnSync("cargo", ["--version"], { encoding: "utf8", windowsHide: true }).status === 0;
+// Windows can hold the test executables Cargo just ran (or an antivirus scan of them) open for a moment
+// after they exit, so removing a built fixture fails with EPERM or EBUSY. Retry, as rimraf does.
+const BUILT_FIXTURE = { recursive: true, force: true, maxRetries: 10, retryDelay: 200 } as const;
+/** A cold `cargo test` build of a small workspace can take over a minute on a hosted Windows runner. A
+ * spawnSync timeout kills cargo but not the rustc processes it started, which then keep the fixture
+ * locked, so the cleanup error hid the timeout (#253, `check (windows-latest, 24)`). */
+const CARGO_BUILD_TIMEOUT = 300_000;
 for (const nested of [false, true]) test(`Cargo executable maps ${nested ? "nested" : "two-member"} workspace without modifying manifests`, { skip: !cargoAvailable }, () => {
   const child = nested ? "parent/child" : "child";
   const files = { "Cargo.toml": `[workspace]\nmembers = ["parent", "${child}"]\nresolver = "2"\n`, "parent/Cargo.toml": manifest("parent"),
@@ -433,6 +520,7 @@ for (const nested of [false, true]) test(`Cargo executable maps ${nested ? "nest
     const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
     assert.deepEqual(result.blockers, []);
     assert.equal(result.testPackages[`${child}/tests/check.rs`], "child");
+    assert.equal(result.rustAllMembersTested, true);
     assert.equal(readFileSync(join(root, "Cargo.toml"), "utf8"), files["Cargo.toml"]);
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -448,7 +536,7 @@ test("Cargo executable maps a single crate", { skip: !cargoAvailable }, () => {
     assert.deepEqual(result.blockers, []);
     assert.deepEqual(result.testPackages, { "src/lib.rs": "single", "tests/api.rs": "single" });
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
 test("Cargo executable includes optional and dev-dependencies without changing Cargo.lock", { skip: !cargoAvailable }, () => {
@@ -465,7 +553,51 @@ test("Cargo executable includes optional and dev-dependencies without changing C
     assert.ok(result.edges.some(edge => edge.from === "consumer/Cargo.toml" && edge.to === "leaf/Cargo.toml"));
     assert.ok(result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "consumer/Cargo.toml"));
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
+  } finally { rmSync(root, BUILT_FIXTURE); }
+});
+
+test("a member that shares its name with a dependency is named NAME@VERSION for Cargo", () => {
+  const files = { "Cargo.toml": '[workspace]\nmembers=["dup", "app"]\n', "dup/Cargo.toml": manifest("dup"), "dup/src/lib.rs": "",
+    "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const member = { ...pkg(root, "dup", "dup"), version: "0.2.0" };
+    const older = { id: "registry+https://github.com/rust-lang/crates.io-index#dup@0.1.0", name: "dup", version: "0.1.0", source: "registry+https://github.com/rust-lang/crates.io-index",
+      manifest_path: join(tmpdir(), "registry", "dup-0.1.0", "Cargo.toml"), targets: [target(tmpdir(), "registry/dup-0.1.0/src/lib.rs", "dup")], dependencies: [], features: {} };
+    const app = pkg(root, "app", "app");
+    const resolve = { nodes: [{ id: member.id, dependencies: [older.id] }, { id: older.id, dependencies: [] }, { id: app.id, dependencies: [] }] };
+    const result = analyzeRustMetadata(context, metadata(root, [member, older, app], { workspace_members: [member.id, app.id], workspace_default_members: [member.id, app.id], resolve }));
+    assert.deepEqual(result.blockers, []);
+    assert.deepEqual(result.testPackages, { "dup/src/lib.rs": "dup@0.2.0", "app/src/lib.rs": "app" });
+    // Without a version, or with the same version, nothing can tell Cargo which one is meant.
+    for (const version of [undefined, "0.1.0"]) {
+      const unversioned = { ...member, version };
+      const blocked = analyzeRustMetadata(context, metadata(root, [unversioned, older, app], { workspace_members: [member.id, app.id], workspace_default_members: [member.id, app.id], resolve }));
+      assert.ok(blocked.blockers.some(reason => reason.includes("Cargo package dup has no unambiguous package specification")), String(version));
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Cargo executable runs a member that shares its name with a Git dependency", { skip: !cargoAvailable || spawnSync("git", ["--version"]).status !== 0 }, () => {
+  const upstream = mkdtempSync(join(tmpdir(), "diffci-rust-git-"));
+  const files = { "Cargo.toml": '[workspace]\nmembers=["dup", "app"]\nresolver="2"\n', "dup/src/lib.rs": "#[cfg(test)] mod t { #[test] fn ok() {} }",
+    "dup/Cargo.toml": '[package]\nname = "dup"\nversion = "0.2.0"\nedition = "2021"\n\n[dependencies]\n'
+      + `old = { package = "dup", git = "${pathToFileURL(upstream).href}", default-features = false }\n`,
+    "app/Cargo.toml": manifest("app") + '\n[dependencies]\ndup = { path = "../dup" }\n', "app/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    writeFileSync(join(upstream, "Cargo.toml"), '[package]\nname = "dup"\nversion = "0.1.0"\nedition = "2021"\n\n[features]\ndefault = ["std"]\nstd = []\n');
+    mkdirSync(join(upstream, "src")); writeFileSync(join(upstream, "src/lib.rs"), "");
+    const git = (...args: string[]) => assert.equal(spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: upstream, windowsHide: true }).status, 0, args.join(" "));
+    git("init", "-q"); git("add", "-A"); git("commit", "-qm", "init");
+    assert.equal(spawnSync("cargo", ["generate-lockfile"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
+    const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
+    assert.deepEqual(result.blockers, []);
+    assert.equal(result.testPackages["dup/src/lib.rs"], "dup@0.2.0");
+    const run = spawnSync("cargo", ["test", "--offline", "--locked", "-p", result.testPackages["dup/src/lib.rs"]!], { cwd: root, encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(upstream, { recursive: true, force: true }); }
 });
 
 test("Cargo configuration cannot silently change the metadata command or build context", () => {
@@ -486,13 +618,48 @@ test("Cargo feature-unified unit tests are recorded per crate instead of blockin
   const root = fixture(files);
   try {
     assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
-    const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+    const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: CARGO_BUILD_TIMEOUT });
     assert.equal(full.status, 0, full.stderr);
     assert.match(full.stdout, /feature_unified_test: test/);
     const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
     assert.deepEqual(result.blockers, []);
     // Testing `a` alone would drop its `extra` feature; `b` sees `a` exactly as the full run does.
     assert.deepEqual(result.rustFeatureCoverage, { deficits: { a: ["a v0.1.0"] }, units: [{ crates: ["a", "b"], covers: ["a v0.1.0"] }, { crates: ["b"], covers: ["a v0.1.0"] }] });
+  } finally { rmSync(root, BUILT_FIXTURE); }
+});
+
+test("literal #[path] modules inside their crate narrow; other path attributes still fall back", () => {
+  const lib = '#[cfg_attr(unix, path = "sys/unix.rs")]\n#[cfg_attr(windows, path = "sys/windows.rs")]\n#[allow(dead_code)]\npub(crate) mod sys;\n'
+    + 'mod a { #[path = "inner.rs"] pub mod b; }\n#[path = "../shared/x.rs"] mod shared;\n';
+  const files = { "Cargo.toml": '[workspace]\nmembers = ["app", "other"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": lib,
+    "app/src/sys/unix.rs": "", "app/src/sys/windows.rs": "", "app/src/a/inner.rs": "", "app/shared/x.rs": "", "app/src/plain.rs": "",
+    "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]);
+    const result = analyzeRustMetadata(context, output);
+    assert.deepEqual(result.blockers, []);
+    for (const module of ["app/src/sys/unix.rs", "app/src/sys/windows.rs", "app/src/a/inner.rs", "app/shared/x.rs"]) {
+      assert.ok(result.sourcePaths.includes(module), module);
+      assert.ok(result.edges.some(edge => edge.from === "app/src/lib.rs" && edge.to === module), module);
+    }
+    assert.ok(!result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "other/Cargo.toml"));
+    // A path module outside the target's tree makes its own directory part of the inventory.
+    writeFileSync(join(root, "app/shared/untracked.rs"), "");
+    assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => reason.includes("Incomplete Rust source inventory")));
+    rmSync(join(root, "app/shared/untracked.rs"));
+    for (const [file, source] of [
+      ["app/src/lib.rs", '#[path = "../../other/src/lib.rs"] mod external;'], ["app/src/lib.rs", '#[path = "missing.rs"] mod missing;'],
+      ["app/src/lib.rs", '#[path = "sys"] mod sys { mod unix; }'], ["app/src/lib.rs", '#![path = "sys/unix.rs"]'],
+      ["app/src/lib.rs", '#[path = concat!("sys/", "unix.rs")] mod sys;'], ["app/src/lib.rs", '#[doc(path = "sys/unix.rs")] mod sys;'],
+      // Inside an inline module of a file that is not a crate root or mod.rs, the base depends on how it was loaded.
+      ["app/src/plain.rs", 'mod q { #[path = "../sys/unix.rs"] mod z; }'],
+    ]) {
+      writeFileSync(join(root, file), source);
+      assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => /Rust (?:computed includes|include outside)/.test(reason)), source);
+      writeFileSync(join(root, file), file === "app/src/lib.rs" ? lib : "");
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -543,6 +710,16 @@ test("Cargo configuration blocks only build-changing keys, wherever Cargo reads 
       assert.equal(blocked(), true, key);
       delete process.env[key];
     }
+    // TOML lets the same keys be quoted or written as an inline table; Cargo applies them all.
+    for (const config of ['build = { rustflags = ["--cfg", "custom"] }\n', '"build".rustflags = ["--cfg", "custom"]\n',
+      "[build]\n'rustflags' = ['--cfg', 'custom']\n", '["target".x86_64-unknown-linux-gnu]\nrunner = "qemu"\n',
+      'unstable = { build-std = ["std"] }\n', 'patch = { crates-io = { serde = { path = "../serde" } } }\n']) {
+      writeFileSync(join(home, "config.toml"), config);
+      assert.equal(blocked(), true, config);
+    }
+    writeFileSync(join(home, "config.toml"), '"net".retry = 3\nterm = { color = "always" }\n');
+    assert.equal(blocked(), false);
+    rmSync(join(home, "config.toml"));
     writeFileSync(join(root, ".cargo/config.toml"), '[build]\nrustc-wrapper = "./wrapper"\n');
     assert.ok(analyzeRustMetadata(context, metadata(root, [pkg(root, "", "app")])).blockers.some(reason => reason.includes("Custom Cargo configuration")));
   } finally {
@@ -581,7 +758,7 @@ test("a realistic Cargo workspace now narrows: build script, local derive crate,
     // like the full run.
     assert.deepEqual(result.rustFeatureCoverage?.deficits, { cli: ["core v0.1.0"], core: ["core v0.1.0"], server: ["core v0.1.0"] });
     assert.deepEqual(result.rustFeatureCoverage?.units, [{ crates: ["cli", "codegen", "core", "server"], covers: ["core v0.1.0"] }]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
 test("only crates plain cargo test covers are test targets (root package or default-members)", { skip: !cargoAvailable }, () => {
@@ -593,14 +770,15 @@ test("only crates plain cargo test covers are test targets (root package or defa
     const root = fixture(files);
     try {
       assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
-      const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+      const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: CARGO_BUILD_TIMEOUT });
       assert.equal(full.status, 0, full.stderr);
       assert.doesNotMatch(full.stdout, /member: test/, layout);
       const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
       assert.deepEqual(result.blockers, [], layout);
       assert.deepEqual(Object.values(result.testPackages), ["root"], layout);
+      assert.equal(result.rustAllMembersTested, false, layout);
       assert.ok(result.sourcePaths.includes("member/src/lib.rs"), layout);
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { rmSync(root, BUILT_FIXTURE); }
   }
 });
 
@@ -614,4 +792,43 @@ test("Cargo metadata without default members falls back", () => {
     assert.ok(result.blockers.some(reason => reason.includes("without default workspace members")));
     assert.deepEqual(result.testFiles, []);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a required-feature target keeps its package whole, so the selected command runs what plain cargo test runs", { skip: !cargoAvailable }, () => {
+  // `gated` has an always-on integration test and one that needs the `extra` feature, which only the
+  // `enabler` crate turns on. The full run enables it (feature unification across the workspace);
+  // `cargo test -p gated` alone does not, and the feature check must catch that.
+  for (const enabled of [false, true]) {
+    const files: Record<string, string> = {
+      "Cargo.toml": '[workspace]\nmembers = ["gated", "other"' + (enabled ? ', "enabler"' : "") + ']\nresolver = "2"\n',
+      "gated/Cargo.toml": manifest("gated") + '\n[features]\nextra = []\n\n[[test]]\nname = "needs_extra"\nrequired-features = ["extra"]\n',
+      "gated/src/lib.rs": "pub fn value() -> u8 { 1 }\n", "gated/tests/plain.rs": "#[test] fn plain() { assert_eq!(gated::value(), 1); }\n",
+      "gated/tests/needs_extra.rs": "#[test] fn needs_extra() {}\n",
+      "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "#[cfg(test)] mod tests { #[test] fn other() {} }\n",
+    };
+    if (enabled) Object.assign(files, { "enabler/Cargo.toml": manifest("enabler") + '\n[dependencies]\ngated = { path = "../gated", features = ["extra"] }\n', "enabler/src/lib.rs": "pub use gated::value;\n" });
+    const root = fixture(files);
+    try {
+      assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
+      const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
+      assert.deepEqual(result.blockers, [], String(enabled));
+      assert.deepEqual(result.rustTestTargets?.["gated/tests/needs_extra.rs"], { name: "needs_extra", kind: "test", requiredFeatures: ["extra"] });
+      const list = (args: string[]) => {
+        const run = spawnSync("cargo", ["test", "--offline", "--locked", ...args, "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 120_000 });
+        assert.equal(run.status, 0, run.stderr);
+        return [...run.stdout.matchAll(/^\w+: test$/gm)].map(match => match[0]).sort();
+      };
+      const full = list([]);
+      assert.equal(full.includes("needs_extra: test"), enabled);
+      if (!enabled) {
+        // Without the enabler, the gated target is skipped by the full run and by `-p gated` alike.
+        assert.deepEqual(result.rustFeatureCoverage, { deficits: {}, units: [] });
+        assert.deepEqual(list(["-p", "gated"]).filter(name => name !== "other: test"), full.filter(name => name !== "other: test"));
+      } else {
+        // `-p gated` alone would skip needs_extra; the coverage record says gated needs enabler.
+        assert.deepEqual(result.rustFeatureCoverage?.deficits.gated, ["gated v0.1.0"]);
+        assert.ok(list(["-p", "gated", "-p", "enabler"]).includes("needs_extra: test"));
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
 });

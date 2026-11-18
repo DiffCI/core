@@ -80,14 +80,19 @@ describe("parseNumstat", () => {
     assert.strictEqual(map.get("src/image.png"), true);
   });
 
-  it("handles rename numstat records", () => {
-    const buffer = buildNumstat(
-      ["5\t2", "src/old.ts", "src/new.ts"],
-      ["-\t-", "bin/data.bin", "bin/moved.bin"],
-    );
+  // `git diff-tree --numstat -z` writes a rename or copy as "added\tdeleted\t" with an empty path, then
+  // the old and new paths as their own NUL-terminated fields (#175).
+  it("handles rename numstat records in git's -z format", () => {
+    const buffer = Buffer.from("5\t2\t\0src/old.ts\0src/new.ts\0-\t-\t\0bin/data.bin\0bin/moved.bin\0", "utf8");
     const map = parseNumstat(buffer);
     assert.strictEqual(map.get("src/new.ts"), false);
     assert.strictEqual(map.get("bin/moved.bin"), true);
+    assert.deepStrictEqual([...map.keys()].sort(), ["bin/moved.bin", "src/new.ts"]);
+  });
+
+  it("keeps a tab inside a path, which -z leaves unquoted", () => {
+    const map = parseNumstat(Buffer.from("1\t1\tdocs/a\tb.md\0-\t-\t\0x.bin\0y\tz.bin\0", "utf8"));
+    assert.deepStrictEqual([...map.entries()], [["docs/a\tb.md", false], ["y\tz.bin", true]]);
   });
 });
 

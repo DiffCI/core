@@ -161,6 +161,26 @@ function covers(target: string, path: string, extensions: readonly string[]): bo
   return inside && extensions.includes(posix.extname(path).slice(1));
 }
 
+/** Other names configuration uses for a file type: `@eslint/markdown` lints `.md`, `eslint-plugin-yml` `.yaml`. */
+const EXTENSION_ALIASES: Readonly<Record<string, readonly string[]>> = { md: ["markdown"], yml: ["yaml"], yaml: ["yml"], jsonc: ["json"], json5: ["json"] };
+
+/**
+ * Extensions of changed files that the ESLint configuration names (2026-11-17). A directory target lints
+ * every file a flat config's `files` (or an eslintrc `overrides[].files`) reaches, not only JavaScript and
+ * TypeScript: `...vue.configs["flat/recommended"]` makes `eslint src` lint `src/App.vue`. A changed file's
+ * extension that appears in the configuration text, or a plugin named for it, therefore counts as linted.
+ */
+function configuredExtensions(changes: readonly ChangedPath[], texts: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const { path } of changes) {
+    const extension = posix.extname(path).slice(1).toLowerCase();
+    if (!/^\w+$/.test(extension) || ESLINT_EXTENSIONS.includes(extension) || found.has(extension)) continue;
+    const names = [extension, ...(EXTENSION_ALIASES[extension] ?? [])];
+    if (texts.some((text) => names.some((name) => new RegExp(`\\b${name}\\b`, "i").test(text)))) found.add(extension);
+  }
+  return [...found];
+}
+
 /** Root configuration files of the tool that exist, and the paths each one names relatively. */
 function configReferences(tool: Tool, input: NarrowingInput, explicit: string | undefined): { texts: string[]; referenced: string[] } {
   const candidates = explicit ? [posix.normalize(explicit)] : tool.name === "eslint"
@@ -224,7 +244,8 @@ function decide(check: GateCheck, input: NarrowingInput, cache: RootTextCache): 
 
   const extensions = tool.name === "eslint" && values.has("--ext")
     ? [...ESLINT_EXTENSIONS, ...values.get("--ext")!.split(",").map((ext) => ext.replace(/^\./, ""))]
-    : tool.extensions;
+    : tool.name === "eslint" ? [...ESLINT_EXTENSIONS, ...configuredExtensions(input.changes, texts)]
+      : tool.extensions;
   if (tool.name === "eslint") {
     const nested = input.files?.find((path) => path.includes("/") && ESLINT_CONFIG.test(posix.basename(path)) && !posix.basename(path).endsWith("ignore"));
     const importRules = texts.some((text) => IMPORT_RULES.test(text));

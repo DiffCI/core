@@ -15,8 +15,19 @@ describe("isConventionalCiConfigPath", () => {
     }
   });
 
+  // #183: a change to any of these decides which commands CI runs, like a GitHub workflow.
+  it("recognises the conventional pipeline files of other CI providers", () => {
+    for (const path of [
+      "azure-pipelines.yml", "azure-pipelines.yaml", "ci/azure-pipelines.yml", ".azure-pipelines/test.yml", ".azuredevops/ci.yml",
+      ".circleci/config.yml", "bitbucket-pipelines.yml", ".travis.yml", "Jenkinsfile", "ci/Jenkinsfile", ".buildkite/pipeline.yml",
+    ]) {
+      assert.equal(isConventionalCiConfigPath(path), true, path);
+    }
+  });
+
   it("does not claim unrelated files", () => {
-    for (const path of ["ci/test.yml", ".gitlab/issue_templates/bug.md", "docs/gitlab-ci.md", "src/gitlab-ci.ts", "config.yml"]) {
+    for (const path of ["ci/test.yml", ".gitlab/issue_templates/bug.md", "docs/gitlab-ci.md", "src/gitlab-ci.ts", "config.yml",
+      "docs/azure-pipelines.md", ".azuredevops/pull_request_template.md", "src/Jenkinsfile.ts", "src/travis.yml"]) {
       assert.equal(isConventionalCiConfigPath(path), false, path);
     }
   });
@@ -136,5 +147,19 @@ test("an unrelated YAML file in a GitLab repository is not treated as pipeline c
     const { plan } = await analyzeCheckout({ repoPath: r.root, base: r.base, head: "HEAD" });
     assert.ok(!plan.fallbackReasons.some((reason) => reason.startsWith("CI workflow definition(s) changed")));
     assert.ok(plan.selectedTests.includes("src/value.test.js"));
+  } finally { rmSync(r.root, { recursive: true, force: true }); }
+});
+
+test("an Azure Pipelines change that a test reads still runs every test (#183)", async () => {
+  const azure = "steps:\n  - script: npm test\n";
+  const r = repository({
+    "azure-pipelines.yml": azure,
+    "src/ci.test.js": "import { readFileSync } from 'node:fs';\nreadFileSync('azure-pipelines.yml', 'utf8');\n",
+  }, { "azure-pipelines.yml": "steps:\n  - script: npm test -- src/ci.test.js\n" });
+  try {
+    const { plan } = await analyzeCheckout({ repoPath: r.root, base: r.base, head: "HEAD" });
+    assert.equal(plan.mode, "FULL");
+    assert.deepEqual(plan.skippedTests, []);
+    assert.ok(plan.fallbackReasons.some((reason) => reason.startsWith("CI workflow definition(s) changed")));
   } finally { rmSync(r.root, { recursive: true, force: true }); }
 });

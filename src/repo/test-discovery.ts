@@ -584,7 +584,10 @@ function globToRegex(pattern: string): RegExp {
     return `\0X${groups.length - 1}\0`;
   });
 
-  working = working.replace(/\\/g, "\\\\").replace(/\./g, "\\.");
+  // `+`, `$` and `^` (outside a `[^...]` class) are literal in globs, as in picomatch: Remix route files
+  // (`users.$id.tsx`) and remix-flat-routes folders (`_auth+/`) use them. A bare `**` matches every path.
+  working = working.replace(/\\/g, "\\\\").replace(/\./g, "\\.").replace(/[+$]|(?<!\[)\^/g, "\\$&");
+  if (working === "**") return /^.*$/;
   working = working
     .replace(/\*\*\//g, "\0GS\0")
     .replace(/\/\*\*/g, "\0SG\0")

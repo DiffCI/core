@@ -230,6 +230,10 @@ async function handle(request: JsonRpcRequest): Promise<void> {
       return;
     case "notifications/initialized":
       return;
+    // Either side may ping at any time, before or after initialization; the answer is an empty result.
+    case "ping":
+      success(id, {});
+      return;
     case "tools/list":
       success(id, { tools });
       return;

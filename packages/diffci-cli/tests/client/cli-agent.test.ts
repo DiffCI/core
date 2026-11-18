@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { npmCliPath } from "../helpers/npm-cli.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(ROOT, "src", "client", "cli.ts");
 const PACKAGE_VERSION = (JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string }).version;
@@ -21,7 +23,7 @@ describe("agent-facing CLI commands", () => {
     assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\]\s+\[--no-agent-hooks\] \[--force\]/);
     assert.match(result.stdout, /diffci agent-stop --agent claude\|codex\|cursor/);
     assert.match(result.stdout, /diffci mcp/);
-    assert.match(result.stdout, /diffci verify \[--changed \| --base <sha> --head <sha>\]/);
+    assert.match(result.stdout, /diffci verify \[--changed \| --staged \| --paths <file\.\.\.> \| --paths-from <file\|-> \| --base <sha> --head <sha>\]/);
     assert.match(result.stdout, /diffci check \[--repo <path>\]/);
     assert.match(result.stdout, /check analyzes the change, runs inferred full and selected commands/);
   });
@@ -202,12 +204,7 @@ describe("agent-facing CLI commands", () => {
       const tarball = join(packageDir, (JSON.parse(pack) as Array<{ filename: string }>)[0]!.filename);
 
       writeFileSync(join(consumerDir, "package.json"), `${JSON.stringify({ name: "consumer", private: true, scripts: { test: "node --test" } }, null, 2)}\n`, "utf8");
-      const realNpm = process.platform === "win32"
-        ? execFileSync("where.exe", ["npm.cmd"], { encoding: "utf8" }).split(/\r?\n/).find(Boolean)!
-        : execFileSync("which", ["npm"], { encoding: "utf8" }).trim();
-      const npmCli = process.platform === "win32"
-        ? join(dirname(realNpm), "node_modules", "npm", "bin", "npm-cli.js")
-        : join(execFileSync(realNpm, ["root", "-g"], { encoding: "utf8" }).trim(), "npm", "bin", "npm-cli.js");
+      const npmCli = npmCliPath();
       const shimScript = `import { spawnSync } from "node:child_process";\nconst args = process.argv.slice(2).map((arg) => arg.startsWith("@diffci.com/diffci@") ? process.env.DIFFCI_TEST_TARBALL : arg);\nconst result = spawnSync(process.execPath, [process.env.DIFFCI_REAL_NPM_CLI, ...args], { stdio: "inherit" });\nprocess.exit(result.status ?? 1);\n`;
       writeFileSync(join(shimDir, "npm-shim.mjs"), shimScript, "utf8");
       if (process.platform === "win32") {

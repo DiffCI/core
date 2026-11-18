@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
-import { isPytestFile, pythonAdapter, pythonInterpreter, readPytestSettings, resolvePythonGraph, type PythonFileImports } from "../../src/repo/adapters/python.js";
+import { isPytestFile, PYTHON_INTERPRETER_CANDIDATES, pythonAdapter, pythonInterpreter, readPytestSettings, resolvePythonGraph, type PythonFileImports } from "../../src/repo/adapters/python.js";
 import { computeAnalysis } from "../../src/git/git-diff.js";
 import type { ChangedFile, GitDelta } from "../../src/git/types.js";
 import { buildDependencyGraph, classifyRepositoryProject } from "../../src/repo/graph.js";
@@ -67,9 +67,99 @@ describe("pytest settings", () => {
   });
 });
 
-const interpreter = pythonInterpreter(process.cwd());
+describe("pytest configuration file precedence (#159)", () => {
+  it("uses pytest's defaults when pytest.ini has no [pytest] section, even if pyproject.toml has settings", () => {
+    const files: Record<string, string> = {
+      "pytest.ini": "# pytest configuration lives here\n",
+      "pyproject.toml": "[tool.pytest.ini_options]\npython_files = [\"check_*.py\"]\n",
+    };
+    const settings = readPytestSettings((path) => files[path]);
+    assert.deepEqual(settings, { pythonFiles: ["test_*.py", "*_test.py"], testpaths: [], pythonpath: [] });
+    assert.ok(isPytestFile("test_x.py", settings));
+    assert.ok(!isPytestFile("check_x.py", settings));
+  });
 
-describe("Python repositories end to end", { skip: interpreter ? false : "no Python 3 interpreter on PATH" }, () => {
+  it("stops at an empty pytest.ini", () => {
+    const files: Record<string, string> = { "pytest.ini": "", "tox.ini": "[pytest]\ntestpaths = integration\n" };
+    assert.deepEqual(readPytestSettings((path) => files[path]).testpaths, []);
+  });
+
+  it("reads .pytest.ini, after pytest.ini and before pyproject.toml", () => {
+    const hidden = readPytestSettings((path) => path === ".pytest.ini" ? "[pytest]\npython_files = check_*.py\n" : undefined);
+    assert.deepEqual(hidden.pythonFiles, ["check_*.py"]);
+    assert.ok(isPytestFile("check_x.py", hidden));
+    const both = readPytestSettings((path) => ({ "pytest.ini": "[pytest]\ntestpaths = a\n", ".pytest.ini": "[pytest]\ntestpaths = b\n" } as Record<string, string>)[path]);
+    assert.deepEqual(both.testpaths, ["a"]);
+    const overToml = readPytestSettings((path) => ({ ".pytest.ini": "", "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = [\"c\"]\n" } as Record<string, string>)[path]);
+    assert.deepEqual(overToml.testpaths, []);
+  });
+
+  it("detects a repository whose only pytest file is .pytest.ini as a Python project", () => {
+    assert.ok(pythonAdapter.detect({ files: [".pytest.ini", "test_a.py"] } as never));
+  });
+});
+
+describe("pyproject.toml pytest lists (#158)", () => {
+  const toml = (body: string) => readPytestSettings((path) => path === "pyproject.toml" ? `[tool.pytest.ini_options]\n${body}` : undefined);
+
+  it("ignores a comment that contains a bracket", () => {
+    assert.deepEqual(toml('python_files = [\n  "test_*.py",  # see [docs]\n  "check_*.py",\n]\n').pythonFiles, ["test_*.py", "check_*.py"]);
+  });
+
+  it("ignores a plain comment between entries", () => {
+    assert.deepEqual(toml('python_files = [\n  "test_*.py",  # unit\n  "check_*.py",\n]\n').pythonFiles, ["test_*.py", "check_*.py"]);
+  });
+
+  it("keeps a ] or , inside a quoted string", () => {
+    assert.deepEqual(toml('testpaths = ["tests/[a]", "integration"]\n').testpaths, ["tests/[a]", "integration"]);
+    assert.deepEqual(toml("testpaths = ['a,b', \"c # d\"]\n").testpaths, ["a,b", "c # d"]);
+  });
+
+  it("reads a multi-line list with a trailing comma", () => {
+    const settings = toml('testpaths = [\n  "tests",\n  "integration",\n]\npythonpath = ["src"]\n');
+    assert.deepEqual(settings.testpaths, ["tests", "integration"]);
+    assert.deepEqual(settings.pythonpath, ["src"]);
+    assert.equal(settings.unreadable, undefined);
+  });
+
+  it("marks lists it cannot read with certainty as unreadable instead of guessing", () => {
+    for (const body of ['testpaths = ["a", 1]\n', 'testpaths = ["a", ["b"]]\n', 'testpaths = ["a",,"b"]\n', 'testpaths = ["a"\n', 'testpaths = ["""a"""]\n', 'testpaths = ["\\u0061"]\n']) {
+      assert.equal(toml(body).unreadable, "pyproject.toml testpaths", body);
+    }
+  });
+});
+
+describe("pytest settings from tox.ini and setup.cfg (#161)", () => {
+  it("reads python_files and testpaths from tox.ini [pytest], including a continued value", () => {
+    const tox = readPytestSettings((path) => path === "tox.ini"
+      ? "[tox]\nenvlist = py312\n\n[pytest]\npython_files = check_*.py\n    *_spec.py\ntestpaths = tests\n    integration\n\n[testenv]\ncommands = pytest\n"
+      : undefined);
+    assert.deepEqual(tox, { pythonFiles: ["check_*.py", "*_spec.py"], testpaths: ["tests", "integration"], pythonpath: [] });
+    assert.ok(isPytestFile("integration/check_a.py", tox));
+    assert.ok(!isPytestFile("integration/test_a.py", tox));
+  });
+
+  it("reads the same keys from setup.cfg [tool:pytest]", () => {
+    const cfg = readPytestSettings((path) => path === "setup.cfg"
+      ? "[metadata]\nname = x\n\n[tool:pytest]\npython_files = check_*.py\ntestpaths =\n    tests\n    integration\npythonpath = src\n"
+      : undefined);
+    assert.deepEqual(cfg, { pythonFiles: ["check_*.py"], testpaths: ["tests", "integration"], pythonpath: ["src"] });
+  });
+
+  it("skips a tox.ini without [pytest] in favour of setup.cfg", () => {
+    const files: Record<string, string> = {
+      "tox.ini": "[tox]\nenvlist = py312\n\n[testenv]\ncommands = pytest\n",
+      "setup.cfg": "[tool:pytest]\ntestpaths = from_setup_cfg\n",
+    };
+    assert.deepEqual(readPytestSettings((path) => files[path]).testpaths, ["from_setup_cfg"]);
+  });
+});
+
+// Only decides whether Python is available at all. Assertions use the interpreter the analysis recorded:
+// a second probe can pick another launcher on Windows (#304).
+const pythonAvailable = pythonInterpreter(process.cwd()) !== undefined;
+
+describe("Python repositories end to end", { skip: pythonAvailable ? false : "no Python 3 interpreter on PATH" }, () => {
   function fixture(files: Record<string, string>): string {
     const root = mkdtempSync(join(tmpdir(), "diffci-python-"));
     for (const [path, content] of Object.entries(files)) {
@@ -108,7 +198,14 @@ describe("Python repositories end to end", { skip: interpreter ? false : "no Pyt
       assert.equal(pricing.fallbackRequired, false, pricing.fallbackReasons.join("; "));
       assert.deepEqual(pricing.affectedTests.map((t) => t.path), ["tests/test_cart.py", "tests/test_pricing.py"]);
       const plan = planSelectiveTestCommands(graph.profile, pricing.affectedTests.map((t) => t.path));
-      assert.deepEqual(plan.commands, [{ executable: interpreter![0], args: [...interpreter!.slice(1), "-m", "pytest", "tests/test_cart.py", "tests/test_pricing.py"] }]);
+      const interpreter = graph.profile.pythonInterpreter;
+      assert.ok(interpreter, "the analysis records the interpreter it found");
+      assert.ok(PYTHON_INTERPRETER_CANDIDATES.some((candidate) => candidate.join(" ") === interpreter.join(" ")), `unexpected interpreter ${interpreter.join(" ")}`);
+      // No adapter blockers above: this interpreter already ran the import analysis, so it is a working Python 3.
+      assert.deepEqual(plan.commands, [{ executable: interpreter[0], args: [...interpreter.slice(1), "-m", "pytest", "tests/test_cart.py", "tests/test_pricing.py"] }]);
+      // The runner follows whatever the analysis recorded, including the Windows launcher.
+      const launcher = planSelectiveTestCommands({ ...graph.profile, pythonInterpreter: ["py", "-3"] }, ["tests/test_cart.py"]);
+      assert.deepEqual(launcher.commands, [{ executable: "py", args: ["-3", "-m", "pytest", "tests/test_cart.py"] }]);
 
       const emails = analyze([{ path: "src/shop/emails.py", changeType: "modified" }]);
       assert.deepEqual(emails.affectedTests.map((t) => t.path), ["tests/test_emails.py"]);

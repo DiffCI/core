@@ -23,7 +23,24 @@ function tags(xml: string, name: string): string[] {
 
 function first(xml: string, name: string): string | undefined { return tags(xml, name)[0]; }
 
-function parsePom(path: string, xml: string): Pom {
+/** Drops `<!-- ... -->` comments in one left-to-right pass. An unterminated comment is kept, as before. */
+function stripXmlComments(source: string): string {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const start = source.indexOf("<!--", i);
+    if (start === -1) return out + source.slice(i);
+    const end = source.indexOf("-->", start + 4);
+    if (end === -1) return out + source.slice(start);
+    out += source.slice(i, start);
+    i = end + 3;
+  }
+}
+
+function parsePom(path: string, source: string): Pom {
+  // Commented-out elements are not part of the model: an old <artifactId> in a comment must not
+  // become the module's identity.
+  const xml = stripXmlComments(source);
   const dir = posix.dirname(path) === "." ? "" : posix.dirname(path);
   const parent = first(xml, "parent");
   const own = xml.replace(/<parent\b[^>]*>[\s\S]*?<\/parent>/, "");
@@ -48,9 +65,10 @@ function under(dir: string, path: string): boolean { return !dir || path === dir
 function owningPom(poms: Pom[], file: string): Pom | undefined {
   return poms.filter(pom => under(pom.dir, file)).sort((a, b) => b.dir.length - a.dir.length)[0];
 }
+/** Surefire's default includes (Test*, *Test, *Tests, *TestCase) and Failsafe's (IT*, *IT, *ITCase). */
 function isTest(path: string): boolean {
   return /\/src\/test\/(?:java|kotlin)\//.test("/" + path) &&
-    /^(?:Test.*|.*(?:Test|Tests|TestCase|IT))\.(?:java|kt)$/.test(posix.basename(path));
+    /^(?:Test.*|IT.*|.*(?:Test|Tests|TestCase|IT|ITCase))\.(?:java|kt)$/.test(posix.basename(path));
 }
 
 export function analyzeMaven(context: AdapterContext): AdapterContribution {

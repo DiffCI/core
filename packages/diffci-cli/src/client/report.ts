@@ -50,7 +50,7 @@ export interface ObservationCommitRange {
 
 export interface ObservationRepository {
   provider: "github" | "gitlab" | "unknown";
-  /** "owner/name". The only repository identifier sent; never a URL carrying a token. */
+  /** "owner/name", or GitLab's full "group/subgroup/name" path. The only repository identifier sent; never a URL carrying a token. */
   ownerName?: string;
   defaultBranch?: string;
   /** GitHub's numeric repository id when the environment supplies it - survives a rename. */
@@ -108,6 +108,17 @@ export interface NonInterferenceEvidence {
   reportWrittenOutsideRepository: boolean;
   /** Findings from the workflow guard (src/client/workflow-guard.ts), embedded on every run. */
   workflowFindings: WorkflowFinding[];
+}
+
+/**
+ * Whether the evidence shows the observer may have changed the checkout: a before/after pair differs,
+ * or evidence captured before is missing after. With no evidence at all - the path is not a git
+ * checkout, so the observation refused - there was nothing to change and nothing to report (#278).
+ * This only decides what is shown; `worktreeUnchanged` stays false, so such a run never narrows.
+ */
+export function worktreeChangeSuspected(evidence: Pick<NonInterferenceEvidence, "headShaBefore" | "headShaAfter" | "worktreeDigestBefore" | "worktreeDigestAfter" | "worktreeUnchanged">): boolean {
+  if (evidence.worktreeUnchanged) return false;
+  return [evidence.headShaBefore, evidence.headShaAfter, evidence.worktreeDigestBefore, evidence.worktreeDigestAfter].some((value) => value !== undefined);
 }
 
 export type WorkflowFindingSeverity = "BLOCKING" | "WARNING" | "INFO";

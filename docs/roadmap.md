@@ -12,7 +12,7 @@ This is an evaluation roadmap, not a delivery guarantee. Existing support limits
 
 ## Language support
 
-JS/TS, Vue, Go, Maven and Python (pytest) are supported today. Django, Rust, PHP and Gradle are next and open for contributors; each tracking issue lists small steps that are one PR each:
+JS/TS, Vue, Go, Maven and Python (pytest) are supported today, and Rust (Cargo) experimentally: it has not yet narrowed a real project's history, so expect full runs there for now (see [Rust adapter safety](using-diffci.md#rust-adapter-safety)). Django, PHP and Gradle are next and open for contributors. Each tracking issue lists small steps that are one PR each:
 
 - [Python (pytest)](https://github.com/DiffCI/core/issues/61) ([design partners](https://github.com/DiffCI/core/issues/75))
 - [Django](https://github.com/DiffCI/core/issues/87)

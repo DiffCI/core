@@ -6,11 +6,13 @@ import { dirname, join } from "node:path";
 import { before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { buildClient } from "../helpers/build-client.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const MCP = join(ROOT, "dist-client", "src", "client", "mcp.js");
 
 before(() => {
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.client.json"], { cwd: ROOT, stdio: "pipe" });
+  buildClient();
 });
 function frame(message: unknown): string {
   const body = JSON.stringify(message);
@@ -80,6 +82,25 @@ describe("DiffCI MCP server", () => {
       "diffci_init",
       "diffci_verify_workflow",
     ]);
+  });
+
+  it("answers ping with an empty result, as the MCP base protocol requires", async () => {
+    const child = spawn(process.execPath, [MCP], { cwd: ROOT, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stdin.write(frame({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }));
+    child.stdin.write(frame({ jsonrpc: "2.0", id: 2, method: "ping" }));
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { clearInterval(poll); child.kill(); reject(new Error("timed out waiting for the ping response")); }, 5000);
+      const poll = setInterval(() => {
+        if (parseFrames(stdout).length >= 2) { clearTimeout(timeout); clearInterval(poll); resolve(); }
+      }, 25);
+    });
+    child.kill();
+    const ping = (parseFrames(stdout) as Array<{ id?: number; result?: unknown; error?: unknown }>).find((message) => message.id === 2);
+    assert.equal(ping?.error, undefined);
+    assert.deepEqual(ping?.result, {});
   });
 
   it("offers diffci_select_tests a staged or paths scope and rejects malformed scope arguments", async () => {

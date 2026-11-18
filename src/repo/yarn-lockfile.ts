@@ -39,7 +39,7 @@ const IDENTIFIERS = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
 const EXACT_VERSION = new RegExp(`^${NUMERIC_PART}\\.${NUMERIC_PART}\\.${NUMERIC_PART}(?:-${IDENTIFIERS})?(?:\\+${IDENTIFIERS})?$`);
 const RANGE_VERSION = new RegExp(`^v?(?:${NUMERIC_PART}|[xX*])(?:\\.(?:${NUMERIC_PART}|[xX*])){0,2}$`);
 
-function isExactVersion(value: string): boolean {
+export function isExactVersion(value: string): boolean {
   if (!EXACT_VERSION.test(value)) return false;
   const prerelease = /^[^-]+-([^+]+)/.exec(value)?.[1];
   return !prerelease || prerelease.split(".").every((part) => !/^0[0-9]+$/.test(part));
@@ -56,7 +56,7 @@ function isRangeVersion(value: string): boolean {
 }
 
 /** A deliberately limited registry semver grammar; tags and protocol requests remain unsupported. */
-function isRegistryRequest(value: string): boolean {
+export function isRegistryRequest(value: string): boolean {
   if (!value || value.length > 512 || value !== value.trim()) return false;
   return value.split("||").every((alternative) => {
     const range = alternative.trim();

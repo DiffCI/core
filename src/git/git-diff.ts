@@ -15,6 +15,7 @@ import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
 import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
+import { berryLockAffectedDependencies, berryNodeModulesConfig, berryRuntimeConfig } from "../repo/yarn-berry-lockfile.js";
 import { LOCKFILE, LOCKFILE_NAMES } from "../repo/lockfiles.js";
 import { ciConfigPredicate, gitlabLocalIncludes, isConventionalCiConfigPath } from "./ci-config-paths.js";
 
@@ -148,30 +149,25 @@ export function parseNameStatus(buffer: Buffer): ChangedFile[] {
   return files;
 }
 
-function parseNumstatRecord(record: string): { path: string; isBinary: boolean } | undefined {
-  if (!record) return undefined;
-
-  const fields = record.split("\t");
-  if (fields.length < 3) return undefined;
-
-  const isBinary = fields[0]?.trimStart().startsWith("-") ?? false;
-  const hasRename = fields.length >= 4;
-  const newPath = hasRename ? fields[fields.length - 1] : fields[2];
-
-  if (!newPath) return undefined;
-  return { path: newPath, isBinary };
-}
-
+/**
+ * Parses `git diff-tree --numstat -z`. Each record is `added\tdeleted\tpath\0`, except a rename or copy:
+ * `added\tdeleted\t\0old\0new\0`, an empty path followed by both paths as their own fields (#175).
+ * `-z` leaves paths unquoted, so a path may itself contain a tab.
+ */
 export function parseNumstat(buffer: Buffer): Map<string, boolean> {
-  const text = buffer.toString("utf8");
-  const records = text.split("\0");
+  const tokens = buffer.toString("utf8").split("\0");
   const binaryByNewPath = new Map<string, boolean>();
 
-  for (const record of records) {
-    const parsed = parseNumstatRecord(record);
-    if (parsed) {
-      binaryByNewPath.set(parsed.path, parsed.isBinary);
+  for (let i = 0; i < tokens.length; i++) {
+    const fields = tokens[i]!.split("\t");
+    if (fields.length < 3) continue;
+    const isBinary = fields[0]!.trimStart().startsWith("-");
+    let path = fields.slice(2).join("\t");
+    if (path === "") {
+      path = tokens[i + 2] ?? "";
+      i += 2;
     }
+    if (path) binaryByNewPath.set(path, isBinary);
   }
 
   return binaryByNewPath;
@@ -239,7 +235,7 @@ export const CONFIG_PATTERNS = [
   // Python projects (2026-11-06): what pytest, the interpreter and the installed packages are.
   /^pyproject\.toml$/,
   /^setup\.(?:py|cfg)$/,
-  /^pytest\.ini$/,
+  /^\.?pytest\.ini$/,
   /^tox\.ini$/,
   /^noxfile\.py$/,
   /^requirements[^/]*\.(?:txt|in)$/,
@@ -364,14 +360,17 @@ export function testListEdit(oldBody: string, newBody: string): { added: string[
 
 const DEPENDENCY_FIELDS = new Set(["dependencies", "devDependencies", "optionalDependencies"]);
 
-/** Exact root requests for the supported Classic layout. Unlike scriptRecord, never discard an
+/** Exact root requests for the supported Yarn layouts. Unlike scriptRecord, never discard an
  * invalid dependency value: an omitted root would make the lockfile attribution incomplete. */
-function yarnDirectDependencies(content: string | undefined): Record<string, string> | undefined {
+function yarnDirectDependencies(content: string | undefined, berry = false): Record<string, string> | undefined {
   let manifest: Record<string, unknown>;
   try { manifest = JSON.parse(content ?? "") as Record<string, unknown>; } catch { return undefined; }
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return undefined;
+  if (berry && manifest.name !== undefined && typeof manifest.name !== "string") return undefined;
   if (["workspaces", "resolutions", "flat", "installConfig", "peerDependencies", "bundledDependencies", "bundleDependencies"].some((field) => manifest[field] !== undefined)) return undefined;
-  if (manifest.packageManager !== undefined && (typeof manifest.packageManager !== "string" || !/^yarn@1\.\d+\.\d+$/.test(manifest.packageManager))) return undefined;
+  if (berry && ["dependenciesMeta", "peerDependenciesMeta"].some((field) => manifest[field] !== undefined)) return undefined;
+  if (berry && /yarn_/i.test(JSON.stringify(manifest.scripts ?? {}))) return undefined;
+  if (manifest.packageManager !== undefined && (typeof manifest.packageManager !== "string" || !(berry ? /^yarn@[234]\.\d+\.\d+(?:\+sha(?:224|512)\.[a-f0-9]+)?$/ : /^yarn@1\.\d+\.\d+$/).test(manifest.packageManager))) return undefined;
   const direct: Record<string, string> = Object.create(null);
   for (const field of DEPENDENCY_FIELDS) {
     const record = manifest[field];
@@ -543,6 +542,21 @@ function readRootPathsAtSha(sha: string, repoPath: string | undefined): Readonly
   if (paths.some((path) => !path || path === "." || path === ".." || path.includes("/"))) return undefined;
   const roots = new Set(paths);
   return roots.size === paths.length ? roots : undefined;
+}
+
+/** Do not narrow Berry when tracked runtime setup advertises an override or a nested Yarn config.
+ * This supplements the actual process environment check; it does not execute CI or shell scripts. */
+function berrySetupSupported(sha: string, repoPath: string | undefined): boolean {
+  const listing = runGit(["ls-tree", "-r", "--full-tree", "--name-only", "-z", sha], repoPath);
+  if (listing.status !== 0 || !listing.stdout.endsWith("\0")) return false;
+  const paths = listing.stdout.slice(0, -1).split("\0");
+  if (paths.some((path) => !path || (path !== ".yarnrc.yml" && /(?:^|\/)\.yarnrc(?:\.yml)?$/.test(path)))) return false;
+  const setup = paths.filter((path) => /\.(?:ya?ml|sh|bash|zsh)$/.test(path) || /(?:^|\/)(?:Dockerfile|Jenkinsfile|\.env[^/]*)$/.test(path));
+  if (setup.length > 500) return false;
+  return setup.every((path) => {
+    const content = readFileAtSha(sha, path, repoPath);
+    return content !== undefined && content.length <= 65_536 && !/yarn_/i.test(content);
+  });
 }
 
 /**
@@ -782,8 +796,8 @@ export async function analyzeGitDelta(
         }
       }
     }
-    // Classic does not record peer relationships or the installed hoisting layout. Its helper
-    // validates exact manifest requests and widens meaningful changes to every direct dependency.
+    // Yarn does not record the installed hoisting layout. Both helpers validate exact manifest
+    // requests and widen meaningful changes to every direct dependency; Berry also proves its linker.
     // Keep this separate from npm's installed-path model and resolve raw lockfile readers downstream.
     const changedYarnLock = filesWithBinary.find((f) => f.path === "yarn.lock" && f.changeType === "modified");
     // Path-level signals only cover some root configurations. Do not let narrowing this root lock
@@ -793,19 +807,26 @@ export async function analyzeGitDelta(
       || CONFIG_PATTERNS.some((pattern) => pattern.test(path) || pattern.test(posix.basename(path)))
       || isImplicitlyLoadedFile(path)));
     if (dependencyEdit && changedYarnLock && !otherConfiguration && (!analysis.dependencyManifestChanged || changedPackageJson)) {
-      const beforeDirect = yarnDirectDependencies(oldPackageJson);
-      const afterDirect = yarnDirectDependencies(newPackageJson);
+      const oldYarnLock = readFileAtSha(baseSha, "yarn.lock", repoPath);
+      const newYarnLock = readFileAtSha(headSha, "yarn.lock", repoPath);
+      const berry = /^__metadata:/m.test(oldYarnLock ?? "") && /^__metadata:/m.test(newYarnLock ?? "");
+      const beforeDirect = yarnDirectDependencies(oldPackageJson, berry);
+      const afterDirect = yarnDirectDependencies(newPackageJson, berry);
       // A second package manager or alternate Yarn install layout is outside this model, even when
       // its configuration did not change in this delta.
-      const alternateLayouts = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", "bun.lockb", ".yarnrc", ".yarnrc.yml", ".pnp.js", ".pnp.cjs"];
+      const alternateLayouts = ["package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lock", "bun.lockb", ".yarnrc", ".pnp.js", ".pnp.cjs", ...(berry ? [".pnp.loader.mjs", ".env.yarn"] : [".yarnrc.yml"])];
       const unsupportedLayout = [baseSha, headSha].some((sha) => {
         const roots = readRootPathsAtSha(sha, repoPath);
         // Either revision can rule out narrowing, including a layout deleted before HEAD.
         // An unavailable or malformed listing cannot prove that these paths are absent.
-        return !roots || alternateLayouts.some((path) => roots.has(path));
+        return !roots || alternateLayouts.some((path) => roots.has(path))
+          || (berry && (!roots.has(".yarnrc.yml") || !berryNodeModulesConfig(readFileAtSha(sha, ".yarnrc.yml", repoPath))));
       });
-      const affected = beforeDirect && afterDirect && !unsupportedLayout
-        ? yarnLockAffectedDependencies(readFileAtSha(baseSha, "yarn.lock", repoPath), readFileAtSha(headSha, "yarn.lock", repoPath), beforeDirect, afterDirect)
+      const berrySetup = !berry || (berryRuntimeConfig(repoPath) && [baseSha, headSha].every((sha) => berrySetupSupported(sha, repoPath)));
+      const affected = beforeDirect && afterDirect && !unsupportedLayout && berrySetup
+        ? berry
+          ? berryLockAffectedDependencies(oldYarnLock, newYarnLock, beforeDirect, afterDirect, JSON.parse(oldPackageJson!).name, JSON.parse(newPackageJson!).name)
+          : yarnLockAffectedDependencies(oldYarnLock, newYarnLock, beforeDirect, afterDirect)
         : undefined;
       if (affected && (packageChange?.changedDependencies ?? []).every((name) => affected.includes(name))) {
         analysis.dependencyManifestChanged = false;

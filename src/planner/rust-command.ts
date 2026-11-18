@@ -4,6 +4,8 @@ import type { SelectiveTestCommandGroup, SelectiveTestCommandPlan } from "./test
 
 /** Cargo target names are literal arguments, not paths, globs, package specs or shell fragments. */
 const literalName = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+/** A package is its name, or NAME@VERSION when a dependency shares the name (adapters/rust.ts). */
+const packageSpec = /^[A-Za-z0-9_][A-Za-z0-9_-]*(?:@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?$/;
 
 /** Only the Rust adapter may attest that the repository's invocation is reproducible. Missing
  * evidence (including old cached profiles) must never become a guessed default test command. */
@@ -31,8 +33,18 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
       return refuse("Rust tests require verified Cargo package and target metadata");
     }
     const target = targets[path]!;
-    if (!literalName.test(packages[path]!) || !literalName.test(target.name)
+    if (!packageSpec.test(packages[path]!) || !literalName.test(target.name)
       || !["lib", "bin", "test", "bench", "example"].includes(target.kind)) {
+      return refuse("Invalid Cargo package or test target");
+    }
+  }
+  // A target with `required-features` runs only when Cargo enables those features for its package.
+  // Naming it (`--test name`) makes Cargo fail instead of skipping it, so its package stays whole:
+  // `cargo test -p name` runs exactly the targets the full run runs for that package.
+  const gated = new Set(paths.filter(path => targets[path]!.requiredFeatures !== undefined).map(path => packages[path]!));
+  for (const path of paths) {
+    const required = targets[path]!.requiredFeatures;
+    if (required !== undefined && (!Array.isArray(required) || !required.length || required.some(feature => typeof feature !== "string"))) {
       return refuse("Invalid Cargo package or test target");
     }
   }
@@ -41,6 +53,7 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
   const cratePaths: string[] = [];
   for (const pkg of [...new Set(paths.map(path => packages[path]!))].sort()) {
     const owned = paths.filter(path => packages[path] === pkg);
+    if (gated.has(pkg)) { cratePackages.push(pkg); cratePaths.push(...owned); continue; }
     const ordinary = owned.filter(path => ["lib", "bin", "test"].includes(targets[path]!.kind));
     if (ordinary.length) {
       // A crate unit-test root represents the whole crate, including doctests. Do not narrow it to
@@ -74,6 +87,29 @@ export function planRustTestCommands(profile: RepositoryProfile, selectedPaths: 
   // as the full `cargo test` does (see rustFeatureCoverage in adapters/rust.ts).
   const coverage = profile.rustFeatureCoverage;
   if (!coverage) return refuse("Rust tests require verified Cargo feature resolution");
+  const uncovered = (selected: ReadonlySet<string>) => [...selected].sort().flatMap(pkg => coverage.deficits[pkg] ?? [])
+    .find(dependency => !coverage.units.some(unit => unit.covers.includes(dependency) && unit.crates.every(name => selected.has(name))));
+  const packageGroup = groups.find(group => group.runnerId === "cargo:test:packages");
+  if (packageGroup) {
+    // When testing only the selected crates would build a shared dependency with fewer features than
+    // the full run, add the tested crates of the smallest unit Cargo resolved with the full run's
+    // features. Features only grow with the crates selected and never exceed the full run's, so the
+    // larger command still builds that dependency exactly as the full run does; it runs more tests
+    // than selected, but fewer than the full run. Each round adds a crate, so this ends.
+    const selected = new Set(cratePackages);
+    for (let missing = uncovered(selected); missing !== undefined; missing = uncovered(selected)) {
+      const extra = (unit: { crates: string[] }) => unit.crates.filter(name => !selected.has(name)).length;
+      const unit = coverage.units.filter(candidate => candidate.covers.includes(missing!) && candidate.crates.every(name => packageSpec.test(name)))
+        .sort((a, b) => extra(a) - extra(b) || a.crates.join(" ").localeCompare(b.crates.join(" ")))[0];
+      if (!unit) break;
+      for (const name of unit.crates) selected.add(name);
+    }
+    const added = [...selected].filter(name => !cratePackages.includes(name)).sort();
+    if (added.length) {
+      packageGroup.commandSpec = { executable: "cargo", args: ["test", ...[...selected].sort().flatMap(pkg => ["-p", pkg])] };
+      packageGroup.label = `Cargo package tests (with ${added.join(", ")} for the full run's features)`;
+    }
+  }
   for (const group of groups) {
     const args = group.commandSpec.args;
     const selected = new Set(args.flatMap((arg, index) => args[index - 1] === "-p" ? [arg] : []));

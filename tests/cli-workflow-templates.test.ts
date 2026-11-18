@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import YAML from "yaml";
 import {
@@ -11,6 +14,7 @@ import {
   UPLOAD_ARTIFACT_SHA,
   diffciVerificationWorkflow,
   diffciWorkflow,
+  verificationInstallCommands,
 } from "../packages/diffci-cli/src/client/workflow-templates.js";
 
 type Workflow = { jobs: Record<string, { "runs-on": unknown; steps: Array<{ uses?: string }> }> };
@@ -66,4 +70,48 @@ test("generated workflows use the same runner and pins as Core's own workflows",
   assert.ok(action.includes(`actions/upload-artifact@${UPLOAD_ARTIFACT_SHA}`), "Observer Action must share the upload-artifact pin");
   assert.ok(ci.includes(`actions/checkout@${CHECKOUT_SHA}`), "Core CI must share the checkout pin");
   assert.ok(ci.includes(`os: [${RUNNER}, windows-latest]`), "Core CI must test on the generated runner");
+});
+
+type Step = { name?: string; run?: string; uses?: string };
+
+function verificationSteps(source: string): Step[] {
+  return (YAML.parse(source) as { jobs: Record<string, { steps: Step[] }> }).jobs["diffci-verify"]!.steps;
+}
+
+test("the verification workflow installs dependencies before verify runs the tests", () => {
+  const steps = verificationSteps(diffciVerificationWorkflow(VERSION, ["corepack enable", "pnpm install --frozen-lockfile"]));
+  const install = steps.findIndex((step) => step.name === "Install dependencies");
+  const verify = steps.findIndex((step) => step.run?.includes(" verify --json"));
+  assert.ok(install >= 0, "the workflow must install dependencies");
+  assert.ok(install < verify, "dependencies must be installed before verify");
+  assert.equal(steps[install]!.run, "corepack enable\npnpm install --frozen-lockfile\n");
+  assert.equal(verificationSteps(diffciVerificationWorkflow(VERSION, ["npm ci"]))[install]!.run, "npm ci");
+});
+
+test("the verification workflow's install commands follow the repository's package manager", () => {
+  const cases: Array<[Record<string, string>, string[]]> = [
+    [{ "package.json": "{}", "package-lock.json": "{}" }, ["npm ci"]],
+    [{ "package.json": "{}" }, ["npm install"]],
+    [{ "package.json": "{}", "pnpm-lock.yaml": "" }, ["corepack enable", "pnpm install --frozen-lockfile"]],
+    [{ "package.json": JSON.stringify({ packageManager: "yarn@4.5.0" }) }, ["corepack enable", "yarn install --no-immutable"]],
+    [{ "package.json": "{}", "yarn.lock": "", ".yarnrc.yml": "" }, ["corepack enable", "yarn install --immutable"]],
+    [{ "package.json": "{}", "yarn.lock": "" }, ["corepack enable", "yarn install --frozen-lockfile"]],
+    [{ "package.json": JSON.stringify({ packageManager: "pnpm@9.0.0" }) }, ["corepack enable", "pnpm install --no-frozen-lockfile"]],
+    [{ "package.json": "{}", "bun.lock": "" }, []],
+    [{ "package.json": "{}", "yarn.lock": "", "pnpm-lock.yaml": "" }, []],
+    [{ "go.mod": "module example.com/x\n" }, []],
+  ];
+  for (const [files, expected] of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-verify-install-"));
+    try {
+      for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+      assert.deepEqual(verificationInstallCommands(dir), expected, Object.keys(files).join(", "));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("without a known package manager the verification workflow says where to install dependencies", () => {
+  assert.match(diffciVerificationWorkflow(VERSION), /# Install the repository's dependencies here: verify runs its tests\.\n {6}- name: Verify changed code/);
 });

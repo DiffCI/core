@@ -86,3 +86,24 @@ describe("repository-script checks", () => {
     assert.equal(noFiles[0]!.decision, "RUN");
   });
 });
+
+describe("repository-script checks and template literals", () => {
+  // Issue: text after a `${...}` substitution was never read, so a script reading
+  // `${process.cwd()}/data/schema.json` was skipped when data/schema.json changed.
+  const CWD_TEMPLATE = [
+    "import { readFileSync } from \"node:fs\";",
+    "const schema = JSON.parse(readFileSync(`${process.cwd()}/data/schema.json`, \"utf8\"));",
+    "console.log(schema);",
+  ].join("\n");
+
+  it("runs when a change is named after a template substitution", () => {
+    const check = decide("node scripts/check.mjs", ["data/schema.json"], { "scripts/check.mjs": CWD_TEMPLATE }, ["data/schema.json"]);
+    assert.equal(check.decision, "RUN");
+    assert.match(check.reason, /data\/schema\.json/);
+  });
+
+  it("still skips a change the template does not name", () => {
+    const check = decide("node scripts/check.mjs", ["docs/guide.md"], { "scripts/check.mjs": CWD_TEMPLATE }, ["data/schema.json"]);
+    assert.equal(check.decision, "SKIP");
+  });
+});

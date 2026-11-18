@@ -53,6 +53,37 @@ describe("shallow CI clones", () => {
     }
   });
 
+  // #278: e.g. actions/checkout with `path: target` while DiffCI observes the workspace above it.
+  it("points a path that is not a git checkout at repository-path, not fetch-depth", () => {
+    const root = mkdtempSync(join(tmpdir(), "diffci-not-checkout-"));
+    try {
+      const event = join(root, "event.json");
+      writeFileSync(event, JSON.stringify({ pull_request: { number: 1, base: { sha: "b".repeat(40) }, head: { sha: "a".repeat(40) } } }));
+      const github = resolveCommitRangeFetchingHistory({
+        env: { GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: event }, git: makeGitRunner(root),
+      });
+      assert.equal(github.ok, false);
+      const reason = github.ok ? "" : github.reason;
+      assert.match(reason, /not a git checkout/);
+      assert.match(reason, /`repository-path`/);
+      assert.doesNotMatch(reason, /fetch-depth/);
+
+      const azure = resolveCommitRangeFetchingHistory({ env: { TF_BUILD: "True", BUILD_REASON: "Manual" }, git: makeGitRunner(root) });
+      assert.match(azure.ok ? "" : azure.reason, /`repositoryPath`/);
+      const local = resolveCommitRangeFetchingHistory({ env: {}, git: makeGitRunner(root) });
+      assert.match(local.ok ? "" : local.reason, /not a git checkout: pass `--repo`/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not call a checkout git refuses to read (dubious ownership) 'not a git checkout'", () => {
+    const git = () => ({ ok: false as const, error: "Command failed: git", stderr: "fatal: detected dubious ownership in repository at '/w'" });
+    const result = resolveCommitRangeFetchingHistory({ env: {}, git });
+    assert.equal(result.ok, false);
+    assert.doesNotMatch(result.ok ? "" : result.reason, /not a git checkout/);
+  });
+
   it("never fetches into a local clone", () => {
     const { root, clone, base, head } = shallowClone();
     try {

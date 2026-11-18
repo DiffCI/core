@@ -8,7 +8,7 @@ import { refineConfidenceForDelta, relevantScopedAdapterBlockers } from "./graph
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure } from "./file-references.js";
+import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure, testScriptPrograms } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -359,10 +359,10 @@ export class ImpactAnalyzer {
   private knownTestPaths(profile: RepositoryProfile, graph: DependencyGraph): string[] {
     if (this.knownTests) return this.knownTests;
     const known = new Set<string>();
-    for (const testLocation of profile.tests) {
-      for (const node of graph.nodes) {
-        if (matchesTestGlob(node.path, testLocation.glob) || this.isTestFile(node.path)) known.add(node.path);
-      }
+    // Adapter repositories (pytest, Maven) declare no JavaScript test locations, so the matcher must not
+    // depend on profile.tests being non-empty.
+    for (const node of graph.nodes) {
+      if (this.isTestFile(node.path) || profile.tests.some((testLocation) => matchesTestGlob(node.path, testLocation.glob))) known.add(node.path);
     }
     this.knownTests = [...known].sort();
     return this.knownTests;
@@ -708,7 +708,8 @@ export class ImpactAnalyzer {
     // whose entire `__tests__/` suite was invisible: graph confidence COMPLETE, 5 of 5 commits
     // SELECTIVE, zero tests. Fails closed to FULL instead.
     if (profile.testUniverse?.blindSpot === true) {
-      const declared = profile.testUniverse.declaredFrameworks.join(", ");
+      // A language adapter (Go, Maven, pytest, Cargo) declares its runner without a package.json framework.
+      const declared = [...profile.testUniverse.declaredFrameworks, ...(profile.testUniverse.adapterRunners ?? [])].join(", ");
       const message = `Repository declares ${declared} but no test files were discovered; full validation required`;
       riskSignals.push({ level: "critical", reason: "TEST_UNIVERSE_EMPTY", message });
       if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
@@ -934,7 +935,7 @@ export class ImpactAnalyzer {
       return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
     };
     if (yarnCandidates) {
-      // Classic can hoist transitive packages that repository code imports without declaring them.
+      // Yarn's node-modules linkers can hoist packages that repository code imports without declaring them.
       // All-root widening covers peers, but cannot attribute these additional importers to a root.
       const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
         .map((ref) => packageRoot(ref.specifier)).filter((name) => !packages.includes(name)))].sort();
@@ -947,6 +948,14 @@ export class ImpactAnalyzer {
       const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
         .map((ref) => packageRoot(ref.specifier)).filter((name) => !declared.has(name)))].sort();
       if (undeclared.length) fail(`pnpm lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
+    }
+    if (!delta.analysis.dependencyLockfile && delta.files.some((file) => file.path === "package-lock.json")) {
+      // npm hoists transitive packages to the root node_modules, where repository code can import them
+      // without declaring them. Attribution reaches only declared roots, so such an import is not covered.
+      const declared = new Set([...profile.packageJson.dependencies, ...profile.packageJson.devDependencies, ...packages]);
+      const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
+        .map((ref) => packageRoot(ref.specifier)).filter((name) => !declared.has(name)))].sort();
+      if (undeclared.length) fail(`npm lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
     }
     const scripts = profile.packageJson.scripts;
     const closureBodies = [...testScriptClosure(scripts)].map((name) => scripts[name] ?? "");
@@ -1256,6 +1265,7 @@ export class ImpactAnalyzer {
     if (changedPath.endsWith(".py") && profile.pythonSources?.includes(changedPath)) {
       this.resolveByReference(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence, { allowNoReaders: true });
     }
+    this.coverTestScriptPrograms(changedPath, graph, profile, evidence, riskSignals, fallbackReasons);
     this.processSourceChange(changedPath, graph, profile, affectedSources, affectedEntryPoints, affectedTests, affectedScripts, evidence);
     this.failToolLoadedOrphan(changedPath, changedImpact, graph, affectedTests, evidence, riskSignals, fallbackReasons, covered);
   }
@@ -1268,6 +1278,41 @@ export class ImpactAnalyzer {
    * name anywhere, or any one at the repository root, that no file imports and that reached no test.
    * An unused module elsewhere (`src/unused.ts`) still selects nothing: no tool loads it by name.
    */
+  /**
+   * A program the root test script runs itself (`node scripts/check.mjs && node --test`) is part of the
+   * suite although no test imports it: the graph saw only an entry point, so a change to it, or to code it
+   * imports, selected nothing for it and `verify` passed while `npm test` failed (2026-11-18). Callers
+   * that run test-script phases run the phase; everyone else gets the full suite.
+   */
+  private coverTestScriptPrograms(
+    changedPath: string,
+    graph: DependencyGraph,
+    profile: RepositoryProfile,
+    evidence: ImpactEvidence[],
+    riskSignals: ImpactRiskSignal[],
+    fallbackReasons: string[],
+  ): void {
+    if (!JS_TS_CODE.test(changedPath) || this.isTestFile(changedPath)) return;
+    const programs = testScriptPrograms(profile.packageJson.scripts);
+    if (programs.size === 0) return;
+    const reached = [changedPath, ...(hasNode(graph, changedPath) ? graph.transitiveDependentsOf(changedPath) : [])];
+    for (const path of reached) {
+      const program = programs.get(path);
+      if (!program || this.isTestFile(path)) continue;
+      if (this.selectTestPhases && program.direct) {
+        for (const phase of program.phases) {
+          this.testPhases.add(phase);
+          evidence.push(makeEvidence("FILE_REFERENCE", changedPath, `the test script runs \`${phase}\`, which ${path === changedPath ? "is" : "imports"} ${changedPath}`));
+        }
+        continue;
+      }
+      const message = path === changedPath ? `The test script runs ${path}; full validation required` : `The test script runs ${path}, which imports ${changedPath}; full validation required`;
+      evidence.push(makeEvidence("CONFIG_GLOBAL", changedPath, message));
+      riskSignals.push({ level: "critical", reason: "CONFIG_GLOBAL", message, paths: [changedPath] });
+      if (!fallbackReasons.includes(message)) fallbackReasons.push(message);
+    }
+  }
+
   private failToolLoadedOrphan(
     changedPath: string,
     changedImpact: ChangedImpact,
@@ -1403,13 +1448,16 @@ export class ImpactAnalyzer {
     }
     const layout = this.layout;
     const scripts = profile.packageJson.scripts;
+    // A .py file the Python adapter modelled is code like a .js file: pytest runs a test that reads the
+    // changed file without anything naming the test, so it must not be followed as a script.
+    const pythonSources = new Set(profile.pythonSources ?? []);
     const resolution = resolveFileReferences(changedPath, {
       files: this.sortedRepositoryFiles,
       read: this.readRepositoryFile,
       isTestFile: this.isTestFile,
       isDocumentation: (path) => layout.isDocumentationPath(path) || isAgentConfigurationPath(path),
       inGraph: (path) => hasNode(graph, path),
-      isCodeFile: isSourceFilePath,
+      isCodeFile: (path) => isSourceFilePath(path) || pythonSources.has(path),
       workflowFeedsTests: (content, names) => workflowFeedsTests(content, names, scripts),
       contentCleared: this.contentCleared,
       implicitReadersUnresolvable,
