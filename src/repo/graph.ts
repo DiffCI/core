@@ -1136,7 +1136,10 @@ export async function buildDependencyGraph(
   profile.testFilePaths = [...new Set([...profile.testFilePaths, ...adapterTests])].sort();
   if (profile.testUniverse) {
     profile.testUniverse.discoveredTestFiles = profile.testFilePaths.length;
-    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || contributions.some((item) => item.id === "go" || item.id === "maven" || item.id === "python" || item.id === "rust")) && profile.testFilePaths.length === 0;
+    const runners: Record<string, string> = { go: "go test", maven: "Maven", python: "pytest", rust: "cargo test" };
+    const adapterRunners = contributions.flatMap((item) => runners[item.id] ? [runners[item.id]!] : []);
+    if (adapterRunners.length) profile.testUniverse.adapterRunners = adapterRunners;
+    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || adapterRunners.length > 0) && profile.testFilePaths.length === 0;
   }
   const entryPointPaths = new Set(profile.entryPoints.map((e) => e.path));
 
