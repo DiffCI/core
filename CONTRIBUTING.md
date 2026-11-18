@@ -2,6 +2,8 @@
 
 Start with a [good first issue](https://github.com/DiffCI/core/issues?q=is%3Aopen+label%3A%22good+first+issue%22). A fixture, fallback explanation, or reproducible benchmark is a useful contribution without learning the whole engine.
 
+`good first issue` is kept for people making their first pull request to DiffCI. If you already have merged work here, please pick something else: a `help wanted` issue or a step in one of the adapter tracking issues. Regular contributors can also ask for a new issue before it's labelled (see [Contributor tiers](#contributor-tiers)).
+
 Fork Core, clone your fork, and create a branch. A Node 22 development container is available in `.devcontainer/devcontainer.json`; alternatively install Node.js 22.5+ locally. `npm ci` installs dependencies and builds Core. Use [the fixture checklist](docs/contributing-fixtures.md) for regressions and [the adapter tutorial](docs/adding-an-adapter.md) for framework support.
 
 In your PR, explain the changed behavior, include the reproducible fixture and validation results, and identify unsupported cases. Small documentation contributions do not need new tests. Safety and planning changes do.

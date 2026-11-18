@@ -115,7 +115,7 @@ test("Rust detection is specific and missing root manifest falls back", () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("an excluded nested Cargo package cannot silently become part of its parent, and blocks only if something depends on it", () => {
+test("an excluded nested Cargo package cannot silently become part of its parent, and stays an unmodelled boundary", () => {
   const files = { "Cargo.toml": manifest("root"), "src/lib.rs": "", "excluded/Cargo.toml": manifest("excluded"),
     "excluded/src/lib.rs": "", "excluded/tests/api.rs": "" };
   const root = fixture(files);
@@ -128,7 +128,9 @@ test("an excluded nested Cargo package cannot silently become part of its parent
     assert.ok(!result.testFiles.includes("excluded/tests/api.rs"));
     const excluded = pkg(root, "excluded", "excluded");
     const used = analyzeRustMetadata({ repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) }, metadata(root, [pkg(root, "", "root"), excluded], { workspace_members: [`path+${root}/#root@0.1.0`] }));
-    assert.ok(used.blockers.some(reason => reason.includes("Cargo manifests outside workspace membership") && reason.includes("excluded/Cargo.toml")));
+    // Something depends on it: still no repository-wide blocker, and its files stay unmodelled.
+    assert.deepEqual(used.blockers, []);
+    assert.ok(!used.sourcePaths.includes("excluded/src/lib.rs"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -437,6 +439,104 @@ test("registry dependencies narrow; local outside path dependencies, symlinked m
     catch (error) { if ((error as NodeJS.ErrnoException).code === "EPERM") { t.diagnostic("symlink privilege unavailable"); return; } throw error; }
     const alias = analyzeRustMetadata(context, metadata(root, [app]));
     assert.ok(alias.blockers.some(reason => reason.includes("Incomplete Rust source inventory")));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("local path packages inside the repository are unmodelled boundaries; dependencies through them are followed", () => {
+  // a -> vendor/bridge (a local path package outside the workspace) -> b; c is independent.
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["a", "b", "c"]\nexclude = ["vendor"]\n',
+    "vendor/bridge/Cargo.toml": manifest("bridge"), "vendor/bridge/src/lib.rs": "pub fn bridge() -> u8 { b::value() }" };
+  for (const name of ["a", "b", "c"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "pub fn value() -> u8 { 1 }" });
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const [a, b, c] = ["a", "b", "c"].map(name => pkg(root, name, name));
+    const bridge = pkg(root, "vendor/bridge", "bridge");
+    const analyze = (bridgePackage: CargoPackage) => {
+      const packages = [a!, b!, c!, bridgePackage];
+      return analyzeRustMetadata(context, metadata(root, packages, { workspace_members: [a!.id, b!.id, c!.id],
+        resolve: { nodes: [{ id: a!.id, dependencies: [bridgePackage.id] }, { id: bridgePackage.id, dependencies: [b!.id] }, { id: b!.id, dependencies: [] }, { id: c!.id, dependencies: [] }] } }));
+    };
+    const result = analyze(bridge);
+    assert.deepEqual(result.blockers, []);
+    // The bridge's files are not modelled sources, so a change to one keeps the full suite.
+    assert.ok(!result.sourcePaths.includes("vendor/bridge/src/lib.rs"));
+    const tests = new Set(result.testFiles);
+    const graph = hydrateDependencyGraph({ nodes: result.sourcePaths.map(path => ({ path, isSource: true, isAsset: false, isTest: tests.has(path), isEntryPoint: false })), edges: result.edges } as unknown as DependencyGraph, root);
+    assert.deepEqual(graph.transitiveDependentsOf("b/src/lib.rs").filter(path => tests.has(path)), ["a/src/lib.rs"]);
+    assert.deepEqual(graph.transitiveDependentsOf("c/src/lib.rs").filter(path => tests.has(path)), []);
+    // A bridge whose code may read other crates' files (a build script, a path literal, climbing out
+    // of its directory, running Cargo) makes a depend on every workspace crate.
+    const opaque = (source: string, extraTargets: ReturnType<typeof target>[] = []) => {
+      writeFileSync(join(root, "vendor/bridge/src/lib.rs"), source);
+      const opaqueResult = analyze({ ...bridge, targets: [...bridge.targets, ...extraTargets] });
+      assert.deepEqual(opaqueResult.blockers, []);
+      return opaqueResult.edges.filter(edge => edge.from === "a/Cargo.toml" && edge.to.endsWith("Cargo.toml")).map(edge => edge.to).sort();
+    };
+    assert.deepEqual(opaque("pub fn bridge() {}"), ["b/Cargo.toml"]);
+    assert.deepEqual(opaque("pub fn bridge() {}", [target(root, "vendor/bridge/build.rs", "build-script-build", "custom-build", false)]), ["b/Cargo.toml", "c/Cargo.toml"]);
+    assert.deepEqual(opaque('pub const DATA: &str = "../../c/src/lib.rs";'), ["b/Cargo.toml", "c/Cargo.toml"]);
+    assert.deepEqual(opaque('use std::path::Path;\npub fn up() { let _ = Path::new(env!("CARGO_MANIFEST_DIR")).parent(); }'), ["b/Cargo.toml", "c/Cargo.toml"]);
+    assert.deepEqual(opaque('pub fn run() { std::process::Command::new("cargo"); }'), ["b/Cargo.toml", "c/Cargo.toml"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("local path packages inside the repository record their readers and program runs, reached or not", () => {
+  // a -> vendor/bridge -> b, and vendor/loose is reached by no member. Before 2026-11-18 a bridge was
+  // only scanned to decide whether it was opaque, so a docs change could select nothing even though
+  // a's tests call bridge code that reads the docs, and a bridge running `sh` kept crate scoping on.
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["a", "b"]\nexclude = ["vendor"]\n',
+    "vendor/bridge/Cargo.toml": manifest("bridge"), "vendor/bridge/src/lib.rs": "pub fn bridge() -> u8 { b::value() }",
+    "vendor/bridge/build.rs": "fn main() {}",
+    "vendor/loose/Cargo.toml": manifest("loose"), "vendor/loose/src/lib.rs": "pub fn loose() {}" };
+  for (const name of ["a", "b"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "pub fn value() -> u8 { 1 }" });
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const [a, b] = ["a", "b"].map(name => pkg(root, name, name));
+    const bridge = pkg(root, "vendor/bridge", "bridge");
+    const loose = pkg(root, "vendor/loose", "loose");
+    const analyze = (bridgeSource: string, looseSource = "pub fn loose() {}", bridgeTargets: ReturnType<typeof target>[] = []) => {
+      writeFileSync(join(root, "vendor/bridge/src/lib.rs"), bridgeSource);
+      writeFileSync(join(root, "vendor/loose/src/lib.rs"), looseSource);
+      const bridgePackage = { ...bridge, targets: [...bridge.targets, ...bridgeTargets] };
+      const result = analyzeRustMetadata(context, metadata(root, [a!, b!, bridgePackage, loose], { workspace_members: [a!.id, b!.id],
+        resolve: { nodes: [{ id: a!.id, dependencies: [bridgePackage.id] }, { id: bridgePackage.id, dependencies: [b!.id] }, { id: b!.id, dependencies: [] }, { id: loose.id, dependencies: [] }] } }));
+      assert.deepEqual(result.blockers, []);
+      return result;
+    };
+    const plain = analyze("pub fn bridge() -> u8 { b::value() }");
+    assert.deepEqual(plain.rustDocumentationReaders ?? [], []);
+    assert.equal(plain.rustRunsPrograms, false);
+    const docs = analyze('pub fn guide() -> String { std::fs::read_to_string("docs/guide.md").unwrap() }');
+    assert.ok(docs.rustDocumentationReaders?.includes("vendor/bridge/src/lib.rs"), JSON.stringify(docs.rustDocumentationReaders));
+    const build = analyze("pub fn bridge() {}", "pub fn loose() {}", [target(root, "vendor/bridge/build.rs", "build-script-build", "custom-build", false)]);
+    assert.ok(build.rustDocumentationReaders?.includes("vendor/bridge/build.rs"), JSON.stringify(build.rustDocumentationReaders));
+    assert.equal(analyze('pub fn run() { std::process::Command::new("sh").arg("x.sh"); }').rustRunsPrograms, true);
+    // The same holds for a local package no member reaches: a member could still reach it later
+    // through a path no metadata shows, and the cost is only a full run for docs changes.
+    const looseDocs = analyze("pub fn bridge() {}", 'pub fn guide() -> String { std::fs::read_to_string("docs/guide.md").unwrap() }');
+    assert.ok(looseDocs.rustDocumentationReaders?.includes("vendor/loose/src/lib.rs"));
+    assert.equal(analyze("pub fn bridge() {}", 'pub fn run() { std::process::Command::new("python3"); }').rustRunsPrograms, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a bridge with #[path] modules is opaque, wherever its module base resolves", () => {
+  // rustc reads `mod inner { #[path = "y.rs"] mod y; }` in util.rs (neither a crate root nor mod.rs)
+  // from a directory the scan does not model, so the bridge must make a depend on every crate.
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["a", "c"]\nexclude = ["vendor"]\n',
+    "vendor/bridge/Cargo.toml": manifest("bridge"), "vendor/bridge/src/lib.rs": "mod util;",
+    "vendor/bridge/src/util.rs": 'mod inner { #[path = "y.rs"] mod y; }' };
+  for (const name of ["a", "c"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "pub fn value() -> u8 { 1 }" });
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const [a, c] = ["a", "c"].map(name => pkg(root, name, name));
+    const bridge = pkg(root, "vendor/bridge", "bridge");
+    const result = analyzeRustMetadata(context, metadata(root, [a!, c!, bridge], { workspace_members: [a!.id, c!.id],
+      resolve: { nodes: [{ id: a!.id, dependencies: [bridge.id] }, { id: bridge.id, dependencies: [] }, { id: c!.id, dependencies: [] }] } }));
+    assert.deepEqual(result.blockers, []);
+    assert.deepEqual(result.edges.filter(edge => edge.from === "a/Cargo.toml" && edge.to.endsWith("Cargo.toml")).map(edge => edge.to).sort(), ["c/Cargo.toml"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
