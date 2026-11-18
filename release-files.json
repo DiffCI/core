@@ -211,6 +211,7 @@
     "tests/action-check-run.test.ts",
     "tests/action-impact.test.ts",
     "tests/action-metadata.test.ts",
+    "tests/agent-plugin-launchers.test.ts",
     "tests/action-verify.test.ts",
     "tests/gitlab-component.test.ts",
     "tests/fallback-reasons-docs.test.ts",
