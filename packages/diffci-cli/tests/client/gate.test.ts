@@ -192,3 +192,35 @@ test("a failed analysis still runs and reports the full gate", async () => {
     assert.equal(gateExitCode(report), 0);
   } finally { rmSync(repo.dir, { recursive: true, force: true }); }
 });
+
+test("steps that would start after the time limit is used up are not run", async () => {
+  const repo = fixture();
+  try {
+    const ran: string[] = [];
+    const { opts } = options(repo, () => false, {
+      timeoutMs: 200,
+      run: (command, { timeoutMs }) => {
+        ran.push(command);
+        // The first step uses the whole limit, as a hung lint would.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, timeoutMs + 50);
+        return { ...measurement(command, 1, timeoutMs), exitCode: null, timedOut: true };
+      },
+    });
+    const report = await runGate(opts);
+    assert.deepEqual(ran, ["npm run lint"]);
+    assert.equal(report.checks[0]?.full.status, "timed_out");
+    assert.equal(report.checks[1]?.full.status, "not_run");
+    assert.equal(report.tests?.full.status, "not_run");
+    assert.equal(report.gate.status, "failed");
+    assert.deepEqual(report.summary.misses, []);
+    // The unrun steps did not fail: the summary must not print them as FAIL, and the totals leave them out.
+    const summary = formatGateSummary(report).split("\n");
+    const check = report.checks[1]!.id;
+    assert.ok(summary.some((line) => line.startsWith(`  --   ${check} 0.0s (not run) - DiffCI:`)), summary.join("\n"));
+    assert.ok(summary.some((line) => line.startsWith("  --   tests 0.0s (not run) - DiffCI:")), summary.join("\n"));
+    assert.ok(summary.some((line) => line.startsWith(`  FAIL ${report.checks[0]!.id} `)), summary.join("\n"));
+    assert.equal(report.summary.basis, "estimated");
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
