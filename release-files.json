@@ -276,6 +276,7 @@
     "tests/repo/maven-failsafe-names.test.ts",
     "tests/repo/path-literals.test.ts",
     "tests/repo/maven-pom-comments.test.ts",
+    "tests/repo/python-declared-inputs.test.ts",
     "tests/repo/graph.project-references.test.ts",
     "tests/repo/graph.test.ts",
     "tests/repo/impact.test.ts",

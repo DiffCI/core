@@ -385,7 +385,15 @@ export class ImpactAnalyzer {
     const goTestCandidates = profile.adapters?.some(adapter => adapter.id === "go")
       ? Object.keys(profile.goTestPackages ?? {}).filter(test => test.endsWith("_test.go"))
       : [];
-    return [...this.knownTestPaths(profile, graph), ...goTestCandidates].filter((test) => globs.some((glob) => matchesTestGlob(test, glob)));
+    // Python has the same shape of gap as Go, which #83 fixed there: the pytest adapter reports its
+    // test files on `profile.pythonTests`, and `knownTestPaths` only walks `profile.tests`, which the
+    // JavaScript runners fill. Without these candidates a declaration naming a `test_*.py` file is
+    // always stale, and the fallback it was meant to narrow stays (2026-11-18, #162).
+    const pythonTestCandidates = profile.adapters?.some(adapter => adapter.id === "python")
+      ? profile.pythonTests ?? []
+      : [];
+    return [...this.knownTestPaths(profile, graph), ...goTestCandidates, ...pythonTestCandidates]
+      .filter((test) => globs.some((glob) => matchesTestGlob(test, glob)));
   }
 
   /**
