@@ -359,10 +359,10 @@ export class ImpactAnalyzer {
   private knownTestPaths(profile: RepositoryProfile, graph: DependencyGraph): string[] {
     if (this.knownTests) return this.knownTests;
     const known = new Set<string>();
-    for (const testLocation of profile.tests) {
-      for (const node of graph.nodes) {
-        if (matchesTestGlob(node.path, testLocation.glob) || this.isTestFile(node.path)) known.add(node.path);
-      }
+    // Adapter repositories (pytest, Maven) declare no JavaScript test locations, so the matcher must not
+    // depend on profile.tests being non-empty.
+    for (const node of graph.nodes) {
+      if (this.isTestFile(node.path) || profile.tests.some((testLocation) => matchesTestGlob(node.path, testLocation.glob))) known.add(node.path);
     }
     this.knownTests = [...known].sort();
     return this.knownTests;

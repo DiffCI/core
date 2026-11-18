@@ -258,6 +258,7 @@
     "tests/repo/analyzer-lockfiles.test.ts",
     "tests/repo/analyzer.test.ts",
     "tests/repo/compiled-projects.test.ts",
+    "tests/repo/declared-inputs-adapter-tests.test.ts",
     "tests/repo/config-patterns.test.ts",
     "tests/repo/dts-sibling-implementation.test.ts",
     "tests/repo/file-references.test.ts",
