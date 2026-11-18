@@ -21,7 +21,7 @@ describe("agent-facing CLI commands", () => {
     assert.match(result.stdout, /diffci init \[--repo <path>\] \[--workflow\] \[--verification-workflow\] \[--install\] \[--no-hook\] \[--no-mcp\] \[--no-skill\]\s+\[--no-agent-hooks\] \[--force\]/);
     assert.match(result.stdout, /diffci agent-stop --agent claude\|codex\|cursor/);
     assert.match(result.stdout, /diffci mcp/);
-    assert.match(result.stdout, /diffci verify \[--changed \| --base <sha> --head <sha>\]/);
+    assert.match(result.stdout, /diffci verify \[--changed \| --staged \| --paths <file\.\.\.> \| --paths-from <file\|-> \| --base <sha> --head <sha>\]/);
     assert.match(result.stdout, /diffci check \[--repo <path>\]/);
     assert.match(result.stdout, /check analyzes the change, runs inferred full and selected commands/);
   });
