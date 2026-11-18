@@ -418,6 +418,7 @@
     "packages/diffci-cli/tests/client/coverage-map.test.ts",
     "packages/diffci-cli/src/client/agent-stop.ts",
     "packages/diffci-cli/tests/client/agent-stop.test.ts",
+    "packages/diffci-cli/tests/client/bun-full-command.test.ts",
     "packages/diffci-cli/src/client/watch.ts",
     "packages/diffci-cli/tests/client/watch.test.ts",
     "packages/diffci-cli/tests/client/build-client.test.ts",
