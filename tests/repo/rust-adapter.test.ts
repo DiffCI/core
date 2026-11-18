@@ -579,6 +579,16 @@ test("Cargo configuration blocks only build-changing keys, wherever Cargo reads 
       assert.equal(blocked(), true, key);
       delete process.env[key];
     }
+    // TOML lets the same keys be quoted or written as an inline table; Cargo applies them all.
+    for (const config of ['build = { rustflags = ["--cfg", "custom"] }\n', '"build".rustflags = ["--cfg", "custom"]\n',
+      "[build]\n'rustflags' = ['--cfg', 'custom']\n", '["target".x86_64-unknown-linux-gnu]\nrunner = "qemu"\n',
+      'unstable = { build-std = ["std"] }\n', 'patch = { crates-io = { serde = { path = "../serde" } } }\n']) {
+      writeFileSync(join(home, "config.toml"), config);
+      assert.equal(blocked(), true, config);
+    }
+    writeFileSync(join(home, "config.toml"), '"net".retry = 3\nterm = { color = "always" }\n');
+    assert.equal(blocked(), false);
+    rmSync(join(home, "config.toml"));
     writeFileSync(join(root, ".cargo/config.toml"), '[build]\nrustc-wrapper = "./wrapper"\n');
     assert.ok(analyzeRustMetadata(context, metadata(root, [pkg(root, "", "app")])).blockers.some(reason => reason.includes("Custom Cargo configuration")));
   } finally {

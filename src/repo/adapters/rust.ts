@@ -598,11 +598,14 @@ function cargoFeatureResolver(repoPath: string): CargoFeatureResolver {
 /** Configuration keys that change how crates are compiled, which code is compiled or what runs the
  * tests. Aliases, registries, network, terminal, `[env]` and target-dir settings apply equally to
  * the selected and the full invocation, so they do not block. */
-const BUILD_CONFIG = /^\s*(?:build\s*\.\s*)?(?:rustflags|rustdocflags|target|rustc|rustdoc|rustc-wrapper|rustc-workspace-wrapper)\s*=|^\s*\[\s*(?:target|patch|unstable)\b|^\s*(?:target|patch|unstable)\s*\.|^\s*(?:paths|include)\s*=/m;
+const BUILD_CONFIG = /^\s*(?:build\s*\.\s*)?(?:rustflags|rustdocflags|target|rustc|rustdoc|rustc-wrapper|rustc-workspace-wrapper)\s*=|^\s*\[\s*(?:target|patch|unstable)\b|^\s*(?:target|patch|unstable)\s*\.|^\s*(?:paths|include)\s*=|^\s*(?:build|patch|unstable)\s*=/m;
 const COMPILER_ENVIRONMENT = /^(?:RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUST(?:DOC)?FLAGS|CARGO_BUILD_RUST(?:DOC)?FLAGS|CARGO_BUILD_TARGET|RUSTC|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC(?:_WRAPPER|_WORKSPACE_WRAPPER)?|CARGO_BUILD_RUSTDOC|CARGO_TARGET_.+_(?:RUNNER|RUSTFLAGS))$/;
 
+/** TOML spells the same key bare, quoted (`"build".rustflags`) or as an inline table
+ * (`build = { rustflags = [...] }`); Cargo reads them all. Unquote simple keys before matching, and
+ * treat a whole `build`, `patch` or `unstable` inline table as build-changing. */
 function changesBuild(path: string): boolean {
-  try { return BUILD_CONFIG.test(readFileSync(path, "utf8")); }
+  try { return BUILD_CONFIG.test(readFileSync(path, "utf8").replace(/(["'])([A-Za-z0-9_-]+)\1/g, "$2")); }
   catch { return existsSync(path); }
 }
 
