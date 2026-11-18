@@ -252,6 +252,7 @@
     "tests/attach-release-provenance.test.ts",
     "tests/release-tags.test.ts",
     "tests/codeql-hardening.test.ts",
+    "tests/workflow-credentials.test.ts",
     "tests/fuzz/repository-text.fuzz.test.ts",
     "tests/repo/babel-config-change.test.ts",
     "tests/repo/analyzer-lockfiles.test.ts",
