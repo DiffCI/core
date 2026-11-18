@@ -199,7 +199,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean; module?: string[] }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean; runsPrograms: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean; module?: string[] }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean; metadata: boolean; runsPrograms: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -320,6 +320,7 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
     includeArguments.add(i + 3);
   }
   let documentation = false;
+  let metadata = false;
   tokens.forEach((token, index) => {
     if (token.literal === undefined || includeArguments.has(index)) return;
     if (pathLike(token.literal)) paths.push(token.literal);
@@ -327,10 +328,13 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
     // a Markdown name or bare extension (`"md"` in an extension check), or a documentation directory
     // anywhere in the path (`../docs`, `concat!(env!("CARGO_MANIFEST_DIR"), "/../docs")`).
     if (/(?:^|\.)mdx?$|(?:^|[\\/])(?:docs?|documentation)(?:[\\/]|$)/i.test(token.literal)) documentation = true;
+    // The same for tool configuration and repository metadata (impact.ts): a `.github` path, a TOML,
+    // YAML or JSON name or bare extension, or a dotfile name such as `.editorconfig` or `CODEOWNERS`.
+    if (/(?:^|[\\/])\.github(?:[\\/]|$)|(?:^|\.)(?:toml|ya?ml|json5?)$|(?:^|[\\/])(?:\.[A-Za-z][\w.-]*|CODEOWNERS)$/i.test(token.literal)) metadata = true;
   });
   const navigates = navigatesUpward(tokens);
   // Code that climbs out of its crate can walk to README or docs without naming them.
-  return { inputs, paths, compiles, navigates, documentation: documentation || navigates, runsPrograms };
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates, metadata: metadata || navigates, runsPrograms };
 }
 
 /** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,
@@ -530,6 +534,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           result.sourcePaths.push(path);
           buildScriptCrates.add(pkg.id);
           (result.rustDocumentationReaders ??= []).push(path);
+          (result.rustMetadataReaders ??= []).push(path);
           continue;
         }
         const kind = target.kind.includes("test") ? "test"
@@ -630,6 +635,10 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
       // Model these as dependencies of this crate instead of blocking the repository.
       if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
+      // Tool configuration is read by the tools as well as by code naming it: a test that runs Cargo
+      // (`cargo fmt --check`, `cargo clippy`) or another program (`rustfmt`, `typos`, `pre-commit`,
+      // through Command or xshell's `cmd!`) may read rustfmt.toml or clippy.toml without naming it.
+      if (scanned.metadata || scanned.compiles || scanned.runsPrograms) (result.rustMetadataReaders ??= []).push(source);
       if (scanned.runsPrograms) result.rustRunsPrograms = true;
       const reached = new Set<string>();
       if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);

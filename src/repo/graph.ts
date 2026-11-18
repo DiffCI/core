@@ -1130,6 +1130,7 @@ export async function buildDependencyGraph(
     profile.rustTestInvocation = rustTestInvocation(repoPath, files, { allMembersTested: rustContribution.rustAllMembersTested });
     if (rustContribution.rustFeatureCoverage) profile.rustFeatureCoverage = rustContribution.rustFeatureCoverage;
     profile.rustDocumentationReaders = [...new Set(rustContribution.rustDocumentationReaders ?? [])].sort();
+    profile.rustMetadataReaders = [...new Set(rustContribution.rustMetadataReaders ?? [])].sort();
   }
   const pythonContribution = contributions.find((item) => item.id === "python");
   if (pythonContribution) {

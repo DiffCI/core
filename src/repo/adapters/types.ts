@@ -25,6 +25,10 @@ export interface AdapterContribution {
   /** Rust files that may read documentation: workspace build scripts, and sources naming a
    * documentation path in a string literal. */
   rustDocumentationReaders?: string[];
+  /** Rust files that may read tool configuration or repository metadata: workspace build scripts,
+   * sources naming a `.github`, TOML, YAML, JSON or dotfile path in a string literal, and sources that
+   * run Cargo or another program (which reads its own configuration). */
+  rustMetadataReaders?: string[];
   /** Directories of the workspace's Cargo packages ("" for a root package), for confining blockers on
    * non-Rust files to the crate that owns them. */
   rustCrateDirectories?: string[];
