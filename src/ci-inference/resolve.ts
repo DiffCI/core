@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { replaceExpressions } from "./expression.js";
+import { packageManagerCommand } from "./purpose.js";
 import type { EvidenceRef, ObservedFact } from "./schema.js";
 import type { ReferenceNode } from "./reference-graph.js";
 
@@ -76,6 +77,23 @@ export function expressionReferences(command: string, evidence: EvidenceRef): Re
 }
 
 /**
+ * Scripts a script body runs through `npm run`, `yarn` or `pnpm`. Each invocation is read up to the next
+ * shell separator with the same package-manager grammar the top-level step uses (`packageManagerCommand`),
+ * so `yarn install` or `pnpm add` is an install, `yarn why` a builtin, and a flag such as `-r` or `-s`
+ * is never taken for a script name.
+ */
+function nestedScriptNames(body: string): string[] {
+  const names: string[] = [];
+  for (const m of body.matchAll(/\b(?:npm run|yarn|pnpm)\b/g)) {
+    const rest = body.slice(m.index);
+    const cut = rest.search(/\|\||&&|\||;/);
+    const pm = packageManagerCommand((cut === -1 ? rest : rest.slice(0, cut)).trim().split(/\s+/));
+    if (pm?.kind === "script" && pm.scriptName) names.push(pm.scriptName);
+  }
+  return names;
+}
+
+/**
  * Follows `npm run <script>` through package.json, recursively.
  *
  * Terminates on: a script that is a plain command (RESOLVED), a script that invokes an opaque wrapper
@@ -132,10 +150,10 @@ export function resolveScript(repoPath: string, scriptName: string, evidence: Ev
 
   // A script that invokes further scripts: follow each.
   const nested: ReferenceNode[] = [];
-  for (const m of body.matchAll(/\b(?:npm run|yarn(?: run)?|pnpm(?: run)?)\s+([A-Za-z0-9:_-]+)/g)) {
+  for (const scriptName of nestedScriptNames(body)) {
     // `seen` holds this script's ancestors only. A script reached twice through different branches (a
     // diamond: `ci` runs `build` and `test`, and `test` runs `build` too) is not a cycle.
-    nested.push(...resolveScript(repoPath, m[1]!, bodyEvidence, new Set(seen)));
+    nested.push(...resolveScript(repoPath, scriptName, bodyEvidence, new Set(seen)));
   }
 
   const expressions = expressionReferences(body, bodyEvidence);

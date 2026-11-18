@@ -230,6 +230,7 @@
     "tests/ci-inference/infer.test.ts",
     "tests/ci-inference/jobs.test.ts",
     "tests/ci-inference/purpose.test.ts",
+    "tests/ci-inference/script-pm-verbs.test.ts",
     "tests/ci-inference/receipt-integrity.test.ts",
     "tests/ci-inference/script-diamond.test.ts",
     "tests/ci-inference/lockfile-facts.test.ts",
