@@ -13,8 +13,8 @@ import { contribution, type AdapterContext, type AdapterContribution, type Repos
  * WHAT. The import graph comes from Python's own `ast` module, run once over every `.py` file (a short
  * script on stdin; no repository code is imported or executed, unlike `pytest --collect-only`, which runs
  * conftest.py). DiffCI resolves each import against the repository root, `src/`, pytest's `pythonpath`
- * and, for a file in a directory without `__init__.py`, that directory (pytest's default `prepend`
- * import mode puts it on sys.path). Importing `a.b.c` also reaches `a/__init__.py` and `a/b/__init__.py`,
+ * and each file's basedir: its own directory when that has no `__init__.py`, otherwise the first
+ * directory above its package (pytest's default `prepend` import mode puts the basedir on sys.path). Importing `a.b.c` also reaches `a/__init__.py` and `a/b/__init__.py`,
  * which run on import. Tests follow pytest's `python_files` and `testpaths`; each test also depends on
  * every `conftest.py` from its directory up to the root, which pytest loads before it.
  *
@@ -180,12 +180,24 @@ export function resolvePythonGraph(files: readonly string[], parsed: Record<stri
     return [candidate, ...inits];
   };
   const isPackageDir = (dir: string) => known.has(dir ? `${dir}/__init__.py` : "__init__.py");
+  // pytest's default `prepend` import mode puts the basedir on sys.path: the file's own directory when
+  // it is not in a package, otherwise the first directory above its package (the nearest ancestor
+  // without `__init__.py`). Undefined when the package reaches the repository root.
+  const basedirOf = (dir: string): string | undefined => {
+    let base = dir;
+    while (isPackageDir(base)) {
+      if (!base) return undefined;
+      base = posix.dirname(base) === "." ? "" : posix.dirname(base);
+    }
+    return base;
+  };
   for (const file of files) {
     const entry = parsed[file];
     if (!entry || entry.error) { blockers.push(`Python file could not be parsed (${entry?.error ?? "no result"}): ${file}`); continue; }
     if (entry.dynamic) blockers.push(`Python computed import in ${file}; full validation required`);
     const dir = posix.dirname(file) === "." ? "" : posix.dirname(file);
-    const fileRoots = isPackageDir(dir) ? roots : [...roots, dir];
+    const basedir = basedirOf(dir);
+    const fileRoots = basedir === undefined || roots.includes(basedir) ? roots : [...roots, basedir];
     const add = (targets: string[] | undefined) => { for (const to of targets ?? []) edge(file, to); };
     for (const [module, level, names] of entry.imports ?? []) {
       if (level > 0) {
