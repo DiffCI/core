@@ -589,6 +589,46 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       const anchor = owner(file)?.manifest;
       if (anchor && anchor !== file) result.edges.push({ from: anchor, to: file, kind: "import" }, { from: file, to: anchor, kind: "import" });
     }
+    // Every in-repository local package that is not a workspace member (a vendored or excluded
+    // "bridge" crate) is scanned up front, whether or not a member reaches it. Its build scripts and
+    // documentation readers count as readers, as members' do, so a docs change keeps the full suite;
+    // code that runs programs turns off crate scoping; and code that could read other crates' files
+    // makes the members that reach it depend on every workspace crate (below). What cannot be scanned
+    // counts as all three.
+    const bridgeOpaque = new Map<string, boolean>();
+    for (const [id, manifest] of localInside) {
+      const directory = manifest.slice(0, -"/Cargo.toml".length);
+      const pkg = localNonMembers.find(candidate => candidate.id === id)!;
+      const bridgeRoots = new Set(pkg.targets.map(target => resolvedPath(root, target.src_path)));
+      let isOpaque = false;
+      for (const target of pkg.targets.filter(target => target.kind.includes("custom-build"))) {
+        isOpaque = true;
+        (result.rustDocumentationReaders ??= []).push(repositoryPath(root, target.src_path, known) ?? manifest);
+      }
+      for (const file of context.files.filter(file => file.endsWith(".rs") && under(file, directory))) {
+        let scanned: ReturnType<typeof rustInputs>;
+        try { scanned = rustInputs(readFileSync(resolve(root, file), "utf8")); } catch { scanned = undefined; }
+        if (!scanned) {
+          isOpaque = true;
+          (result.rustDocumentationReaders ??= []).push(file);
+          result.rustRunsPrograms = true;
+          continue;
+        }
+        if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(file);
+        if (scanned.runsPrograms) result.rustRunsPrograms = true;
+        // `#[path]` is relative to the file's directory, and inside inline modules to their names as
+        // well, which is only resolvable from a crate root or mod.rs (as for members, below).
+        const modRs = bridgeRoots.has(file) || /(?:^|\/)mod\.rs$/.test(file);
+        if (scanned.compiles || scanned.navigates || scanned.documentation || scanned.paths.length > 0
+          || scanned.inputs.some(input => {
+            if (input.module?.length && !modRs) return true;
+            const base = input.module ? posix.join(dirname(file), ...input.module) : dirname(file);
+            const path = repositoryPath(root, resolve(root, base, input.path), known);
+            return !path || !under(path, directory);
+          })) isOpaque = true;
+      }
+      bridgeOpaque.set(id, isOpaque);
+    }
     // Cargo resolves all target platforms unless --filter-platform is supplied.
     // --all-features below unions optional dependencies too; cfg(feature) code
     // stays crate-granular and does not itself make the graph unsafe.
@@ -606,23 +646,8 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // read other crates' files (a build script, Cargo or program runs, climbing out of its
       // directory, path literals or includes) makes the member depend on every workspace crate.
       const byId = new Map(nodes.map(node => [node.id, node]));
-      const opaque = new Map<string, boolean>();
-      const opaqueLocal = (id: string) => {
-        const manifest = localInside.get(id);
-        if (!manifest) return false;
-        if (!opaque.has(id)) {
-          const directory = manifest.slice(0, -"/Cargo.toml".length);
-          const pkg = localNonMembers.find(candidate => candidate.id === id)!;
-          opaque.set(id, pkg.targets.some(target => target.kind.includes("custom-build"))
-            || context.files.filter(file => file.endsWith(".rs") && under(file, directory)).some(file => {
-              let scanned: ReturnType<typeof rustInputs>;
-              try { scanned = rustInputs(readFileSync(resolve(root, file), "utf8")); } catch { return true; }
-              return !scanned || scanned.compiles || scanned.navigates || scanned.documentation || scanned.paths.length > 0
-                || scanned.inputs.some(input => { const path = repositoryPath(root, resolve(root, dirname(file), input.path), known); return !path || !under(path, directory); });
-            }));
-        }
-        return opaque.get(id)!;
-      };
+      const opaque = new Map([...localInside.keys()].map(id => [id, bridgeOpaque.get(id) === true]));
+      const opaqueLocal = (id: string) => opaque.get(id) === true;
       for (const node of nodes) {
         const anchor = anchors.get(node.id);
         if (!anchor) continue;

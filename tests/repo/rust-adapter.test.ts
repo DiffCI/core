@@ -481,6 +481,65 @@ test("local path packages inside the repository are unmodelled boundaries; depen
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("local path packages inside the repository record their readers and program runs, reached or not", () => {
+  // a -> vendor/bridge -> b, and vendor/loose is reached by no member. Before 2026-11-18 a bridge was
+  // only scanned to decide whether it was opaque, so a docs change could select nothing even though
+  // a's tests call bridge code that reads the docs, and a bridge running `sh` kept crate scoping on.
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["a", "b"]\nexclude = ["vendor"]\n',
+    "vendor/bridge/Cargo.toml": manifest("bridge"), "vendor/bridge/src/lib.rs": "pub fn bridge() -> u8 { b::value() }",
+    "vendor/bridge/build.rs": "fn main() {}",
+    "vendor/loose/Cargo.toml": manifest("loose"), "vendor/loose/src/lib.rs": "pub fn loose() {}" };
+  for (const name of ["a", "b"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "pub fn value() -> u8 { 1 }" });
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const [a, b] = ["a", "b"].map(name => pkg(root, name, name));
+    const bridge = pkg(root, "vendor/bridge", "bridge");
+    const loose = pkg(root, "vendor/loose", "loose");
+    const analyze = (bridgeSource: string, looseSource = "pub fn loose() {}", bridgeTargets: ReturnType<typeof target>[] = []) => {
+      writeFileSync(join(root, "vendor/bridge/src/lib.rs"), bridgeSource);
+      writeFileSync(join(root, "vendor/loose/src/lib.rs"), looseSource);
+      const bridgePackage = { ...bridge, targets: [...bridge.targets, ...bridgeTargets] };
+      const result = analyzeRustMetadata(context, metadata(root, [a!, b!, bridgePackage, loose], { workspace_members: [a!.id, b!.id],
+        resolve: { nodes: [{ id: a!.id, dependencies: [bridgePackage.id] }, { id: bridgePackage.id, dependencies: [b!.id] }, { id: b!.id, dependencies: [] }, { id: loose.id, dependencies: [] }] } }));
+      assert.deepEqual(result.blockers, []);
+      return result;
+    };
+    const plain = analyze("pub fn bridge() -> u8 { b::value() }");
+    assert.deepEqual(plain.rustDocumentationReaders ?? [], []);
+    assert.equal(plain.rustRunsPrograms, false);
+    const docs = analyze('pub fn guide() -> String { std::fs::read_to_string("docs/guide.md").unwrap() }');
+    assert.ok(docs.rustDocumentationReaders?.includes("vendor/bridge/src/lib.rs"), JSON.stringify(docs.rustDocumentationReaders));
+    const build = analyze("pub fn bridge() {}", "pub fn loose() {}", [target(root, "vendor/bridge/build.rs", "build-script-build", "custom-build", false)]);
+    assert.ok(build.rustDocumentationReaders?.includes("vendor/bridge/build.rs"), JSON.stringify(build.rustDocumentationReaders));
+    assert.equal(analyze('pub fn run() { std::process::Command::new("sh").arg("x.sh"); }').rustRunsPrograms, true);
+    // The same holds for a local package no member reaches: a member could still reach it later
+    // through a path no metadata shows, and the cost is only a full run for docs changes.
+    const looseDocs = analyze("pub fn bridge() {}", 'pub fn guide() -> String { std::fs::read_to_string("docs/guide.md").unwrap() }');
+    assert.ok(looseDocs.rustDocumentationReaders?.includes("vendor/loose/src/lib.rs"));
+    assert.equal(analyze("pub fn bridge() {}", 'pub fn run() { std::process::Command::new("python3"); }').rustRunsPrograms, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a bridge with #[path] modules is opaque, wherever its module base resolves", () => {
+  // rustc reads `mod inner { #[path = "y.rs"] mod y; }` in util.rs (neither a crate root nor mod.rs)
+  // from a directory the scan does not model, so the bridge must make a depend on every crate.
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers = ["a", "c"]\nexclude = ["vendor"]\n',
+    "vendor/bridge/Cargo.toml": manifest("bridge"), "vendor/bridge/src/lib.rs": "mod util;",
+    "vendor/bridge/src/util.rs": 'mod inner { #[path = "y.rs"] mod y; }' };
+  for (const name of ["a", "c"]) Object.assign(files, { [`${name}/Cargo.toml`]: manifest(name), [`${name}/src/lib.rs`]: "pub fn value() -> u8 { 1 }" });
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const [a, c] = ["a", "c"].map(name => pkg(root, name, name));
+    const bridge = pkg(root, "vendor/bridge", "bridge");
+    const result = analyzeRustMetadata(context, metadata(root, [a!, c!, bridge], { workspace_members: [a!.id, c!.id],
+      resolve: { nodes: [{ id: a!.id, dependencies: [bridge.id] }, { id: bridge.id, dependencies: [] }, { id: c!.id, dependencies: [] }] } }));
+    assert.deepEqual(result.blockers, []);
+    assert.deepEqual(result.edges.filter(edge => edge.from === "a/Cargo.toml" && edge.to.endsWith("Cargo.toml")).map(edge => edge.to).sort(), ["c/Cargo.toml"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Cargo rejects symlink escapes and duplicate target source identities", (t) => {
   const files = { "Cargo.toml": manifest("root"), "src/lib.rs": "" };
   const root = fixture(files);
