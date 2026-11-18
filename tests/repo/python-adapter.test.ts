@@ -129,6 +129,32 @@ describe("pyproject.toml pytest lists (#158)", () => {
   });
 });
 
+describe("pytest settings from tox.ini and setup.cfg (#161)", () => {
+  it("reads python_files and testpaths from tox.ini [pytest], including a continued value", () => {
+    const tox = readPytestSettings((path) => path === "tox.ini"
+      ? "[tox]\nenvlist = py312\n\n[pytest]\npython_files = check_*.py\n    *_spec.py\ntestpaths = tests\n    integration\n\n[testenv]\ncommands = pytest\n"
+      : undefined);
+    assert.deepEqual(tox, { pythonFiles: ["check_*.py", "*_spec.py"], testpaths: ["tests", "integration"], pythonpath: [] });
+    assert.ok(isPytestFile("integration/check_a.py", tox));
+    assert.ok(!isPytestFile("integration/test_a.py", tox));
+  });
+
+  it("reads the same keys from setup.cfg [tool:pytest]", () => {
+    const cfg = readPytestSettings((path) => path === "setup.cfg"
+      ? "[metadata]\nname = x\n\n[tool:pytest]\npython_files = check_*.py\ntestpaths =\n    tests\n    integration\npythonpath = src\n"
+      : undefined);
+    assert.deepEqual(cfg, { pythonFiles: ["check_*.py"], testpaths: ["tests", "integration"], pythonpath: ["src"] });
+  });
+
+  it("skips a tox.ini without [pytest] in favour of setup.cfg", () => {
+    const files: Record<string, string> = {
+      "tox.ini": "[tox]\nenvlist = py312\n\n[testenv]\ncommands = pytest\n",
+      "setup.cfg": "[tool:pytest]\ntestpaths = from_setup_cfg\n",
+    };
+    assert.deepEqual(readPytestSettings((path) => files[path]).testpaths, ["from_setup_cfg"]);
+  });
+});
+
 // Only decides whether Python is available at all. Assertions use the interpreter the analysis recorded:
 // a second probe can pick another launcher on Windows (#304).
 const pythonAvailable = pythonInterpreter(process.cwd()) !== undefined;
