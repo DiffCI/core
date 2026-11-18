@@ -65,7 +65,7 @@ export type PythonImport = [module: string, level: number, names: string[]];
 export interface PythonFileImports { imports?: PythonImport[]; dynamic?: boolean; error?: string }
 
 const EXCLUDED_DIRS = new Set([".venv", "venv", "env", ".env", ".tox", ".nox", "site-packages", "__pycache__", ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache"]);
-const PROJECT_FILES = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", ".pytest.ini", "tox.ini", "conftest.py"];
+const PROJECT_FILES = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "tox.ini", "conftest.py"];
 
 export function isPythonSource(path: string): boolean {
   return path.endsWith(".py") && !path.split("/").some((part) => EXCLUDED_DIRS.has(part) || part.endsWith(".egg-info"));
@@ -163,18 +163,51 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
       if (plugins.length) settings.plugins = plugins;
     } else settings[key] = values;
   };
-  // pytest's search order. `pytest.ini` and `.pytest.ini` match even when empty or without a `[pytest]`
-  // section, and then pytest uses its defaults; the other files only match with their section. The first
-  // match wins and options are never merged.
-  for (const [file, header] of [["pytest.ini", "pytest"], [".pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
+  const section = (text: string, header: string): string | undefined =>
+    new RegExp(`^\\[${header.replace(/[.:]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text)?.[1];
+  const hasEntries = (body: string) => /^[ \t]*[^\s#]/m.test(body);
+  // pytest 9's native TOML mode (`pytest.toml`, `[tool.pytest]`): every key selection reads is a list of
+  // strings, and each `addopts` item is one argument. Any other type is an error in pytest, so it can't be read.
+  const readNative = (file: string, body: string) => {
+    for (const key of keys) {
+      const array = new RegExp(`^${key}\\s*=\\s*(?=\\[)`, "m").exec(body);
+      if (array) {
+        const values = readTomlStringArray(body, array.index + array[0].length);
+        if (values) apply(key, values);
+        else settings.unreadable = `${file} ${key}`;
+      } else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+    }
+    return settings;
+  };
+  // pytest's search order. `pytest.toml`, `.pytest.toml`, `pytest.ini` and `.pytest.ini` match even when
+  // empty or without their `[pytest]` table, and then pytest uses its defaults; the other files only match
+  // with their section. The first match wins and options are never merged.
+  for (const [file, header] of [["pytest.toml", "pytest"], [".pytest.toml", "pytest"], ["pytest.ini", "pytest"], [".pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
     const text = read(file);
     if (text === undefined) continue;
-    const section = new RegExp(`^\\[${header.replace(/[.:]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text);
-    if (!section) {
+    if (file === "pytest.toml" || file === ".pytest.toml") {
+      const body = section(text, "pytest");
+      if (body !== undefined) return readNative(file, body);
+      // pytest rejects options written above any table.
+      if (hasEntries(text.split(/^\[/m, 1)[0]!)) settings.unreadable = `${file} options outside [pytest]`;
+      return settings;
+    }
+    if (file === "pyproject.toml") {
+      // `[tool.pytest]` holds native TOML values, `[tool.pytest.ini_options]` INI-style ones. pytest refuses a
+      // file that sets both, and an `ini_options` key inside `[tool.pytest]` is a form this reader doesn't parse.
+      const native = section(text, "tool.pytest");
+      const ini = section(text, header);
+      if (native !== undefined && /^ini_options\s*[.=]/m.test(native)) { settings.unreadable = `${file} [tool.pytest] ini_options`; return settings; }
+      if (native !== undefined && hasEntries(native)) {
+        if (ini !== undefined && hasEntries(ini)) { settings.unreadable = `${file} [tool.pytest] and [tool.pytest.ini_options]`; return settings; }
+        return readNative(file, native);
+      }
+    }
+    const body = section(text, header);
+    if (body === undefined) {
       if (file === "pytest.ini" || file === ".pytest.ini") return settings;
       continue;
     }
-    const body = section[1]!;
     for (const key of keys) {
       if (file === "pyproject.toml") {
         const match = new RegExp(`^${key}\\s*=\\s*("[^"]*"|'[^']*')`, "m").exec(body);

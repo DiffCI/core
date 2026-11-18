@@ -681,7 +681,7 @@ _Module resource and dependency impact contributed by [@FredApps](https://github
 
 ### Python
 
-These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.ini`, `.pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
+These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.toml`, `.pytest.toml`, `pytest.ini`, `.pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
@@ -690,6 +690,7 @@ These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setu
 | `Unresolved relative import in …: ……` | `from .gone import x` after deleting `gone.py` | No |
 | `Unresolved first-party Python import in …: …` | `import shop.generated` where `shop/generated.py` is created by a build step | No |
 | `pytest configuration DiffCI cannot read: …` | `python_files` set to something other than a string or list in `pyproject.toml` | Fix: use a literal string or list |
+| `pytest configuration DiffCI cannot read: …` | A `pytest.toml` or `[tool.pytest]` key that isn't a list of strings, both `[tool.pytest]` and `[tool.pytest.ini_options]` in one `pyproject.toml`, or options above the `[pytest]` table in `pytest.toml` | Fix: use a list of strings, keep one table, and put options under `[pytest]` (pytest 9 rejects all three) |
 | `Python analysis found no Python files` | Project files with every `.py` file inside a virtual environment | No |
 
 ### Vue
