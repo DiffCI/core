@@ -36,6 +36,15 @@ Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same
 
 [Full workflow](examples/github-actions-observer.yml) · [GitLab CI/CD component](integrations/gitlab/README.md)
 
+### It's just your CI
+
+DiffCI doesn't replace your CI, your test runner or your required checks. It reads them.
+
+- **Remove it and nothing changes.** The App and the observe job run no tests, skip nothing and change no required check. Uninstall the App or delete the job, and your pipeline is exactly what it was.
+- **When unsure, it runs everything.** When DiffCI can't tell what a change affects (a config or dependency change it can't narrow, an import it can't follow), `verify` runs the full suite and checks instead of guessing, and says why. Your CI keeps running everything unless you choose to run DiffCI's selection there yourself.
+- **Nothing to sign up for.** No account, config file or hosted service is needed. Plans and receipts are plain JSON in an open format ([change plan](docs/change-plan.md)).
+- **The agent setup is files in your repository.** To undo `diffci init`, delete what it wrote: its section of `AGENTS.md` and `CLAUDE.md`, the `diffci` entries in the MCP configs, the `diffci-verify` skill folders, the stop hooks and the pre-push hook ([what `init` writes](docs/agent-installation.md)).
+
 [![DiffCI demo video](docs/demo-video.jpg)](https://www.youtube.com/watch?v=ychCnVVRQq0)
 
 ▶ [Watch the demo on YouTube](https://www.youtube.com/watch?v=ychCnVVRQq0)
