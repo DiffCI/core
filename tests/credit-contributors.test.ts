@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 // @ts-expect-error plain ESM script without type declarations
-import { contributorTiers, creditReadme, README_TIERS, summarize } from "../scripts/credit-contributors.mjs";
+import { contributorTiers, creditReadme, README_TIERS, summarize, withHandLanded } from "../scripts/credit-contributors.mjs";
 
 const readme = [
   "# DiffCI",
@@ -51,6 +51,16 @@ describe("credit contributors", () => {
       pr(140, "sam", "fix: in range? no, but under the first automated PR", { number: 129 }),
     ]);
     assert.deepEqual(credited, []);
+  });
+
+  it("credits a pull request a maintainer squashed onto main by hand, only for its own author", () => {
+    const closed = (number: number, login: string) => pr(number, login, "fix: landed", { merged_at: null });
+    const commit = (title: string, login: string | null) => ({ commit: { message: `${title}\n\nSigned-off-by: x` }, author: login ? { login } : null });
+    const pulls = withHandLanded(
+      [closed(160, "Sam"), closed(161, "sam"), closed(162, "sam"), closed(163, "sam")],
+      [commit("fix: landed (#160)", "sam"), commit("fix: landed (#161)", "someone-else"), commit("fix: landed (#162)", null), commit("fix: #163 mentioned (#999)", "sam")],
+    );
+    assert.deepEqual(creditReadme(readme, pulls).credited, [{ login: "Sam", number: 160 }]);
   });
 
   it("strips conventional prefixes", () => {

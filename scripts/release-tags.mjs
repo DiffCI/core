@@ -29,7 +29,8 @@ for (const tag of [tags.release, tags.action, tags.cli]) {
   const peeled = remote.get(`${tag}^{}`) ?? remote.get(tag);
   if (peeled === head) { console.log(`${tag} already targets ${head.slice(0, 7)}`); continue; }
   if (peeled) throw new Error(`${tag} already exists on origin at ${peeled.slice(0, 7)}, not ${head.slice(0, 7)}`);
-  if (tag === tags.action) git("tag", "-a", tag, "-m", `Release DiffCI observer Action v${version}`, head);
+  // -f for every tag: a rejected push leaves the tags it created in this clone, and a rerun must replace them.
+  if (tag === tags.action) git("tag", "-f", "-a", tag, "-m", `Release DiffCI observer Action v${version}`, head);
   else git("tag", "-f", tag, head);
   toPush.push(`refs/tags/${tag}`);
 }

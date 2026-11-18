@@ -8,7 +8,7 @@ In your PR, explain the changed behavior, include the reproducible fixture and v
 
 Open an issue or pull request describing the behavior and a reproducible example. Do not post credentials, customer source, private logs or other confidential data.
 
-Use Node.js 22.5+ and run `npm ci`, `npm run typecheck`, `npm test`, `npm run build` and `npm run audit:boundary`. Changes to safety or planning should include a regression test using a synthetic repository. Preserve full-run fallback on insufficient evidence; distinguish advisory selection from executable commands.
+Use Node.js 22.5+ and run `npm ci`, `npm run typecheck`, `npm test`, `npm run build`, `npm run audit:boundary` and `npm run agent:check`, the checks Core CI's `check` job runs (it also runs `npm run benchmark`). `agent:check` fails when a version pinned in the agent plugins, the GitLab and Azure DevOps integrations or `docs/agent-installation.md` differs from the CLI package version. Changes to safety or planning should include a regression test using a synthetic repository. Preserve full-run fallback on insufficient evidence; distinguish advisory selection from executable commands.
 
 Contributions to this repository are made under the MIT License. Submit only work you are entitled to contribute and preserve third-party notices.
 

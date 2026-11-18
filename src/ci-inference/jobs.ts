@@ -95,7 +95,8 @@ export interface PurposePlan {
 /**
  * Resolves the execution path for one requested outcome.
  *
- * Deterministic: among jobs that provide the purpose, the one with the fewest blocked operations wins;
+ * Deterministic: among jobs that provide the purpose, one that runs a step of it in this instance beats one
+ * whose every such step its condition skips; then the one with the fewest blocked operations wins;
  * workflow-then-job order breaks ties. Preferring the least-blocked job is not a quality judgement about
  * the repository — it is choosing the path this engine can actually account for.
  *
@@ -114,7 +115,11 @@ export function planForPurpose(jobs: InferredJob[], purpose: Purpose): PurposePl
   }
 
   const blockedCount = (j: InferredJob): number => j.operations.filter((o) => !o.executable).length;
-  const chosen = [...providers].sort((a, b) => blockedCount(a) - blockedCount(b))[0]!;
+  // A job (or matrix instance) whose every step of this purpose is skipped by its condition provides
+  // nothing here, so it is chosen only when no job runs such a step: a `matrix.os == 'ubuntu-latest'`
+  // test step must not make the windows instance, skipped, stand for the ubuntu one that runs it.
+  const skipsPurpose = (j: InferredJob): number => (j.operations.some((o) => purposeOfKind(o.kind) === purpose && o.willExecute !== false) ? 0 : 1);
+  const chosen = [...providers].sort((a, b) => skipsPurpose(a) - skipsPurpose(b) || blockedCount(a) - blockedCount(b))[0]!;
 
   // The prerequisite chain: install first when the job has one, then everything up to and including the
   // operations that deliver the requested purpose. Steps AFTER it are not needed for this outcome.

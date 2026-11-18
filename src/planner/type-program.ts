@@ -21,6 +21,7 @@
  */
 
 import { posix } from "node:path";
+import ts from "typescript";
 import { projectRoots } from "../repo/compiled-projects.js";
 import { LOCKFILE } from "../repo/lockfiles.js";
 import type { NarrowingInput } from "./check-narrowing.js";
@@ -40,6 +41,28 @@ function escape(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Repository files `config` extends by a relative path, transitively, whatever they are named
+ * (`"extends": "./config/base.json"`). Their compiler options are the program's own. */
+function extendedConfigs(config: string, input: NarrowingInput): Set<string> {
+  const found = new Set<string>();
+  const queue = [config];
+  while (queue.length > 0 && found.size < 50) {
+    const current = queue.shift()!;
+    const text = input.read(current);
+    if (text === undefined) continue;
+    const extended: unknown = ts.parseConfigFileTextToJson(current, text).config?.extends;
+    for (const value of Array.isArray(extended) ? extended : [extended]) {
+      if (typeof value !== "string" || !value.startsWith(".")) continue;
+      const base = posix.normalize(posix.join(posix.dirname(current), value));
+      const path = [base, `${base}.json`].find((candidate) => input.read(candidate) !== undefined) ?? base;
+      if (found.has(path) || path === config) continue;
+      found.add(path);
+      queue.push(path);
+    }
+  }
+  return found;
+}
+
 /** The name an import of `path` would end with: its stem, or its directory for an index file. */
 function importName(path: string): string {
   const stem = posix.basename(path).replace(/\.(?:d\.)?[^.]+$/, "");
@@ -49,7 +72,8 @@ function importName(path: string): string {
 export function programMembership(config: string, input: NarrowingInput, cache: RootTextCache = new Map()): ProgramMembership {
   const configText = input.read(config);
   if (configText === undefined) return { inProgram: true, reason: `${config} could not be read` };
-  const global = input.changes.find(({ path }) => CONFIG.test(path) || path === "package.json" || LOCKFILE.test(posix.basename(path)) || path.endsWith(".d.ts"));
+  const bases = extendedConfigs(config, input);
+  const global = input.changes.find(({ path }) => CONFIG.test(path) || bases.has(path) || path === "package.json" || LOCKFILE.test(posix.basename(path)) || path.endsWith(".d.ts"));
   if (global) return { inProgram: true, reason: `${global.path} changed, which affects every file's types` };
 
   // Added and deleted paths are matched too: they enter or leave the program.

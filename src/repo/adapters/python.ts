@@ -13,10 +13,11 @@ import { contribution, type AdapterContext, type AdapterContribution, type Repos
  * WHAT. The import graph comes from Python's own `ast` module, run once over every `.py` file (a short
  * script on stdin; no repository code is imported or executed, unlike `pytest --collect-only`, which runs
  * conftest.py). DiffCI resolves each import against the repository root, `src/`, pytest's `pythonpath`
- * and, for a file in a directory without `__init__.py`, that directory (pytest's default `prepend`
- * import mode puts it on sys.path). Importing `a.b.c` also reaches `a/__init__.py` and `a/b/__init__.py`,
+ * and each file's basedir: its own directory when that has no `__init__.py`, otherwise the first
+ * directory above its package (pytest's default `prepend` import mode puts the basedir on sys.path). Importing `a.b.c` also reaches `a/__init__.py` and `a/b/__init__.py`,
  * which run on import. Tests follow pytest's `python_files` and `testpaths`; each test also depends on
- * every `conftest.py` from its directory up to the root, which pytest loads before it.
+ * every `conftest.py` from its directory up to the root, which pytest loads before it, and on every
+ * plugin module that `addopts` loads with `-p`.
  *
  * Full validation instead, as global blockers: no Python interpreter, a file that does not parse, an
  * `importlib.import_module` / `__import__` / `pytest_plugins` entry whose name is computed, a first-party
@@ -64,15 +65,23 @@ export type PythonImport = [module: string, level: number, names: string[]];
 export interface PythonFileImports { imports?: PythonImport[]; dynamic?: boolean; error?: string }
 
 const EXCLUDED_DIRS = new Set([".venv", "venv", "env", ".env", ".tox", ".nox", "site-packages", "__pycache__", ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache"]);
-const PROJECT_FILES = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", "tox.ini", "conftest.py"];
+const PROJECT_FILES = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", ".pytest.ini", "tox.ini", "conftest.py"];
 
 export function isPythonSource(path: string): boolean {
   return path.endsWith(".py") && !path.split("/").some((part) => EXCLUDED_DIRS.has(part) || part.endsWith(".egg-info"));
 }
 
-/** The first interpreter that runs: `python3`, `python`, then the Windows launcher `py -3`. */
+/** The interpreters `pythonInterpreter()` tries, in order: `python3`, `python`, then the Windows launcher `py -3`. */
+export const PYTHON_INTERPRETER_CANDIDATES: readonly (readonly string[])[] = [["python3"], ["python"], ["py", "-3"]];
+
+/**
+ * The first of `PYTHON_INTERPRETER_CANDIDATES` that runs Python 3. Each call probes again, so two calls
+ * can disagree when a launcher is slow or flaky (a Windows `python3` alias stub); use the interpreter
+ * the analysis recorded (`profile.pythonInterpreter`) rather than a second probe (#304).
+ */
 export function pythonInterpreter(cwd: string): string[] | undefined {
-  for (const candidate of [["python3"], ["python"], ["py", "-3"]]) {
+  for (const entry of PYTHON_INTERPRETER_CANDIDATES) {
+    const candidate = [...entry];
     const result = spawnSync(candidate[0]!, [...candidate.slice(1), "-c", "import sys; print(sys.version_info[0])"], { cwd, encoding: "utf8", timeout: 10_000, windowsHide: true });
     if (result.status === 0 && result.stdout.trim() === "3") return candidate;
   }
@@ -83,6 +92,8 @@ export interface PytestSettings {
   pythonFiles: string[];
   testpaths: string[];
   pythonpath: string[];
+  /** Plugin modules `addopts` loads with `-p`; every test depends on them. */
+  plugins?: string[];
   /** A key that is present but could not be read; its file makes the analysis fall back. */
   unreadable?: string;
 }
@@ -91,24 +102,93 @@ function splitList(value: string): string[] {
   return value.split(/[\s,]+/).map((entry) => entry.replace(/^["']|["']$/g, "")).filter(Boolean);
 }
 
+/**
+ * The strings of a TOML array of strings that starts with `[` at `start`. Comments, commas and line breaks
+ * between the strings are skipped, and a `]`, `,` or `#` inside a quoted string stays part of the value.
+ * Anything else (a nested array, a number, a multi-line string, an escape it cannot read, no closing `]`)
+ * returns undefined, so the caller can fall back instead of guessing.
+ */
+function readTomlStringArray(text: string, start: number): string[] | undefined {
+  const values: string[] = [];
+  const escapes: Record<string, string> = { "\\": "\\", '"': '"', b: "\b", t: "\t", n: "\n", f: "\f", r: "\r" };
+  let index = start + 1;
+  let expectValue = true;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === " " || char === "\t" || char === "\r" || char === "\n") index += 1;
+    else if (char === "#") {
+      const end = text.indexOf("\n", index);
+      index = end === -1 ? text.length : end;
+    } else if (char === "]") return values;
+    else if (char === ",") {
+      if (expectValue) return undefined;
+      expectValue = true;
+      index += 1;
+    } else if ((char === '"' || char === "'") && expectValue) {
+      if (text.startsWith(char.repeat(3), index)) return undefined;
+      let value = "";
+      index += 1;
+      for (;;) {
+        const next = text[index];
+        if (next === undefined || next === "\n") return undefined;
+        if (next === char) break;
+        if (next === "\\" && char === '"') {
+          const escaped = escapes[text[index + 1] ?? ""];
+          if (escaped === undefined) return undefined;
+          value += escaped;
+          index += 2;
+        } else {
+          value += next;
+          index += 1;
+        }
+      }
+      index += 1;
+      values.push(value);
+      expectValue = false;
+    } else return undefined;
+  }
+  return undefined;
+}
+
 /** pytest's own configuration, from the first file pytest would use. Only the keys selection depends on. */
 export function readPytestSettings(read: (path: string) => string | undefined): PytestSettings {
   const settings: PytestSettings = { pythonFiles: ["test_*.py", "*_test.py"], testpaths: [], pythonpath: [] };
-  const keys = ["python_files", "testpaths", "pythonpath"] as const;
+  const keys = ["python_files", "testpaths", "pythonpath", "addopts"] as const;
   const apply = (key: (typeof keys)[number], values: string[]) => {
     if (key === "python_files") settings.pythonFiles = values;
-    else settings[key] = values;
+    else if (key === "addopts") {
+      // `-p name` and `-pname` import a plugin module before collection; `-p no:name` disables one.
+      const plugins = values.flatMap((value, index) => value === "-p" ? [values[index + 1] ?? ""] : value.startsWith("-p") && !value.startsWith("--") ? [value.slice(2)] : [])
+        .filter((name) => !name.startsWith("no:"));
+      if (plugins.length) settings.plugins = plugins;
+    } else settings[key] = values;
   };
-  for (const [file, header] of [["pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
+  // pytest's search order. `pytest.ini` and `.pytest.ini` match even when empty or without a `[pytest]`
+  // section, and then pytest uses its defaults; the other files only match with their section. The first
+  // match wins and options are never merged.
+  for (const [file, header] of [["pytest.ini", "pytest"], [".pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
     const text = read(file);
     if (text === undefined) continue;
     const section = new RegExp(`^\\[${header.replace(/[.:]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text);
-    if (!section) continue;
+    if (!section) {
+      if (file === "pytest.ini" || file === ".pytest.ini") return settings;
+      continue;
+    }
     const body = section[1]!;
     for (const key of keys) {
       if (file === "pyproject.toml") {
-        const match = new RegExp(`^${key}\\s*=\\s*(\\[[\\s\\S]*?\\]|"[^"]*"|'[^']*')`, "m").exec(body);
-        if (match) apply(key, splitList(match[1]!.replace(/^\[|\]$/g, "")));
+        const match = new RegExp(`^${key}\\s*=\\s*("[^"]*"|'[^']*')`, "m").exec(body);
+        const array = new RegExp(`^${key}\\s*=\\s*(?=\\[)`, "m").exec(body);
+        // A multi-line string would otherwise match as an empty one. Its contents are read as one string;
+        // a basic string's line-ending backslash only joins lines. An unterminated one cannot be read.
+        const multiline = new RegExp(`^${key}\\s*=\\s*("""|'{3})([\\s\\S]*?)\\1`, "m").exec(body);
+        if (multiline) apply(key, splitList(multiline[1] === '"""' ? multiline[2]!.replace(/\\\r?\n/g, " ") : multiline[2]!));
+        else if (new RegExp(`^${key}\\s*=\\s*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
+        else if (array) {
+          const values = readTomlStringArray(body, array.index + array[0].length);
+          if (values) apply(key, key === "addopts" ? values.flatMap(splitList) : values);
+          else settings.unreadable = `${file} ${key}`;
+        } else if (match) apply(key, splitList(match[1]!));
         else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
       } else {
         // INI values continue on indented lines.
@@ -125,13 +205,30 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${glob.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")}$`);
 }
 
+/** One path segment against one shell-style glob segment, as Python's `fnmatch` reads it. */
+function segmentMatches(glob: string, segment: string): boolean {
+  const source = glob.replace(/\[!/g, "[^").replace(/[.+${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+  try { return new RegExp(`^${source}$`).test(segment); } catch { return glob === segment; }
+}
+
+/** Whether `segments` starts with directories (or is a file) that `glob` names; `**` spans any depth. */
+function globPrefixMatches(glob: readonly string[], segments: readonly string[]): boolean {
+  if (!glob.length) return true;
+  const [head, ...rest] = glob;
+  if (head === "**") return segments.some((_, index) => globPrefixMatches(rest, segments.slice(index))) || globPrefixMatches(rest, []);
+  return segments.length > 0 && segmentMatches(head!, segments[0]!) && globPrefixMatches(rest, segments.slice(1));
+}
+
 export function isPytestFile(path: string, settings: PytestSettings): boolean {
   const base = posix.basename(path);
   if (!settings.pythonFiles.some((glob) => globToRegExp(glob).test(base))) return false;
   if (!settings.testpaths.length) return true;
   return settings.testpaths.some((root) => {
     const clean = root.replace(/^\.\//, "").replace(/\/$/, "");
-    return clean === "." || clean === "" || path === clean || path.startsWith(`${clean}/`);
+    if (clean === "." || clean === "") return true;
+    // pytest expands each testpaths entry with glob.iglob(entry, recursive=True).
+    if (/[*?[]/.test(clean)) return globPrefixMatches(clean.split("/"), path.split("/"));
+    return path === clean || path.startsWith(`${clean}/`);
   });
 }
 
@@ -172,12 +269,24 @@ export function resolvePythonGraph(files: readonly string[], parsed: Record<stri
     return [candidate, ...inits];
   };
   const isPackageDir = (dir: string) => known.has(dir ? `${dir}/__init__.py` : "__init__.py");
+  // pytest's default `prepend` import mode puts the basedir on sys.path: the file's own directory when
+  // it is not in a package, otherwise the first directory above its package (the nearest ancestor
+  // without `__init__.py`). Undefined when the package reaches the repository root.
+  const basedirOf = (dir: string): string | undefined => {
+    let base = dir;
+    while (isPackageDir(base)) {
+      if (!base) return undefined;
+      base = posix.dirname(base) === "." ? "" : posix.dirname(base);
+    }
+    return base;
+  };
   for (const file of files) {
     const entry = parsed[file];
     if (!entry || entry.error) { blockers.push(`Python file could not be parsed (${entry?.error ?? "no result"}): ${file}`); continue; }
     if (entry.dynamic) blockers.push(`Python computed import in ${file}; full validation required`);
     const dir = posix.dirname(file) === "." ? "" : posix.dirname(file);
-    const fileRoots = isPackageDir(dir) ? roots : [...roots, dir];
+    const basedir = basedirOf(dir);
+    const fileRoots = basedir === undefined || roots.includes(basedir) ? roots : [...roots, basedir];
     const add = (targets: string[] | undefined) => { for (const to of targets ?? []) edge(file, to); };
     for (const [module, level, names] of entry.imports ?? []) {
       if (level > 0) {
@@ -203,6 +312,16 @@ export function resolvePythonGraph(files: readonly string[], parsed: Record<stri
     }
     // pytest loads every conftest.py from the rootdir down to the test's directory first.
     if (tests.has(file)) {
+      // Plugins named by `-p` in addopts are imported before any test is collected.
+      for (const plugin of settings.plugins ?? []) {
+        const parts = plugin.split(".");
+        const target = roots.map((root) => moduleFiles(root, parts)).find(Boolean);
+        if (target) add(target);
+        else if (!plugin || firstParty.has(parts[0]!)) {
+          const blocker = `Unresolved pytest plugin in addopts: -p ${plugin}`;
+          if (!blockers.includes(blocker)) blockers.push(blocker);
+        }
+      }
       const segments = dir ? dir.split("/") : [];
       for (let depth = 0; depth <= segments.length; depth += 1) {
         const conftest = [...segments.slice(0, depth), "conftest.py"].join("/");

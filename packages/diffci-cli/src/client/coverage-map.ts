@@ -37,12 +37,17 @@ export interface CoverageMap {
 const PROBE = `"use strict";
 if (process.env.NODE_TEST_CONTEXT && process.argv[1] && process.env.DIFFCI_COVERAGE_LOG) {
   const fs = require("node:fs");
+  const { resolve } = require("node:path");
   const { fileURLToPath } = require("node:url");
   const file = process.argv[1];
   const reads = new Set();
   const listed = new Set();
+  // A relative path is resolved against the test process's working directory when it is read, as fs does.
   const note = (set, target) => {
-    try { set.add(typeof target === "string" ? target : target instanceof URL ? fileURLToPath(target) : Buffer.isBuffer(target) ? target.toString() : ""); } catch {}
+    try {
+      const name = typeof target === "string" ? target : target instanceof URL ? fileURLToPath(target) : Buffer.isBuffer(target) ? target.toString() : "";
+      if (name) set.add(resolve(name));
+    } catch {}
   };
   const wrap = (owner, name, set) => {
     const original = owner[name];

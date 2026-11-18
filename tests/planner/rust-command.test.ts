@@ -36,6 +36,20 @@ describe("Rust selective command synthesis", () => {
     assert.deepEqual(plan.groups.flatMap(group => group.paths).sort(), ["cli/src/main.rs", "crates/core/src/lib.rs", "crates/core/tests/one.rs"]);
   });
 
+  it("keeps a package whole when a selected target has required features", () => {
+    const p = profile();
+    p.rustTestTargets!["crates/core/tests/two.rs"] = { name: "second", kind: "test", requiredFeatures: ["extra"] };
+    // Naming the gated target would make Cargo fail when the feature is off; `-p` lets Cargo skip it
+    // exactly as the full run does, and still runs the other selected integration test.
+    const plan = planSelectiveTestCommands(p, ["crates/core/tests/one.rs", "crates/core/tests/two.rs"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core"] }]);
+    // An unselected gated target does not widen an integration-only selection.
+    assert.deepEqual(planSelectiveTestCommands(p, ["crates/core/tests/one.rs"]).commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "--test", "custom-integration"] }]);
+    p.rustTestTargets!["crates/core/tests/two.rs"] = { name: "second", kind: "test", requiredFeatures: [] };
+    refuses(p, ["crates/core/tests/two.rs"]);
+  });
+
   it("selects custom integration target names instead of deriving names from paths", () => {
     const plan = planSelectiveTestCommands(profile(), ["crates/core/tests/one.rs"]);
     assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "--test", "custom-integration"] }]);
@@ -60,6 +74,16 @@ describe("Rust selective command synthesis", () => {
     ]);
   });
 
+  it("passes NAME@VERSION through when a dependency shares a member's name", () => {
+    const p = profile();
+    p.rustTestPackages!["crates/core/src/lib.rs"] = "actual-core@0.2.0";
+    p.rustTestPackages!["crates/core/tests/one.rs"] = "actual-core@0.2.0-rc.1";
+    assert.deepEqual(planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]).commands, [{ executable: "cargo", args: ["test", "-p", "actual-core@0.2.0"] }]);
+    assert.deepEqual(planSelectiveTestCommands(p, ["crates/core/tests/one.rs"]).commands, [{ executable: "cargo", args: ["test", "-p", "actual-core@0.2.0-rc.1", "--test", "custom-integration"] }]);
+    for (const spec of ["actual-core@0.2", "actual-core@^0.2.0", "actual-core@0.2.0+build", "actual-core@0.2.0 --workspace"]) {
+      const q = profile(); q.rustTestPackages!["crates/core/src/lib.rs"] = spec; refuses(q);
+    }
+  });
   it("refuses missing invocation evidence, including cached profiles", () => {
     const p = profile(); delete p.rustTestInvocation; refuses(p);
   });
@@ -113,9 +137,17 @@ describe("Rust selective command synthesis", () => {
     // Testing actual-core alone drops a feature cli turns on; cli alone, or both together, keep it.
     const p = profile();
     p.rustFeatureCoverage = { deficits: { "actual-core": ["actual-core v0.1.0"] }, units: [{ crates: ["actual-core", "cli"], covers: ["actual-core v0.1.0"] }] };
+    // Testing actual-core alone would drop the feature, so cli joins the command: more tests than
+    // selected, the full run's features, and still fewer tests than the full run.
     const alone = planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]);
-    assert.match(alone.refusalReason ?? "", /would build actual-core v0\.1\.0 with different features/);
-    assert.deepEqual(alone.commands, []);
+    assert.equal(alone.refusalReason, undefined);
+    assert.deepEqual(alone.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli"] }]);
+    assert.equal(alone.groups[0]?.label, "Cargo package tests (with cli for the full run's features)");
+    assert.deepEqual(alone.groups[0]?.paths, ["crates/core/src/lib.rs"]);
+    // Without a unit that covers the dependency, the plan is still refused.
+    const uncovered = profile();
+    uncovered.rustFeatureCoverage = { deficits: { "actual-core": ["actual-core v0.1.0"] }, units: [] };
+    assert.match(planSelectiveTestCommands(uncovered, ["crates/core/src/lib.rs"]).refusalReason ?? "", /would build actual-core v0\.1\.0 with different features/);
     const together = planSelectiveTestCommands(p, ["crates/core/src/lib.rs", "cli/src/main.rs"]);
     assert.equal(together.refusalReason, undefined);
     assert.deepEqual(together.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli"] }]);
@@ -123,5 +155,33 @@ describe("Rust selective command synthesis", () => {
     refuses(p, ["cli/src/main.rs", "crates/core/tests/one.rs"]);
     const cli = planSelectiveTestCommands(p, ["cli/src/main.rs"]);
     assert.equal(cli.refusalReason, undefined);
+  });
+
+  it("adds the smallest covering units, repeatedly, until every selected crate has the full run's features", () => {
+    const p = profile();
+    p.rustTestPackages = { "a/src/lib.rs": "a", "b/src/lib.rs": "b", "c/src/lib.rs": "c", "d/src/lib.rs": "d" };
+    p.rustTestTargets = Object.fromEntries(["a", "b", "c", "d"].map(name => [`${name}/src/lib.rs`, { name, kind: "lib" as const }]));
+    p.testFilePaths = Object.keys(p.rustTestPackages);
+    // a needs shared's full features, which b (alone) or c with d give; b then needs other's, which only d gives.
+    p.rustFeatureCoverage = {
+      deficits: { a: ["shared v1.0.0"], b: ["other v1.0.0"] },
+      units: [{ crates: ["c", "d"], covers: ["shared v1.0.0"] }, { crates: ["b"], covers: ["shared v1.0.0"] }, { crates: ["d"], covers: ["other v1.0.0"] }],
+    };
+    const plan = planSelectiveTestCommands(p, ["a/src/lib.rs"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "a", "-p", "b", "-p", "d"] }]);
+  });
+
+  it("adds covering units whose crates are named NAME@VERSION, and never other unit names", () => {
+    const p = profile();
+    p.rustFeatureCoverage = { deficits: { "actual-core": ["shared v1.0.0"] }, units: [{ crates: ["actual-core", "cli@0.3.0"], covers: ["shared v1.0.0"] }] };
+    const plan = planSelectiveTestCommands(p, ["crates/core/src/lib.rs"]);
+    assert.equal(plan.refusalReason, undefined);
+    assert.deepEqual(plan.commands, [{ executable: "cargo", args: ["test", "-p", "actual-core", "-p", "cli@0.3.0"] }]);
+    for (const name of ["cli@0.3", "--workspace", "cli 0.3.0"]) {
+      const q = profile();
+      q.rustFeatureCoverage = { deficits: { "actual-core": ["shared v1.0.0"] }, units: [{ crates: ["actual-core", name], covers: ["shared v1.0.0"] }] };
+      refuses(q);
+    }
   });
 });

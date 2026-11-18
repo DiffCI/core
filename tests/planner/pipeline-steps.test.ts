@@ -41,6 +41,13 @@ describe("discoverGateChecks", () => {
     }
   });
 
+  it("reads a quote followed by a long run of backticks in linear time (#300)", () => {
+    const body = `tsc && ""${"`".repeat(100_000)}`;
+    const started = performance.now();
+    assert.deepEqual(discoverGateChecks({ check: body }).checks.map((c) => [c.id, c.runsScript]), [["check", true]]);
+    assert.ok(performance.now() - started < 1000, `took ${Math.round(performance.now() - started)} ms`);
+  });
+
   it("leaves test runs to test selection but keeps mixed bodies", () => {
     const gate = discoverGateChecks({ check: "npm run lint && npm test", lint: "eslint .", test: "vitest run" });
     assert.deepEqual(gate.checks.map((c) => c.id), ["lint"]);

@@ -100,8 +100,19 @@ function splitParts(body: string): string[] | undefined {
   parts.push(current.trim());
   const unquoted = parts.map((part) => part.replace(/"[^"]*"|'[^']*'/g, "\"\""));
   // A double-quoted `$` or backtick still expands in the shell.
-  if (parts.some((part) => !part || /"[^"]*[$`][^"]*"/.test(part)) || unquoted.some((part) => UNSPLITTABLE.test(part))) return undefined;
+  if (parts.some((part) => !part || expandsBetweenDoubleQuotes(part)) || unquoted.some((part) => UNSPLITTABLE.test(part))) return undefined;
   return parts;
+}
+
+/**
+ * True when a `$` or backtick sits between two double quotes, the answer `/"[^"]*[$`][^"]*"/` gives.
+ * That regex is quadratic on a `"` followed by a long run of backticks with no closing quote (#300);
+ * this is one linear pass: the text strictly between two consecutive `"` holds a `$` or backtick.
+ */
+export function expandsBetweenDoubleQuotes(part: string): boolean {
+  const segments = part.split("\"");
+  for (let i = 1; i < segments.length - 1; i++) if (/[$`]/.test(segments[i]!)) return true;
+  return false;
 }
 
 function globToRegExp(pattern: string): RegExp {

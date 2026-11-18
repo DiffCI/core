@@ -15,7 +15,8 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
 import { isInsideRepository, observe, separateProjectReason } from "../../src/client/observe.js";
-import { validateObservationReport } from "../../src/client/report.js";
+import { validateObservationReport, worktreeChangeSuspected } from "../../src/client/report.js";
+import { formatJobSummary } from "../../src/client/job-summary.js";
 
 /**
  * `ts.findConfigFile()` walks UPWARD. A fixture repository underneath a directory that has its own
@@ -137,6 +138,21 @@ describe("client-side observation", () => {
     }
   });
 
+  it("keeps a GitLab subgroup project's full path as the repository name", async () => {
+    const repoPath = createFixtureRepo();
+    try {
+      const base = git(repoPath, "rev-parse HEAD").trim();
+      write(repoPath, "src/alpha.ts", "export const alpha = () => 42;\n");
+      git(repoPath, "commit --quiet -am change");
+      const env = { GITLAB_CI: "true", CI_PROJECT_PATH: "group/sub/project" };
+      const report = await observe({ repoPath, env, version: "test", baseOverride: base, headOverride: git(repoPath, "rev-parse HEAD").trim() });
+      assert.equal(report.repository.provider, "gitlab");
+      assert.equal(report.repository.ownerName, "group/sub/project");
+    } finally {
+      rmSync(repoPath, { recursive: true, force: true });
+    }
+  });
+
   it("redacts every path when asked, and says so in the report", async () => {
     const repoPath = createFixtureRepo();
     try {
@@ -220,5 +236,30 @@ describe("separateProjectReason", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// #278: e.g. actions/checkout with `path:` while the Action observes the workspace.
+describe("observing a path that is not a git checkout", () => {
+  it("refuses without claiming the working tree changed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "diffci-observe-not-git-"));
+    try {
+      const report = await observe({ repoPath: dir, env: {}, version: "test" });
+      assert.equal(report.status, "REFUSED");
+      assert.equal(report.nonInterference.worktreeUnchanged, false, "unproven is still not a pass");
+      assert.equal(worktreeChangeSuspected(report.nonInterference), false);
+      assert.doesNotMatch(formatJobSummary(report, "raw"), /The working tree changed/);
+      assert.match(report.reason ?? "", /not a git checkout/);
+      assert.doesNotMatch(report.reason ?? "", /fetch-depth/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still suspects a change when evidence differs or goes missing", () => {
+    const base = { worktreeUnchanged: false, headShaBefore: "a", worktreeDigestBefore: "d" };
+    assert.equal(worktreeChangeSuspected({ ...base, headShaAfter: "b", worktreeDigestAfter: "d" }), true);
+    assert.equal(worktreeChangeSuspected(base), true);
+    assert.equal(worktreeChangeSuspected({ ...base, worktreeUnchanged: true }), false);
   });
 });

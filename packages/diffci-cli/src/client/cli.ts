@@ -49,7 +49,7 @@ import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceCompari
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
 import { hookCommand, installPrePushHook, isGitRepository, refreshPrePushHook } from "./hook.js";
 import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATHS, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
-import type { ObservationReport, WorkflowFinding } from "./report.js";
+import { worktreeChangeSuspected, type ObservationReport, type WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
 import { configureGraphCache } from "./shared-graph-cache.js";
 import { GraphCache } from "@diffci.com/core/cache/graph-cache";
@@ -67,7 +67,7 @@ import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVeri
 import { auditEnforceWorkflows, auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
-import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow } from "./workflow-templates.js";
+import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow, verificationInstallCommands } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
 import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
 import { checkPlan } from "./check-plan.js";
@@ -438,7 +438,7 @@ function runInit(flags: Record<string, string | boolean>, env: NodeJS.ProcessEnv
   ];
   if (includeWorkflow) writes.push(writeInitFile(repoPath, ".github/workflows/diffci.yml", diffciWorkflow(identity.version), force));
   if (includeVerificationWorkflow) {
-    writes.push(writeInitFile(repoPath, ".github/workflows/diffci-verify.yml", diffciVerificationWorkflow(identity.version), force));
+    writes.push(writeInitFile(repoPath, ".github/workflows/diffci-verify.yml", diffciVerificationWorkflow(identity.version, verificationInstallCommands(repoPath)), force));
   }
   // The hook, MCP server and skill are on by default so an agent meets DiffCI without being told to.
   const skipped: string[] = [];
@@ -896,7 +896,7 @@ function summarise(report: ObservationReport, executionFollows = false): string 
     }
   }
   lines.push(
-    `  non-interference${executionFollows ? " (analysis phase)" : ""}: worktree ${report.nonInterference.worktreeUnchanged ? "unchanged" : "CHANGED - report this"}, report written ${report.nonInterference.reportWrittenOutsideRepository ? "outside" : "INSIDE"} the checkout`,
+    `  non-interference${executionFollows ? " (analysis phase)" : ""}: worktree ${report.nonInterference.worktreeUnchanged ? "unchanged" : worktreeChangeSuspected(report.nonInterference) ? "CHANGED - report this" : "not a git checkout, nothing to compare"}, report written ${report.nonInterference.reportWrittenOutsideRepository ? "outside" : "INSIDE"} the checkout`,
   );
   const blocking = report.nonInterference.workflowFindings.filter((f) => f.severity === "BLOCKING");
   // `check` is a local trial, not an installation, so it names the count and where to look; `observe`
@@ -1493,11 +1493,11 @@ Usage:
   diffci verify [--changed | --staged | --paths <file...> | --paths-from <file|-> | --base <sha> --head <sha>]
                 [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
-                [--share-usage] [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
+                [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
                 [--shard <i/N> [--timings <file>]] [--no-coverage]
   diffci telemetry [--mode repo|count-only] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
-               [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>] [--share-usage]
+               [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
   diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>] [--check-jobs <regex>] [--ci-only-jobs <regex>]
@@ -1506,7 +1506,7 @@ Usage:
                       [--label <name>] [--repository-url <https-url>] [--redact-paths]
   diffci observe [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                  [--redact-paths] [--json] [--quiet] [--fail-on-error] [--summary-out <file.md>]
-                 [--api-url <url> --api-token <token>] [--no-send] [--share-usage] [--agent <name|auto>]
+                 [--api-url <url> --api-token <token>] [--no-send] [--agent <name|auto>]
                  [--graph-cache-dir <dir>] [--shared-graph-cache [--graph-cache-url <url>]]
   diffci verify-savings --repo <path> --full <command>
                          (--selected <command> | --selected-from-report <file>)

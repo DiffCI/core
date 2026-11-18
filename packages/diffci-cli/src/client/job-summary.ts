@@ -1,4 +1,4 @@
-import type { ObservationReport } from "./report.js";
+import { worktreeChangeSuspected, type ObservationReport } from "./report.js";
 
 /** Selected tests listed by name before the rest collapse into a count. */
 const MAX_LISTED_TESTS = 20;
@@ -70,7 +70,7 @@ export function formatJobSummary(report: ObservationReport, textSummary: string,
 
   // A broken promise of non-interference is the one thing that must never hide in a collapsed block.
   const blocking = report.nonInterference.workflowFindings.filter((finding) => finding.severity === "BLOCKING");
-  if (!report.nonInterference.worktreeUnchanged) {
+  if (worktreeChangeSuspected(report.nonInterference)) {
     lines.push("", "> [!WARNING]", "> The working tree changed while DiffCI observed it. Please report this at https://github.com/DiffCI/core/issues.");
   }
   if (blocking.length > 0) {

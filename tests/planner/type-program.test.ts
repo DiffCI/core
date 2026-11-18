@@ -75,6 +75,28 @@ describe("programMembership", () => {
   });
 });
 
+describe("programMembership and extended configs", () => {
+  // A config extended by a relative path that is not named tsconfig*.json sets the program's compiler
+  // options too, so changing it changes every file's types.
+  const extended = {
+    "tsconfig.json": "{ \"extends\": \"./config/base.json\", \"include\": [\"src\"] }",
+    "config/base.json": "{ \"extends\": \"./strict\", \"compilerOptions\": { \"allowJs\": true } }",
+    "config/strict.json": "{ \"compilerOptions\": { \"strict\": true } }",
+  };
+
+  it("treats a change to an extended config, at any depth, as changing every file", () => {
+    for (const path of ["config/base.json", "config/strict.json"]) {
+      const membership = programMembership("tsconfig.json", input([path], extended));
+      assert.equal(membership.inProgram, true, path);
+      assert.match(membership.reason, /affects every file's types/);
+    }
+  });
+
+  it("still skips an unrelated JSON file next to the extended config", () => {
+    assert.equal(programMembership("tsconfig.json", input(["data/other.json"], extended)).inProgram, false);
+  });
+});
+
 describe("tscProject", () => {
   it("reads plain project checks only", () => {
     assert.equal(tscProject("tsc --noEmit --pretty false"), "tsconfig.json");

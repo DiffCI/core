@@ -104,6 +104,13 @@ test("public observer Action uses only composite-action contexts and safe descri
   }
 });
 
+test("public observer Action counts observe runs as the GitHub Action surface", async () => {
+  const { action } = await readAction();
+  const observe = action.runs.steps.find((step) => step.id === "observe");
+  assert.ok(observe, "observe step is present");
+  assert.equal(observe.env?.DIFFCI_SURFACE, "github-action");
+});
+
 test("public observer Action passes its token only through the environment", async () => {
   const { action } = await readAction();
   const observe = action.runs.steps.find((step) => step.id === "observe");

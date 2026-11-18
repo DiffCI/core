@@ -97,15 +97,30 @@ function actionName(uses: string): string {
 // repository declares. These are REMOVED rather than left unused: dead code that still encodes the old
 // authority is one careless call away from reinstating it, and a test asserts the pattern is absent.
 
-/** Split a CI run line into argv without a shell. Refuses anything with shell control characters. */
+/**
+ * Split a CI run line into argv the way `sh` would, without a shell. Refuses anything with shell control
+ * characters, and any word whose meaning `sh` would change that this splitter does not reproduce: a
+ * backslash (an escape, or a line continuation that joins the next `run:` line), an unbalanced quote, a
+ * comment, an unquoted glob or `~` that `sh` would expand, or a leading `NAME=value` environment
+ * assignment. Plain single and double quotes are removed, as `sh` removes them.
+ */
 function argvOf(line: string): { argv: string[]; unresolved?: Unresolved } {
+  const refuse = (why: string) => ({ argv: [] as string[], unresolved: { what: line, why } });
   if (/[|&;<>$`(){}]/.test(line)) {
-    return {
-      argv: [],
-      unresolved: { what: line, why: "contains shell control characters; running it would need a shell, which this engine does not model" },
-    };
+    return refuse("contains shell control characters; running it would need a shell, which this engine does not model");
   }
-  return { argv: line.split(/\s+/).filter(Boolean) };
+  if (line.includes("\\")) return refuse("contains a backslash escape or line continuation, which this engine does not model");
+  const argv: string[] = [];
+  for (const match of line.matchAll(/(?:[^\s"']+|"[^"]*"|'[^']*')+|["']/g)) {
+    const word = match[0];
+    if (word === '"' || word === "'") return refuse("contains an unbalanced quote");
+    const unquoted = word.replace(/"[^"]*"|'[^']*'/g, "");
+    if (unquoted.startsWith("#")) return refuse("contains a shell comment, which this engine does not model");
+    if (/[*?[]/.test(unquoted) || unquoted.startsWith("~")) return refuse("contains an unquoted glob or `~` that the shell would expand, which this engine does not model");
+    if (argv.length === 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) return refuse("starts with an environment assignment, which this engine does not model as argv");
+    argv.push(word.replace(/"([^"]*)"|'([^']*)'/g, (_all, double, single) => double ?? single));
+  }
+  return { argv };
 }
 
 /**

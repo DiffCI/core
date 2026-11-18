@@ -65,7 +65,11 @@ function scanModule(path: string, text: string): { literals: string[]; imports: 
       else computed = true;
     }
     if (ts.isStringLiteralLike(node)) literals.push(node.text);
-    else if (ts.isTemplateExpression(node)) literals.push(node.head.text);
+    else if (ts.isTemplateExpression(node)) {
+      // Text after a substitution is read too: `${process.cwd()}/data/schema.json` names data/schema.json, and
+      // the `/` that joins it to the substitution is not an absolute path.
+      literals.push(node.head.text, ...node.templateSpans.map((span) => span.literal.text.replace(/^\/+/, "")));
+    }
     ts.forEachChild(node, visit);
   };
   visit(source);

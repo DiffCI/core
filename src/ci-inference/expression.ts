@@ -201,6 +201,7 @@ export function evaluateCondition(expression: string, context: ExpressionContext
     };
   }
 
-  const equal = left.value === right.value;
+  // GitHub ignores case when comparing strings, so `matrix.os == 'Ubuntu-Latest'` is true for `ubuntu-latest`.
+  const equal = left.value.toUpperCase() === right.value.toUpperCase();
   return { ...base, result: (operator === "==" ? equal : !equal) ? "TRUE" : "FALSE", resolutions };
 }

@@ -55,6 +55,21 @@ export function detectPackageManager(repoPath: string): SupportedPackageManager 
   return detected.values().next().value ?? "npm";
 }
 
+/**
+ * Whether the repository uses Yarn 2 or later (Berry). Berry's `yarn add` rejects `--ignore-scripts`
+ * ("Unsupported option name") and skips build scripts with `--mode=skip-build` instead. The declared
+ * packageManager version decides; without one, a .yarnrc.yml or a Berry lockfile (`__metadata:`) does.
+ */
+export function usesYarnBerry(repoPath: string): boolean {
+  const packagePath = join(repoPath, "package.json");
+  let declared: unknown;
+  try { declared = (JSON.parse(readFileSync(packagePath, "utf8")) as { packageManager?: unknown }).packageManager; } catch { declared = undefined; }
+  const version = typeof declared === "string" ? /^yarn@(\d+)/.exec(declared.trim()) : null;
+  if (version) return Number(version[1]) >= 2;
+  if (existsSync(join(repoPath, ".yarnrc.yml"))) return true;
+  try { return /^__metadata:/m.test(readFileSync(join(repoPath, "yarn.lock"), "utf8")); } catch { return false; }
+}
+
 export function installPlan(repoPath: string, version: string, platform = process.platform): InstallPlan {
   const manager = detectPackageManager(repoPath);
   const packageSpec = `@diffci.com/diffci@${version}`;
@@ -62,7 +77,9 @@ export function installPlan(repoPath: string, version: string, platform = proces
   const argsByManager: Record<SupportedPackageManager, string[]> = {
     npm: ["install", "--save-dev", "--save-exact", "--ignore-scripts", packageSpec],
     pnpm: ["add", "--save-dev", "--save-exact", "--ignore-scripts", packageSpec],
-    yarn: ["add", "--dev", "--exact", "--ignore-scripts", packageSpec],
+    yarn: manager === "yarn" && usesYarnBerry(repoPath)
+      ? ["add", "--dev", "--exact", "--mode=skip-build", packageSpec]
+      : ["add", "--dev", "--exact", "--ignore-scripts", packageSpec],
     bun: ["add", "--dev", "--exact", "--ignore-scripts", packageSpec],
   };
   const managerArgs = argsByManager[manager];

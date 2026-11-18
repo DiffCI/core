@@ -10,24 +10,54 @@ function expandBraces(pattern: string): string[] {
   return result;
 }
 
+const REGEX_SPECIAL = /[.*+?^${}()|[\]\\/]/g;
+const literal = (char: string): string => char.replace(REGEX_SPECIAL, "\\$&");
+
+/**
+ * Compiles one brace-free glob. `*` and `?` stay within a path segment, `**` crosses segments (a `**`
+ * followed by a slash, or a trailing slash and `**`, also matches zero directories), `[...]`/`[!...]` is a character class, `\` escapes the
+ * next character, and every other character is literal (#178: `(`, `+`, `|`, `$` and `^` used to reach
+ * the RegExp as operators, and `+` threw).
+ */
 function regexFrom(pattern: string): RegExp {
-  let escaped = pattern.replace(/\\/g, "\\\\").replace(/\./g, "\\.");
-  // Protect the multi-segment globstar sequences behind placeholders before the
-  // single-`*` replace runs below - otherwise the `*` inside "(?:.*/)?"/"(?:/.*)?" gets
-  // re-matched and mangled by that same replace (e.g. "**/*.test.ts" would wrongly fail
-  // to match files nested two or more directories deep).
-  escaped = escaped
-    .replace(/\*\*\//g, "\0GLOBSTAR_SLASH\0")
-    .replace(/\/\*\*/g, "\0SLASH_GLOBSTAR\0")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\0GLOBSTAR_SLASH\0/g, "(?:.*/)?")
-    .replace(/\0SLASH_GLOBSTAR\0/g, "(?:/.*)?");
-  return new RegExp(`^${escaped}$`);
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i]!;
+    if (pattern.startsWith("**/", i)) { source += "(?:.*/)?"; i += 2; continue; }
+    if (pattern.startsWith("/**", i) && i + 3 === pattern.length) { source += "(?:/.*)?"; i += 2; continue; }
+    if (pattern.startsWith("**", i)) { source += ".*"; i += 1; continue; }
+    if (char === "*") { source += "[^/]*"; continue; }
+    if (char === "?") { source += "[^/]"; continue; }
+    if (char === "\\" && i + 1 < pattern.length) { source += literal(pattern[++i]!); continue; }
+    if (char === "[") {
+      const close = pattern.indexOf("]", i + 2);
+      if (close > i) {
+        let body = pattern.slice(i + 1, close);
+        const negated = body.startsWith("!") || body.startsWith("^");
+        if (negated) body = body.slice(1);
+        source += `[${negated ? "^/" : ""}${body.replace(/[\\\]^[]/g, "\\$&")}]`;
+        i = close;
+        continue;
+      }
+    }
+    source += literal(char);
+  }
+  return new RegExp(`^${source}$`);
 }
 
 function matches(path: string, pattern: string): boolean {
   const normalized = path.replace(/\\/g, "/");
-  return expandBraces(pattern).some((p) => regexFrom(p).test(normalized));
+  return expandBraces(pattern).some((p) => {
+    let regex: RegExp;
+    try {
+      regex = regexFrom(p);
+    } catch {
+      // A class RegExp rejects, such as the reversed range in `[z-a]`, cannot rule a change out: count it
+      // as matching, so the task runs (the same reading as the planner's matcher in #174).
+      return true;
+    }
+    return regex.test(normalized);
+  });
 }
 
 export function matchesAny(path: string, patterns: string[] | undefined): boolean {

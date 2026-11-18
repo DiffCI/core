@@ -1,7 +1,7 @@
 /** Best-effort usage signal. Carries a repository name only when given one; never content, paths or machine details. */
 export type UsageCommand = "check" | "observe" | "verify" | "plan";
 export type UsageOutcome = "observed" | "refused" | "error" | "passed" | "failed" | "blocked" | "selective" | "full";
-export type UsageSurface = "cli" | "local-mcp" | "github-action" | "gitlab-component";
+export type UsageSurface = "cli" | "local-mcp" | "github-action" | "gitlab-component" | "azure-devops-task";
 export interface UsageSignal {
   command: UsageCommand;
   outcome: UsageOutcome;
