@@ -61,20 +61,23 @@ export function fallbackReasons() {
 // `return "..."` from a helper whose string result becomes the refusal (projectGroups).
 const NO_COMMAND_SITE = /(?:refusalReason:\s*|refuse\(|refusalReason \?\? |\breturn )("(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`)/g;
 
-/** Each literal reason `planSelectiveTestCommands` gives when it cannot write a command, mapped to its `file:line`. */
+/** Each literal reason `planSelectiveTestCommands` gives when it cannot write a command, mapped to its
+ * `file:line`: its own, and those of the language planners it hands off to (`rust-command.ts`). */
 export function noCommandReasons() {
-  const file = join(root, 'src', 'planner', 'test-command.ts');
-  const lines = readFileSync(file, 'utf8').split('\n');
   const reasons = new Map();
-  lines.forEach((line, index) => {
-    if (/^\s*(?:\/\/|\*)/.test(line)) return;
-    // `refusalReason:` at the end of a line takes the literal on the next one.
-    const source = /refusalReason:\s*$/.test(line) ? `refusalReason: ${(lines[index + 1] ?? '').trim()}` : line;
-    for (const match of source.matchAll(NO_COMMAND_SITE)) {
-      const text = match[1].slice(1, -1).replace(/\$\{[^}]*\}/g, '…');
-      if (/[a-z]{3,} [a-z]{2,}/i.test(text) && !reasons.has(text)) reasons.set(text, `${relative(root, file).replaceAll('\\', '/')}:${index + 1}`);
-    }
-  });
+  const planners = readdirSync(join(root, 'src', 'planner')).filter((name) => name.endsWith('-command.ts')).sort();
+  for (const file of planners.map((name) => join(root, 'src', 'planner', name))) {
+    const lines = readFileSync(file, 'utf8').split('\n');
+    lines.forEach((line, index) => {
+      if (/^\s*(?:\/\/|\*)/.test(line)) return;
+      // `refusalReason:` at the end of a line takes the literal on the next one.
+      const source = /refusalReason:\s*$/.test(line) ? `refusalReason: ${(lines[index + 1] ?? '').trim()}` : line;
+      for (const match of source.matchAll(NO_COMMAND_SITE)) {
+        const text = match[1].slice(1, -1).replace(/\$\{[^}]*\}/g, '…');
+        if (/[a-z]{3,} [a-z]{2,}/i.test(text) && !reasons.has(text)) reasons.set(text, `${relative(root, file).replaceAll('\\', '/')}:${index + 1}`);
+      }
+    });
+  }
   return reasons;
 }
 

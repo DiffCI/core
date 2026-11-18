@@ -790,7 +790,14 @@ Sometimes DiffCI selects tests but can't write a command that runs only those te
 | `No framework claims the remaining selected tests` | Tests that no config includes, and no framework to fall back to | Run the full suite |
 | `Selected tests are outside the default runner configuration` | A selected file that the default config excludes or doesn't include | Run the full suite. Check the config's `include` and `exclude` |
 | `The runner reads test paths as patterns and cannot be given … literally` | A test path with glob or regex characters, such as `[id].test.ts`, for a runner that reads paths as patterns | Run the full suite |
+| `Mixed Rust selective execution requires separate CI jobs` | A change selects Rust test targets and tests in another language together | Run the full suite, or run each language's tests in its own CI job |
+| `Rust tests require verified plain cargo test invocation evidence` | CI runs `cargo nextest`, a wrapper script or `cargo test` with flags, or no workflow or `package.json` shows how tests run | Run the full suite. See [Rust adapter safety](#rust-adapter-safety) for the steps DiffCI can reproduce |
+| `Rust test wrappers, scripts and Cargo options require full validation` | A `package.json` script such as `cargo test --all-features` or a `pretest` step around `cargo test` | Run the full suite, or make the `test` script a plain `cargo test` |
+| `Rust tests require verified Cargo package and target metadata` | A selected Rust file that Cargo metadata doesn't report as a test target, for example in a profile cached before Rust support | Run the full suite. Re-run the analysis with Cargo installed |
+| `Invalid Cargo package or test target` | A package or target name that isn't a plain Cargo name, or a target kind other than lib, bin, test, bench or example | Run the full suite |
+| `Rust tests require verified Cargo feature resolution` | A profile without Cargo's feature resolution, for example one cached by an older DiffCI | Run the full suite. Re-run the analysis with Cargo installed |
+| `Selected Cargo crates would build … with different features than the full cargo test; full validation required` | Testing a crate without the dependent that turns on one of its features, so `cargo test -p` would build it differently. `…` is a package | Run the full suite |
 
-`npm test` checks that every literal reason in `src/planner/test-command.ts` is listed here (`node scripts/fallback-reasons.mjs --no-command` prints them).
+`npm test` checks that every literal reason in `src/planner/test-command.ts` and `src/planner/rust-command.ts` is listed here (`node scripts/fallback-reasons.mjs --no-command` prints them).
 
 _Documented by [@sarankumar1325](https://github.com/sarankumar1325) in [#150](https://github.com/DiffCI/core/pull/150); the isolation refusal is covered for a root Vitest config by his tests in [#149](https://github.com/DiffCI/core/pull/149)._
