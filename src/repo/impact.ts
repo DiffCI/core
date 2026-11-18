@@ -935,7 +935,7 @@ export class ImpactAnalyzer {
       return specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]!;
     };
     if (yarnCandidates) {
-      // Classic can hoist transitive packages that repository code imports without declaring them.
+      // Yarn's node-modules linkers can hoist packages that repository code imports without declaring them.
       // All-root widening covers peers, but cannot attribute these additional importers to a root.
       const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
         .map((ref) => packageRoot(ref.specifier)).filter((name) => !packages.includes(name)))].sort();
