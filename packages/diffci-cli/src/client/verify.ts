@@ -760,17 +760,17 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
   }
 }
 
-/** The measurement recorded when the time limit ran out during the gate checks, before the tests started. */
-function checksOutOfTime(command: string, wallMs: number): CommandMeasurement {
-  const now = new Date().toISOString();
-  return { command, exitCode: null, signal: null, timedOut: true, startedAt: now, finishedAt: now, wallMs: 0, stdoutTail: "", stderrTail: `gate checks used the time limit (${wallMs}ms); tests were not run` };
-}
-
 function checkSummary(checks: readonly CheckResult[]): string {
   const ran = checks.filter((check) => check.status === "passed").length;
   const narrowed = checks.filter((check) => check.status === "passed" && check.decision === "NARROWED").length;
   const skipped = checks.length - ran;
   return `ran ${ran} gate check(s) first${narrowed ? ` (${narrowed} narrowed to changed files)` : ""}${skipped ? `, skipped ${skipped} the change does not affect` : ""}`;
+}
+
+/** The measurement recorded when the time limit ran out during the gate checks, before the tests started. */
+function checksOutOfTime(command: string, wallMs: number): CommandMeasurement {
+  const now = new Date().toISOString();
+  return { command, exitCode: null, signal: null, timedOut: true, startedAt: now, finishedAt: now, wallMs: 0, stdoutTail: "", stderrTail: `gate checks used the time limit (${wallMs}ms); tests were not run` };
 }
 
 export function verificationExitCode(report: VerificationReport): number {
