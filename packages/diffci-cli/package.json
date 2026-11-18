@@ -76,7 +76,7 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#49f41b339da3717619364712eebb4d94c29be6aa",
+    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#e1460bb168210fdff038926bd9bfee338a5f6ee2",
     "saxes": "6.0.0",
     "yaml": "^2.9.0"
   },

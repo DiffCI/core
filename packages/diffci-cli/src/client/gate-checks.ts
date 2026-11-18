@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { narrowGateChecks, type ChangedPath } from "@diffci.com/core/planner/check-narrowing";
 import { discoverGateChecks, workflowGateScripts, type GateCheckKind } from "@diffci.com/core/planner/pipeline-steps";
+import { discoverPythonChecks, narrowPythonChecks, type WorkflowFile } from "@diffci.com/core/planner/python-checks";
 import type { CheckBaseline } from "./failure-baseline.js";
 import { measureCommand } from "./verify-savings.js";
 
@@ -30,12 +31,30 @@ export interface CheckChange {
   headSha: string;
 }
 
-function workflowTexts(repoPath: string): string[] {
+function workflowFiles(repoPath: string): WorkflowFile[] {
   const dir = join(repoPath, ".github", "workflows");
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((name) => /\.ya?ml$/.test(name)).sort().flatMap((name) => {
-    try { return [readFileSync(join(dir, name), "utf8")]; } catch { return []; }
+    try { return [{ path: `.github/workflows/${name}`, text: readFileSync(join(dir, name), "utf8") }]; } catch { return []; }
   });
+}
+
+function workflowTexts(repoPath: string): string[] {
+  return workflowFiles(repoPath).map((file) => file.text);
+}
+
+/** True when `command` names a program on PATH (with PATHEXT on Windows). */
+export function onPath(command: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (/[\\/]/.test(command)) return false;
+  const windows = platform === "win32";
+  const extensions = windows ? (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean) : [""];
+  const pathValue = env.PATH ?? env.Path ?? "";
+  for (const dir of pathValue.split(windows ? ";" : ":").filter(Boolean)) {
+    for (const extension of windows && !/\.\w+$/.test(command) ? ["", ...extensions] : [""]) {
+      try { if (statSync(join(dir, command + extension)).isFile()) return true; } catch { /* not here */ }
+    }
+  }
+  return false;
 }
 
 function packageManager(repoPath: string, declared: unknown): string {
@@ -71,10 +90,17 @@ function readRepositoryFile(repoPath: string, path: string): string | undefined 
  * Agents ran the tests DiffCI selected and then failed `npm run check` after push; these are the rest of
  * the gate. With a change, per-file lint and format checks are narrowed to its files or skipped
  * (check-narrowing.ts); if the change cannot be read, every check runs. No package.json, or one that
- * cannot be read, has none. `extraRoots` replaces the scripts CI workflows add to the gate, for a caller
- * that knows exactly which scripts its build runs (`diffci gate --script`).
+ * cannot be read, has no package checks. Python checks that CI workflows run follow them (pythonChecks).
+ * `extraRoots` replaces the scripts CI workflows add to the gate, for a caller
+ * that knows exactly which scripts its build runs (`diffci gate --script`); it also leaves Python checks out.
  */
 export function plannedChecks(repoPath: string, change?: CheckChange, options: { extraRoots?: readonly string[] } = {}): PlannedCheck[] {
+  const checks = packageChecks(repoPath, change, options);
+  // `extraRoots` names exactly the scripts the caller's build runs; workflow-read Python checks would add others.
+  return options.extraRoots ? checks : [...checks, ...pythonChecks(repoPath, change)];
+}
+
+function packageChecks(repoPath: string, change: CheckChange | undefined, options: { extraRoots?: readonly string[] }): PlannedCheck[] {
   const path = join(repoPath, "package.json");
   if (!existsSync(path)) return [];
   let pkg: { scripts?: unknown; packageManager?: unknown };
@@ -102,6 +128,31 @@ export function plannedChecks(repoPath: string, change?: CheckChange, options: {
       : /^(?:npm|pnpm|yarn|bun|npx|node)\s/.test(check.command) ? check.command : `npx --no-install ${check.command}`,
     reason: check.reason,
   }));
+}
+
+/**
+ * Python checks CI workflows run (`make type-check-core`, `uv run mypy src`; Core python-checks.ts). With a
+ * change, Python-only checks are skipped when no Python file or configuration changed. A check whose
+ * program is not installed here is skipped with that reason rather than failed: CI still runs it.
+ */
+function pythonChecks(repoPath: string, change: CheckChange | undefined): PlannedCheck[] {
+  let checks = discoverPythonChecks(workflowFiles(repoPath), (file) => readRepositoryFile(repoPath, file));
+  if (checks.length === 0) return [];
+  if (change) {
+    try { checks = narrowPythonChecks(checks, changedPaths(repoPath, change)); }
+    catch { /* The change could not be read: every check runs as discovered. */ }
+  }
+  return checks.map((check) => {
+    const program = check.command.split(" ")[0]!;
+    const missing = check.decision !== "SKIP" && !onPath(program);
+    return {
+      id: check.id,
+      kind: check.kind,
+      decision: missing ? "SKIP" : check.decision,
+      command: check.command,
+      reason: missing ? `${check.reason}; \`${program}\` is not installed here, so CI runs it` : check.reason,
+    };
+  });
 }
 
 /** Runs checks in order and stops at the first failure, as the gate's `&&` chain would. SKIP checks

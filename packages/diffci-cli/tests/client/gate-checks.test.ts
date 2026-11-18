@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
-import { plannedChecks, runChecks } from "../../src/client/gate-checks.js";
+import { onPath, plannedChecks, runChecks } from "../../src/client/gate-checks.js";
 import { selectionInstruction, type AgentSelectionPlan } from "../../src/client/agent-selection.js";
 
 function repo(pkg: unknown, files: Record<string, string> = {}): string {
@@ -89,4 +89,52 @@ test("the MCP instruction puts the gate checks before the tests", () => {
     selectionInstruction(plan),
     "DiffCI selected 3 of 580 test files. The repository's gate also runs 2 check(s) (lint, typecheck); run them first. Run these commands in order, exactly as given:\nnpm run lint\nnpm run typecheck\nnpx tsx --test src/a.test.ts\nDo not substitute your own test files, checks or the full suite.",
   );
+});
+
+test("a Python repository gets the checks its CI workflow runs, narrowed to the change", () => {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-gate-py-"));
+  const bin = mkdtempSync(join(tmpdir(), "diffci-gate-bin-"));
+  const git = (...args: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" }).trim();
+  const savedPath = process.env.PATH;
+  try {
+    mkdirSync(join(dir, ".github", "workflows"), { recursive: true });
+    mkdirSync(join(dir, "api"));
+    mkdirSync(join(dir, "web"));
+    writeFileSync(join(dir, ".github", "workflows", "style.yml"), "jobs:\n  style:\n    steps:\n      - run: make type-check\n      - run: uv run mypy api\n");
+    writeFileSync(join(dir, "Makefile"), "type-check:\n\t@uv run pyrefly check\n");
+    writeFileSync(join(dir, "api", "app.py"), "x = 1\n");
+    writeFileSync(join(dir, "web", "page.ts"), "export const a = 1;\n");
+    git("init", "-q");
+    git("add", "-A");
+    git("commit", "-qm", "init");
+    const base = git("rev-parse", "HEAD");
+    writeFileSync(join(dir, "web", "page.ts"), "export const a = 2;\n");
+    git("commit", "-qam", "web");
+    const web = git("rev-parse", "HEAD");
+    writeFileSync(join(dir, "api", "app.py"), "x = 2\n");
+    git("commit", "-qam", "api");
+    const api = git("rev-parse", "HEAD");
+
+    for (const name of process.platform === "win32" ? ["make.cmd", "uv.cmd"] : ["make", "uv"]) writeFileSync(join(bin, name), "");
+    process.env.PATH = `${bin}${delimiter}${savedPath ?? ""}`;
+    if (process.platform === "win32") process.env.Path = process.env.PATH;
+    assert.deepEqual(plannedChecks(dir, { baseSha: base, headSha: web }).map((c) => [c.id, c.kind, c.decision]), [
+      ["make type-check", "typecheck", "SKIP"],
+      ["uv run mypy api", "typecheck", "SKIP"],
+    ]);
+    assert.deepEqual(plannedChecks(dir, { baseSha: web, headSha: api }).map((c) => [c.command, c.decision]), [
+      ["make type-check", "RUN"],
+      ["uv run mypy api", "RUN"],
+    ]);
+    assert.deepEqual(plannedChecks(dir, { baseSha: web, headSha: api }, { extraRoots: [] }), []);
+
+    assert.equal(onPath("make", { PATH: bin }, "linux"), process.platform !== "win32");
+    assert.equal(onPath("make", { PATH: bin, PATHEXT: ".EXE;.CMD" }, "win32"), process.platform === "win32");
+    assert.equal(onPath("make", { PATH: "" }, "linux"), false);
+    assert.equal(onPath("./make", { PATH: bin }, "linux"), false);
+  } finally {
+    process.env.PATH = savedPath;
+    if (process.platform === "win32") process.env.Path = savedPath;
+    for (const path of [dir, bin]) rmSync(path, { recursive: true, force: true });
+  }
 });
