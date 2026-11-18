@@ -344,10 +344,11 @@ test("Maven resource-only dependency modules propagate resource changes to consu
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-for (const [element, path] of [["sourceDirectory", "src/java/example/App.java"], ["testSourceDirectory", "tests/example/Behavior.java"]]) {
+// A plain relative <testSourceDirectory> resolves (maven-test-source-directory.test.ts); an interpolated one doesn't.
+for (const [element, declared, path] of [["sourceDirectory", "src/java", "src/java/example/App.java"], ["testSourceDirectory", "${project.basedir}/tests", "tests/example/BehaviorTest.java"]]) {
   test(`Maven custom ${element} requires full validation`, async () => {
     const files = mavenSafetyFixture({
-      "application/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application</artifactId><version>1</version><build><${element}>${path.slice(0, path.indexOf("/example/"))}</${element}></build></project>`,
+      "application/pom.xml": `<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application</artifactId><version>1</version><build><${element}>${declared}</${element}></build></project>`,
       [`application/${path}`]: "package example; public class Behavior {}",
     });
     const root = fixture(files);
