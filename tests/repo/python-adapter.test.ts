@@ -99,6 +99,36 @@ describe("pytest configuration file precedence (#159)", () => {
   });
 });
 
+describe("pyproject.toml pytest lists (#158)", () => {
+  const toml = (body: string) => readPytestSettings((path) => path === "pyproject.toml" ? `[tool.pytest.ini_options]\n${body}` : undefined);
+
+  it("ignores a comment that contains a bracket", () => {
+    assert.deepEqual(toml('python_files = [\n  "test_*.py",  # see [docs]\n  "check_*.py",\n]\n').pythonFiles, ["test_*.py", "check_*.py"]);
+  });
+
+  it("ignores a plain comment between entries", () => {
+    assert.deepEqual(toml('python_files = [\n  "test_*.py",  # unit\n  "check_*.py",\n]\n').pythonFiles, ["test_*.py", "check_*.py"]);
+  });
+
+  it("keeps a ] or , inside a quoted string", () => {
+    assert.deepEqual(toml('testpaths = ["tests/[a]", "integration"]\n').testpaths, ["tests/[a]", "integration"]);
+    assert.deepEqual(toml("testpaths = ['a,b', \"c # d\"]\n").testpaths, ["a,b", "c # d"]);
+  });
+
+  it("reads a multi-line list with a trailing comma", () => {
+    const settings = toml('testpaths = [\n  "tests",\n  "integration",\n]\npythonpath = ["src"]\n');
+    assert.deepEqual(settings.testpaths, ["tests", "integration"]);
+    assert.deepEqual(settings.pythonpath, ["src"]);
+    assert.equal(settings.unreadable, undefined);
+  });
+
+  it("marks lists it cannot read with certainty as unreadable instead of guessing", () => {
+    for (const body of ['testpaths = ["a", 1]\n', 'testpaths = ["a", ["b"]]\n', 'testpaths = ["a",,"b"]\n', 'testpaths = ["a"\n', 'testpaths = ["""a"""]\n', 'testpaths = ["\\u0061"]\n']) {
+      assert.equal(toml(body).unreadable, "pyproject.toml testpaths", body);
+    }
+  });
+});
+
 // Only decides whether Python is available at all. Assertions use the interpreter the analysis recorded:
 // a second probe can pick another launcher on Windows (#304).
 const pythonAvailable = pythonInterpreter(process.cwd()) !== undefined;
