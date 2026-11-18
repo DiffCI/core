@@ -313,6 +313,7 @@
     "packages/diffci-cli/src/client/enforce-policy.ts",
     "packages/diffci-cli/src/client/telemetry.ts",
     "packages/diffci-cli/src/client/feedback-prompt.ts",
+    "packages/diffci-cli/tests/client/agent-changed-files-renames.test.ts",
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",
     "packages/diffci-cli/tests/client/check.test.ts",
     "packages/diffci-cli/tests/client/cli-agent.test.ts",
