@@ -53,5 +53,10 @@ describe("CLI help", () => {
         `Help output is missing command: diffci ${command}`,
       );
     }
+
+    // Usage counting is on by default and only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or
+    // DIFFCI_SHARE_USAGE=0 stop it (docs/telemetry.md), so the old opt-in flag does nothing.
+    assert.ok(!result.stdout.includes("--share-usage"), "help lists --share-usage, which no code reads");
+    assert.ok(result.stdout.includes("DIFFCI_SHARE_USAGE=0"), "help names the environment switch that stops counting");
   });
 });
