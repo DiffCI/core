@@ -270,6 +270,7 @@
     "tests/repo/layout.test.ts",
     "tests/repo/lockfile-free-dependencies.test.ts",
     "tests/repo/lockfiles.test.ts",
+    "tests/repo/python-addopts-plugins.test.ts",
     "tests/repo/mocharc-config-fallback.test.ts",
     "tests/repo/orphan-tool-config.test.ts",
     "tests/repo/python-package-basedir.test.ts",
