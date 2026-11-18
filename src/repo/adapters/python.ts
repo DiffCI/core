@@ -164,7 +164,7 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
     } else settings[key] = values;
   };
   const section = (text: string, header: string): string | undefined =>
-    new RegExp(`^\\[${header.replace(/[.:]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text)?.[1];
+    new RegExp(`^\\[${header.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text)?.[1];
   const hasEntries = (body: string) => /^[ \t]*[^\s#]/m.test(body);
   // pytest 9's native TOML mode (`pytest.toml`, `[tool.pytest]`): every key selection reads is a list of
   // strings, and each `addopts` item is one argument. Any other type is an error in pytest, so it can't be read.
