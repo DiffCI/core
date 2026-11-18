@@ -119,6 +119,38 @@ jobs:
   }
 });
 
+test("Rust CI evidence accepts rustup chains, literal matrix toolchains and equivalent workspace flags", () => {
+  const ci = (setup: string, run = "cargo test") => workflow(run).replace("      - run:", `      - run: ${setup}\n      - run:`)
+    .replace("    runs-on: ubuntu-latest", '    strategy:\n      matrix:\n        channel: [stable, beta, nightly, "1.85.0"]\n    runs-on: ubuntu-latest');
+  const cases: Array<[string, boolean]> = [
+    [ci("rustup default stable && rustup update --no-self-update"), true],
+    [ci("rustup default ${{ matrix.channel }} && rustup update --no-self-update"), true],
+    [ci("rustup default ${{ matrix.channel }}").replace('channel: [stable, beta, nightly, "1.85.0"]', 'channel: ["stable; cargo test --features=extra"]'), false],
+    [ci("rustup default ${{ matrix.channel }}").replace('channel: [stable, beta, nightly, "1.85.0"]', 'channel: [stable]\n        include:\n          - channel: "nightly && cargo test --features=extra"'), false],
+    [ci("rustup default ${{ matrix.missing }}"), false],
+    [ci("rustup default ${{ inputs.toolchain }}"), false],
+    [ci("rustup default stable && cargo test --features extra"), false],
+    [ci("rustup default stable; rustup update"), false],
+    [ci("rustup default $(./toolchain.sh)"), false],
+    ["env: { RUSTFLAGS: '-Dwarnings', RUSTDOCFLAGS: '-D warnings', CARGO_TERM_VERBOSE: true }\n" + workflow(), true],
+    ["env: { RUSTFLAGS: '-Dwarnings --cfg=extra' }\n" + workflow(), false],
+    ["env: { RUSTDOCFLAGS: '--cfg=extra' }\n" + workflow(), false],
+  ];
+  for (const [contents, expected] of cases) {
+    const root = fixture({ ".github/workflows/ci.yml": contents });
+    try { assert.equal(rustTestInvocation(root, [".github/workflows/ci.yml"]), expected ? "cargo test" : undefined, contents); }
+    finally { rmSync(root, { recursive: true, force: true }); }
+  }
+  for (const flag of ["--workspace", "--all"]) {
+    const root = fixture({ ".github/workflows/ci.yml": workflow(`cargo test ${flag}`) });
+    try {
+      assert.equal(rustTestInvocation(root, [".github/workflows/ci.yml"]), undefined);
+      assert.equal(rustTestInvocation(root, [".github/workflows/ci.yml"], { allMembersTested: false }), undefined);
+      assert.equal(rustTestInvocation(root, [".github/workflows/ci.yml"], { allMembersTested: true }), "cargo test");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
 test("registered Rust graph propagates crate roots and manifests and fails closed on unmodeled changes", async t => {
   const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers=["core", "app", "other"]\n', ".github/workflows/test.yml": workflow() };
   for (const name of ["core", "app", "other"]) {

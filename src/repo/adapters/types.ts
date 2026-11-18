@@ -31,6 +31,9 @@ export interface AdapterContribution {
   /** Whether any workspace Rust source starts an external program other than Cargo, rustc or the
    * package's own binaries. Such a program could read any file, so nothing can be confined to a crate. */
   rustRunsPrograms?: boolean;
+  /** Cargo's default workspace members cover every member (so `--workspace`/`--all` is equivalent to
+   * plain `cargo test`). Missing evidence is deliberately false. */
+  rustAllMembersTested?: boolean;
   /** Packages whose Cargo features change when a tested crate runs without the rest of the full invocation. */
   rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
   executionEnv?: Record<string, string>;
