@@ -101,6 +101,9 @@ const BOOLEAN_FLAGS = new Set([
   "shared-graph-cache", "staged", "timings", "verification-workflow", "workflow",
 ]);
 
+/** A malformed flag: a usage error, so it exits 2 like the commands' own argument errors. */
+class FlagError extends Error {}
+
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const args = argv.slice(2);
   const flags: Record<string, string | boolean> = {};
@@ -116,7 +119,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     const equals = token.indexOf("=");
     const key = equals > 2 ? token.slice(2, equals) : token.slice(2);
     const inline = equals > 2 ? token.slice(equals + 1) : undefined;
-    if (inline === "") throw new Error(`--${key} requires a value`);
+    if (inline === "") throw new FlagError(`--${key} requires a value`);
     const next = args[i + 1];
     if (key === "paths") {
       // `--paths a b c` takes every value up to the next flag, and repeats add to it; NUL separates
@@ -134,7 +137,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     } else if (BOOLEAN_FLAGS.has(key) && inline === "false") {
       delete flags[key];
     } else if (BOOLEAN_FLAGS.has(key) && inline !== undefined) {
-      throw new Error(`--${key} is an on/off flag; use --${key}, --${key}=true or --${key}=false`);
+      throw new FlagError(`--${key} is an on/off flag; use --${key}, --${key}=true or --${key}=false`);
     } else if (inline !== undefined) {
       flags[key] = inline;
     } else if (next !== undefined && !next.startsWith("--")) {
@@ -1752,5 +1755,5 @@ main().catch((error: unknown) => {
     return;
   }
   console.error(`DiffCI ${command ?? "command"} failed: ${message}`);
-  process.exitCode = 1;
+  process.exitCode = error instanceof FlagError ? 2 : 1;
 });

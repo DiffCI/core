@@ -61,13 +61,27 @@ it("preserves boolean-looking values for string options", () => {
 it("rejects empty inline values instead of interpreting them as zero or defaults", () => {
   for (const name of ["timeout-ms", "policy", "head", "paths"]) {
     const result = verify([`--${name}=`]);
-    assert.notEqual(result.status, 0);
+    assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, new RegExp(`--${name} requires a value`));
   }
 });
 
 it("rejects an on/off flag with an inline value other than true or false", () => {
   const result = verify(["--changed=yes"]);
-  assert.notEqual(result.status, 0);
+  assert.equal(result.status, 2, result.stderr);
   assert.match(result.stderr, /--changed is an on\/off flag; use --changed, --changed=true or --changed=false/);
+});
+
+// A malformed flag is a usage error (exit 2) everywhere except observe, which must never fail a build.
+it("exits 2 for a malformed flag, and observe still exits 0", () => {
+  const repo = mkdtempSync(join(tmpdir(), "diffci-flag-syntax-"));
+  try {
+    for (const args of [["--changed=yes"], ["--timeout-ms="]]) {
+      const observe = spawnSync(process.execPath, ["--import", "tsx", CLI, "observe", "--repo", repo, ...args], { cwd: ROOT, encoding: "utf8", env: { ...process.env, DO_NOT_TRACK: "1" } });
+      assert.equal(observe.status, 0, observe.stderr);
+      assert.match(observe.stderr, /DiffCI observer failed: --/);
+    }
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
