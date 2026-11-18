@@ -232,3 +232,27 @@ describe("analyzeGitDelta temp repo", () => {
     });
   });
 });
+
+describe("analyzeGitDelta binary flags (#175)", () => {
+  it("reports isBinary for renamed text and binary files", async () => {
+    const repoPath = createTempGitRepo();
+    try {
+      writeFileSync(join(repoPath, "a.txt"), "abc\n");
+      writeFileSync(join(repoPath, "b.bin"), Buffer.from(Array.from({ length: 3000 }, (_, i) => (i * 7) % 256)));
+      commitAll(repoPath, "initial");
+      execSync("git mv a.txt c.txt && git mv b.bin d.bin", { cwd: repoPath });
+      commitAll(repoPath, "rename");
+      const result = await analyzeGitDelta({ repoPath });
+      assert.strictEqual(result.success, true);
+      if (!result.success) return;
+      const byPath = new Map(result.delta.files.map((f) => [f.path, f]));
+      assert.strictEqual(byPath.get("c.txt")?.changeType, "renamed");
+      assert.strictEqual(byPath.get("c.txt")?.isBinary, false);
+      assert.strictEqual(byPath.get("d.bin")?.changeType, "renamed");
+      assert.strictEqual(byPath.get("d.bin")?.isBinary, true);
+    } finally {
+      rmSync(repoPath, { recursive: true, force: true });
+    }
+  });
+});
+
