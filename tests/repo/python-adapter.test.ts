@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 
-import { isPytestFile, pythonAdapter, pythonInterpreter, readPytestSettings, resolvePythonGraph, type PythonFileImports } from "../../src/repo/adapters/python.js";
+import { isPytestFile, PYTHON_INTERPRETER_CANDIDATES, pythonAdapter, pythonInterpreter, readPytestSettings, resolvePythonGraph, type PythonFileImports } from "../../src/repo/adapters/python.js";
 import { computeAnalysis } from "../../src/git/git-diff.js";
 import type { ChangedFile, GitDelta } from "../../src/git/types.js";
 import { buildDependencyGraph, classifyRepositoryProject } from "../../src/repo/graph.js";
@@ -67,9 +67,11 @@ describe("pytest settings", () => {
   });
 });
 
-const interpreter = pythonInterpreter(process.cwd());
+// Only decides whether Python is available at all. Assertions use the interpreter the analysis recorded:
+// a second probe can pick another launcher on Windows (#304).
+const pythonAvailable = pythonInterpreter(process.cwd()) !== undefined;
 
-describe("Python repositories end to end", { skip: interpreter ? false : "no Python 3 interpreter on PATH" }, () => {
+describe("Python repositories end to end", { skip: pythonAvailable ? false : "no Python 3 interpreter on PATH" }, () => {
   function fixture(files: Record<string, string>): string {
     const root = mkdtempSync(join(tmpdir(), "diffci-python-"));
     for (const [path, content] of Object.entries(files)) {
@@ -108,7 +110,14 @@ describe("Python repositories end to end", { skip: interpreter ? false : "no Pyt
       assert.equal(pricing.fallbackRequired, false, pricing.fallbackReasons.join("; "));
       assert.deepEqual(pricing.affectedTests.map((t) => t.path), ["tests/test_cart.py", "tests/test_pricing.py"]);
       const plan = planSelectiveTestCommands(graph.profile, pricing.affectedTests.map((t) => t.path));
-      assert.deepEqual(plan.commands, [{ executable: interpreter![0], args: [...interpreter!.slice(1), "-m", "pytest", "tests/test_cart.py", "tests/test_pricing.py"] }]);
+      const interpreter = graph.profile.pythonInterpreter;
+      assert.ok(interpreter, "the analysis records the interpreter it found");
+      assert.ok(PYTHON_INTERPRETER_CANDIDATES.some((candidate) => candidate.join(" ") === interpreter.join(" ")), `unexpected interpreter ${interpreter.join(" ")}`);
+      // No adapter blockers above: this interpreter already ran the import analysis, so it is a working Python 3.
+      assert.deepEqual(plan.commands, [{ executable: interpreter[0], args: [...interpreter.slice(1), "-m", "pytest", "tests/test_cart.py", "tests/test_pricing.py"] }]);
+      // The runner follows whatever the analysis recorded, including the Windows launcher.
+      const launcher = planSelectiveTestCommands({ ...graph.profile, pythonInterpreter: ["py", "-3"] }, ["tests/test_cart.py"]);
+      assert.deepEqual(launcher.commands, [{ executable: "py", args: ["-3", "-m", "pytest", "tests/test_cart.py"] }]);
 
       const emails = analyze([{ path: "src/shop/emails.py", changeType: "modified" }]);
       assert.deepEqual(emails.affectedTests.map((t) => t.path), ["tests/test_emails.py"]);
