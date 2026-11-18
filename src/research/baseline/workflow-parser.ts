@@ -53,12 +53,13 @@ function parseWorkflow(absolutePath: string, relativePath: string, scripts: Reco
   const jobs = (doc as Record<string, unknown>).jobs as Record<string, unknown> | undefined;
   if (!jobs || typeof jobs !== "object") return { path: relativePath, name, tasks };
 
+  const filters = workflowPathFilters((doc as Record<string, unknown>).on);
   for (const [jobId, jobValue] of Object.entries(jobs)) {
     if (!jobValue || typeof jobValue !== "object") continue;
     const job = jobValue as Record<string, unknown>;
     const namePart = typeof job.name === "string" ? job.name : jobId;
-    const paths = normalizeStringArray(job["paths"]) ?? normalizeStringArray((job.on as Record<string, unknown>)?.paths) ?? [];
-    const pathsIgnore = normalizeStringArray(job["paths-ignore"]) ?? [];
+    const paths = filters.paths ?? [];
+    const pathsIgnore = filters.pathsIgnore ?? [];
     const dependsOn = normalizeStringArray(job.needs) ?? [];
     const stepNames: string[] = [];
     const runLines: string[] = [];
@@ -83,6 +84,45 @@ function parseWorkflow(absolutePath: string, relativePath: string, scripts: Reco
   }
 
   return { path: relativePath, name, tasks };
+}
+
+/** The triggers whose runs a change's paths decide. */
+const PATH_FILTERED_EVENTS = ["push", "pull_request", "pull_request_target"];
+/** Characters every glob matcher here reads the way GitHub does; anything else keeps the defaults. */
+const PLAIN_GLOB = /^[A-Za-z0-9_.@/*{},-]+$/;
+
+/**
+ * The workflow-level `on.<event>.paths` / `paths-ignore` filters (#177). GitHub has no job-level `paths`,
+ * so the job is gated by the workflow's triggers. A filter is reported only when it bounds every
+ * push/pull_request trigger the workflow has: a trigger without one runs the workflow for any change.
+ * Negated or non-plain patterns are left out, so they can never be read more narrowly than GitHub reads them.
+ */
+function workflowPathFilters(on: unknown): { paths?: string[]; pathsIgnore?: string[] } {
+  if (!on || typeof on !== "object" || Array.isArray(on)) return {};
+  const triggers = PATH_FILTERED_EVENTS.filter((event) => event in on).map((event) => (on as Record<string, unknown>)[event]);
+  if (triggers.length === 0) return {};
+  const collect = (key: "paths" | "paths-ignore"): string[] | undefined => {
+    const lists = triggers.map((trigger) => trigger && typeof trigger === "object" && !Array.isArray(trigger) ? normalizeStringArray((trigger as Record<string, unknown>)[key]) : undefined);
+    if (lists.some((list) => !list || list.length === 0)) return undefined;
+    const patterns = [...new Set(lists.flat() as string[])];
+    return patterns.every((pattern) => PLAIN_GLOB.test(pattern) && !hasPartialGlobstar(pattern)) ? patterns : undefined;
+  };
+  return { paths: collect("paths"), pathsIgnore: collect("paths-ignore") };
+}
+
+/**
+ * Whether `pattern` has a `**` the planner's matcher would read more narrowly than GitHub: one that is not a
+ * whole path segment between slashes (`**.js`, `src**`, `{**,x}`), or a bare `**`. GitHub lets those cross
+ * directories, but the planner reads them as `*`, so a filter of `'**'` would only match top-level files.
+ */
+function hasPartialGlobstar(pattern: string): boolean {
+  if (pattern === "**") return true;
+  for (const match of pattern.matchAll(/\*{2,}/g)) {
+    const before = pattern[match.index - 1];
+    const after = pattern[match.index + match[0].length];
+    if (match[0].length !== 2 || (before !== undefined && before !== "/") || (after !== undefined && after !== "/")) return true;
+  }
+  return false;
 }
 
 function normalizeStringArray(value: unknown): string[] | undefined {

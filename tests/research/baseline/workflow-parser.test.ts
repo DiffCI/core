@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { parseRepositoryWorkflows } from "../../../src/research/baseline/workflow-parser.js";
+import { buildGenericTaskRegistry } from "../../../src/research/baseline/registry.js";
 import type { RepositoryProfile } from "../../../src/repo/types.js";
 
 // Regression guard: src/research/baseline/workflow-parser.ts imports the "yaml" package, but it was
@@ -130,5 +131,49 @@ describe("parseRepositoryWorkflows (yaml dependency regression)", () => {
     const parsed = parseRepositoryWorkflows(repoProfile(".github/workflows/broken.yml"), dir);
     assert.equal(parsed.length, 1);
     assert.deepEqual(parsed[0]!.tasks, []);
+  });
+
+  // #177: path filters live under the workflow's `on:` triggers; GitHub has no job-level `paths`.
+  const filtered = (on: string): ReturnType<typeof parseRepositoryWorkflows>[number]["tasks"][number] => {
+    mkdirSync(join(dir, ".github/workflows"), { recursive: true });
+    writeFileSync(join(dir, ".github/workflows/api.yml"), `${on}\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: npm test\n`);
+    return parseRepositoryWorkflows(repoProfile(".github/workflows/api.yml"), dir)[0]!.tasks[0]!;
+  };
+
+  it("reads the workflow's on.pull_request.paths filter", () => {
+    assert.deepEqual(filtered("on:\n  pull_request:\n    paths: ['api/**']").pathGlobs, ["api/**"]);
+  });
+
+  it("unions the filters when every push and pull_request trigger has one", () => {
+    const task = filtered("on:\n  push:\n    paths: ['api/**']\n  pull_request:\n    paths: ['api/**', 'shared/*.ts']\n  workflow_dispatch:");
+    assert.deepEqual(task.pathGlobs, ["api/**", "shared/*.ts"]);
+  });
+
+  it("reads paths-ignore the same way", () => {
+    const task = filtered("on:\n  pull_request:\n    paths-ignore: ['docs/**']");
+    assert.equal(task.pathGlobs, undefined);
+    assert.deepEqual(task.pathIgnoreGlobs, ["docs/**"]);
+  });
+
+  it("keeps no filter when a trigger runs for any path, or a pattern is negated or not a plain glob", () => {
+    assert.equal(filtered("on:\n  push:\n  pull_request:\n    paths: ['api/**']").pathGlobs, undefined);
+    assert.equal(filtered("on: [push, pull_request]").pathGlobs, undefined);
+    assert.equal(filtered("on: push").pathGlobs, undefined);
+    assert.equal(filtered("on:\n  pull_request:\n    paths: ['api/**', '!api/docs/**']").pathGlobs, undefined);
+    assert.equal(filtered("on:\n  pull_request:\n    paths: ['app/(shop)/**']").pathGlobs, undefined);
+    assert.equal(filtered("on:\n  workflow_dispatch:").pathGlobs, undefined);
+  });
+
+  it("keeps no filter when a ** is not a whole path segment, which the planner would read as *", () => {
+    for (const pattern of ["'**'", "'**.js'", "'src**'", "'{**,docs/*}'", "'a/***'"]) {
+      assert.equal(filtered(`on:\n  pull_request:\n    paths: [${pattern}]`).pathGlobs, undefined, pattern);
+    }
+    assert.deepEqual(filtered("on:\n  pull_request:\n    paths: ['**/*.ts', 'api/**', 'a/**/b', '{api,web}/**']").pathGlobs, ["**/*.ts", "api/**", "a/**/b", "{api,web}/**"]);
+  });
+
+  it("gives the registry task the workflow's filter as its inputs", () => {
+    filtered("on:\n  pull_request:\n    paths: ['api/**']");
+    const registry = buildGenericTaskRegistry(repoProfile(".github/workflows/api.yml"), "typescript", parseRepositoryWorkflows(repoProfile(".github/workflows/api.yml"), dir));
+    assert.deepEqual(registry.all().find((task) => task.id === ".github/workflows/api::test")!.inputPatterns, ["api/**"]);
   });
 });
