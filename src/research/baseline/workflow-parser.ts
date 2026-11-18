@@ -45,6 +45,8 @@ function parseWorkflow(absolutePath: string, relativePath: string, scripts: Reco
   } catch {
     return { path: relativePath, tasks: [] };
   }
+  // An empty or comment-only file parses to null (#168), and a scalar or list has no jobs either.
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return { path: relativePath, tasks: [] };
 
   const name = typeof (doc as Record<string, unknown>).name === "string" ? (doc as Record<string, unknown>).name as string : relativePath;
   const tasks: ParsedWorkflowTask[] = [];
