@@ -117,7 +117,7 @@ describe("diffci agent-stop", () => {
   }
   const env = () => Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && !name.startsWith("GITHUB_") && name !== "CI"));
   const stop = (dir: string, agent: string, payload: object, extra: Record<string, string> = {}) => spawnSync(process.execPath, ["--import", "tsx", CLI, "agent-stop", "--agent", agent],
-    { cwd: ROOT, encoding: "utf8", timeout: 600_000, input: JSON.stringify(payload), env: { ...env(), ...extra } });
+    { cwd: ROOT, encoding: "utf8", timeout: 600_000, input: JSON.stringify(payload), env: { ...env(), DO_NOT_TRACK: "1", ...extra } });
 
   it("asks the agent to fix a failing change, gives up after the maximum, and passes once fixed", () => {
     const dir = fixture();

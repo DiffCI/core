@@ -23,7 +23,7 @@ test("counting is on by default with the repository name; only the environment s
     assert.equal(bodies[0].command, "plan");
     assert.equal(bodies[0].ci, true);
     assert.equal(notices.length, 1, "the notice is shown once");
-    for (const off of [{ DO_NOT_TRACK: "1" }, { DO_NOT_TRACK: "true" }, { DIFFCI_NO_SEND: "1" }, { DIFFCI_SHARE_USAGE: "0" }]) {
+    for (const off of [{ DO_NOT_TRACK: "1" }, { DO_NOT_TRACK: "true" }, { DIFFCI_NO_SEND: "1" }, { DIFFCI_SHARE_USAGE: "0" }, { NODE_TEST_CONTEXT: "child-v8" }]) {
       await recordUsage("verify", "passed", "0.3.9", {}, { ...env, ...off });
     }
     assert.equal(bodies.length, 2);

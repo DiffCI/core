@@ -35,6 +35,8 @@ usually fresh, the notice appears on each run.
 - **Stop counting entirely:** set `DO_NOT_TRACK=1` (or `DIFFCI_NO_SEND=1`, or `DIFFCI_SHARE_USAGE=0`) in
   the environment. Air-gapped and policy-restricted environments should set one of these.
 - `--no-send` stops report uploads to DiffCI Cloud only; it does not stop the count.
+- Runs under Node's test runner (`NODE_TEST_CONTEXT` set, as in DiffCI's own test suite and the CLIs it starts)
+  are never counted.
 
 Earlier saved choices carry over: `off` and `anonymous` become `count-only` (they never shared a name),
 and `installations` becomes `repo`.

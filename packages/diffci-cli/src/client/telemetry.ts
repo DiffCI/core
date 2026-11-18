@@ -55,10 +55,14 @@ export function configureTelemetry(mode: string, internal: boolean, env: NodeJS.
   return value;
 }
 
-/** True when the environment turns usage counting off entirely. Flags cannot: only the environment can. */
+/**
+ * True when the environment turns usage counting off entirely. Flags cannot: only the environment can.
+ * A run under Node's test runner (NODE_TEST_CONTEXT, inherited by the CLIs a test starts) is a test, not usage:
+ * contributors' local test runs otherwise counted as anonymous external runs.
+ */
 export function usageCountingDisabled(env: NodeJS.ProcessEnv): boolean {
   const on = (value: string | undefined) => value !== undefined && value !== "" && value !== "0" && value.toLowerCase() !== "false";
-  return on(env.DO_NOT_TRACK) || env.DIFFCI_NO_SEND === "1" || env.DIFFCI_SHARE_USAGE === "0";
+  return on(env.DO_NOT_TRACK) || env.DIFFCI_NO_SEND === "1" || env.DIFFCI_SHARE_USAGE === "0" || Boolean(env.NODE_TEST_CONTEXT);
 }
 
 /** host/owner/repo from a Git remote URL, without credentials, scheme or .git; undefined if unrecognised. */

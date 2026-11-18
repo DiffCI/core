@@ -29,6 +29,7 @@ function write(path: string, text: string): void {
 function run(script: string, args: string[], cwd = temp) {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
+  env.DO_NOT_TRACK = "1";
   return spawnSync(process.execPath, [script, ...args], { cwd, encoding: "utf8", timeout: 60_000, env });
 }
 

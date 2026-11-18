@@ -97,7 +97,7 @@ test("diffci watch verifies each save of a real repository", async () => {
   writeFileSync(join(dir, "test/a.test.js"), "import test from 'node:test'; import assert from 'node:assert/strict'; import { a } from '../src/a.js'; test('a', () => assert.equal(a(), 1));\n");
   git("add", "-A");
   git("commit", "--quiet", "-m", "initial");
-  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && name !== "CI" && !name.startsWith("GITHUB_")));
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && name !== "CI" && !name.startsWith("GITHUB_"))), DO_NOT_TRACK: "1" };
   const child = spawn(process.execPath, ["--import", "tsx", CLI, "watch", "--repo", dir, "--no-log", "--debounce-ms", "200"], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   child.stdout.on("data", (chunk) => { output += String(chunk); });

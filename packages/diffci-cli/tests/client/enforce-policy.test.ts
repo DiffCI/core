@@ -214,6 +214,7 @@ function localTestEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     ...Object.fromEntries(
       Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && name !== "DIFFCI_ENFORCE" && !name.startsWith("GITHUB_")),
     ),
+    DO_NOT_TRACK: "1",
     ...extra,
   };
 }

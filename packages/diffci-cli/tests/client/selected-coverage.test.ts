@@ -163,7 +163,7 @@ test("verify catches a seeded bug covered only by a test under a Next.js [...pat
     git("add", "-A");
     git("commit", "--quiet", "-m", "seed");
 
-    const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && !name.startsWith("GITHUB_")));
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && !name.startsWith("GITHUB_"))), DO_NOT_TRACK: "1" };
     const run = spawnSync(process.execPath, ["--import", "tsx", join(root, "src", "client", "cli.ts"), "verify", "--repo", dir, "--base", "HEAD~1", "--head", "HEAD", "--no-checks", "--json"], { cwd: root, encoding: "utf8", timeout: 600_000, env });
     const report = JSON.parse(run.stdout);
     assert.equal(report.verification, "failed", JSON.stringify({ reason: report.reason, command: report.command, stdout: report.execution?.stdoutTail }, null, 2));

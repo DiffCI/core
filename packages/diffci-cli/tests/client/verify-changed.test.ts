@@ -37,9 +37,10 @@ function fixture(): string {
 }
 
 function localTestEnv(): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && !name.startsWith("GITHUB_")),
-  );
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && !name.startsWith("GITHUB_"))),
+    DO_NOT_TRACK: "1",
+  };
 }
 
 function runVerify(dir: string) {
