@@ -635,7 +635,10 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
       // Model these as dependencies of this crate instead of blocking the repository.
       if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
-      if (scanned.metadata) (result.rustMetadataReaders ??= []).push(source);
+      // Tool configuration is read by the tools as well as by code naming it: a test that runs Cargo
+      // (`cargo fmt --check`, `cargo clippy`) or another program (`rustfmt`, `typos`, `pre-commit`,
+      // through Command or xshell's `cmd!`) may read rustfmt.toml or clippy.toml without naming it.
+      if (scanned.metadata || scanned.compiles || scanned.runsPrograms) (result.rustMetadataReaders ??= []).push(source);
       if (scanned.runsPrograms) result.rustRunsPrograms = true;
       const reached = new Set<string>();
       if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);

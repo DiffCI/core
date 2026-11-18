@@ -247,7 +247,12 @@ test("tool configuration and GitHub metadata select nothing unless Rust code may
     // Rust code that names such a file, a matching extension or `.github`, or climbs out of its crate,
     // may read it at run time; so may a build script.
     for (const body of ['let _ = std::fs::read_to_string("rustfmt.toml");', 'let _ = "../.github/dependabot.yml";', 'let ok = |p: &std::path::Path| p.extension().map_or(false, |x| x == "toml");',
-      'let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent();', 'let _ = ".editorconfig";']) {
+      'let _ = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent();', 'let _ = ".editorconfig";',
+      // Programs read their own configuration without the code naming it (2026-11-18): Cargo
+      // subcommands, formatters, linters and hook runners, directly or through xshell.
+      'let _ = std::process::Command::new("cargo").args(["fmt", "--check"]).status();', 'let _ = std::process::Command::new("rustfmt").arg("--check").status();',
+      'let _ = std::process::Command::new("typos").status();', 'let _ = std::process::Command::new("pre-commit").args(["run", "--all-files"]).status();',
+      'let sh = xshell::Shell::new().unwrap(); let _ = xshell::cmd!(sh, "cargo clippy -- -D warnings").run();']) {
       writeFileSync(join(root, "core/src/lib.rs"), `#[test] fn reads() { ${body} }`);
       graph = await buildDependencyGraph({ repoPath: root });
       assert.deepEqual(graph.profile.rustMetadataReaders, ["core/src/lib.rs"], body);
