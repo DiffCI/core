@@ -693,7 +693,7 @@ _Module resource and dependency impact contributed by [@FredApps](https://github
 
 ### Python
 
-These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.ini`, `.pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
+These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setup.cfg`, `pytest.toml`, `.pytest.toml`, `pytest.ini`, `.pytest.ini`, `tox.ini` or `conftest.py`). A changed project file such as `pyproject.toml` or `requirements.txt` falls back under `Configuration file(s) changed`.
 
 | Reason | Example change | Narrow |
 | --- | --- | --- |
@@ -702,6 +702,7 @@ These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setu
 | `Unresolved relative import in …: ……` | `from .gone import x` after deleting `gone.py` | No |
 | `Unresolved first-party Python import in …: …` | `import shop.generated` where `shop/generated.py` is created by a build step | No |
 | `pytest configuration DiffCI cannot read: …` | `python_files` set to something other than a string or list in `pyproject.toml` | Fix: use a literal string or list |
+| `pytest configuration DiffCI cannot read: …` | A `pytest.toml` or `[tool.pytest]` key that isn't a list of strings, both `[tool.pytest]` and `[tool.pytest.ini_options]` in one `pyproject.toml`, or options above the `[pytest]` table in `pytest.toml`; a quoted or dotted key, or a table header with spaces or quotes inside the brackets; or a `pytest.toml`, `.pytest.toml` or `[tool.pytest]` next to another pytest config that pytest before 9 would read instead | Fix: use a list of strings, keep one table, and put options under `[pytest]` (pytest 9 rejects all three); write bare keys and `[pytest]` / `[tool.pytest]` headers; keep a single pytest config file |
 | `Python analysis found no Python files` | Project files with every `.py` file inside a virtual environment | No |
 
 _Reading pytest configuration the way pytest does was improved by [@sarankumar1325](https://github.com/sarankumar1325): `pytest.ini` wins even when empty, and `.pytest.ini` is read ([#314](https://github.com/DiffCI/core/pull/314)); `pyproject.toml` lists are read as TOML strings ([#315](https://github.com/DiffCI/core/pull/315)); `tox.ini` and `setup.cfg` settings are covered by tests ([#316](https://github.com/DiffCI/core/pull/316))._

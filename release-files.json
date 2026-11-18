@@ -285,6 +285,7 @@
     "tests/repo/lockfile-free-dependencies.test.ts",
     "tests/repo/lockfiles.test.ts",
     "tests/repo/python-addopts-plugins.test.ts",
+    "tests/repo/python-pytest-toml.test.ts",
     "tests/repo/mocharc-config-fallback.test.ts",
     "tests/repo/python-testpaths-globs.test.ts",
     "tests/repo/orphan-tool-config.test.ts",
