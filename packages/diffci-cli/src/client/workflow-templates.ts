@@ -1,3 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { detectPackageManager, type SupportedPackageManager } from "./install.js";
+
 /** GitHub-hosted runner and Node 24 action pins shared by every workflow the CLI generates. */
 export const RUNNER = "ubuntu-26.04";
 export const CHECKOUT_SHA = "3d3c42e5aac5ba805825da76410c181273ba90b1"; // actions/checkout v7.0.1
@@ -24,7 +29,42 @@ jobs:
 `;
 }
 
-export function diffciVerificationWorkflow(version: string): string {
+/**
+ * The commands that install a JavaScript repository's dependencies in CI, for the verification workflow:
+ * verify runs the repository's tests, which a fresh checkout cannot run before its dependencies are
+ * installed (every receipt then fails, 2026-11-18). Empty when the package manager is not known, or is
+ * Bun, which needs a setup action this template does not pin.
+ */
+export function dependencyInstallCommands(manager: SupportedPackageManager | undefined, hasLockfile: boolean, yarnBerry = false): string[] {
+  // pnpm and Yarn 2+ install frozen by default in CI, which fails without a lockfile; Yarn 2+ spells it --immutable.
+  switch (manager) {
+    case "npm": return [hasLockfile ? "npm ci" : "npm install"];
+    case "pnpm": return ["corepack enable", hasLockfile ? "pnpm install --frozen-lockfile" : "pnpm install --no-frozen-lockfile"];
+    case "yarn": return ["corepack enable", yarnBerry ? (hasLockfile ? "yarn install --immutable" : "yarn install --no-immutable") : hasLockfile ? "yarn install --frozen-lockfile" : "yarn install"];
+    default: return [];
+  }
+}
+
+/** How the verification workflow installs `repoPath`'s dependencies before verify runs its tests. */
+export function verificationInstallCommands(repoPath: string): string[] {
+  if (!existsSync(join(repoPath, "package.json"))) return [];
+  let manager: SupportedPackageManager;
+  try { manager = detectPackageManager(repoPath); } catch { return []; }
+  const lockfiles = manager === "pnpm" ? ["pnpm-lock.yaml"] : manager === "yarn" ? ["yarn.lock"] : ["package-lock.json", "npm-shrinkwrap.json"];
+  const hasLockfile = lockfiles.some((name) => existsSync(join(repoPath, name)));
+  const yarnBerry = existsSync(join(repoPath, ".yarnrc.yml")) || /"packageManager"\s*:\s*"yarn@(?!1\.)/.test(readFileSync(join(repoPath, "package.json"), "utf8"));
+  return dependencyInstallCommands(manager, hasLockfile, yarnBerry);
+}
+
+function installStep(commands: readonly string[]): string {
+  if (commands.length === 0) {
+    return "      # Install the repository's dependencies here: verify runs its tests.\n";
+  }
+  const run = commands.length === 1 ? ` ${commands[0]}` : ` |\n${commands.map((command) => `          ${command}`).join("\n")}`;
+  return `      - name: Install dependencies\n        run:${run}\n`;
+}
+
+export function diffciVerificationWorkflow(version: string, installCommands: readonly string[] = []): string {
   return `name: DiffCI verification
 on: [push, pull_request]
 permissions:
@@ -41,7 +81,7 @@ jobs:
       - uses: actions/setup-node@${SETUP_NODE_SHA} # immutable setup-node pin
         with:
           node-version: 22
-      - name: Verify changed code
+${installStep(installCommands)}      - name: Verify changed code
         run: npx "@diffci.com/diffci@${version}" verify --json --out "$RUNNER_TEMP/diffci-verification.json"
       - name: Upload verification receipt
         if: always()
