@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { commandSpecToString, nodeTestGlobForPath } from "@diffci.com/core/planner/test-command";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,7 +12,7 @@ import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./fa
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
-import { makeGitRunner, observe } from "./observe.js";
+import { makeGitRunner, observe, separateProjectReason } from "./observe.js";
 import { redactPath, type ObservationCommitRange, type ObservationReport, type SelectionReason } from "./report.js";
 import { createIsolatedWorktree } from "./isolated-worktree.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
@@ -231,7 +232,7 @@ async function executeObservation(
     ? evaluateEnforcement(options.redactPaths ? { ...context, pathsRedacted: true } : context, observation)
     : undefined;
   const executed = await executeWithPolicy(options, scope, before, observation, enforcement);
-  const report = options.redactPaths ? redactReceipt(executed, observation.result) : executed;
+  const report = options.redactPaths ? redactReceipt(executed, observation.result, options.repoPath) : executed;
   if (!enforcement) return report;
   return { ...report, enforcement: { ...enforcement, applied: enforcement.fired_fallback === null && report.selection === "selected" } };
 }
@@ -537,14 +538,14 @@ async function executeWithPolicy(
   };
 }
 
-function stamped(report: VerificationReport, version: string): VerificationReport {
+function stamped(report: VerificationReport, version: string, redactPaths: boolean | undefined): VerificationReport {
   const { schema, schema_version, produced_at, ...rest } = report;
-  return { schema, schema_version, produced_at, diffci_version: version, ...rest };
+  return { schema, schema_version, produced_at, diffci_version: version, ...rest, ...(redactPaths ? { snapshot: redactSnapshot(report.snapshot) } : {}) };
 }
 
 /** Verify exactly the staged, unstaged, and non-ignored untracked content currently on disk. */
 export async function verifyChanged(options: VerifyChangedOptions): Promise<VerificationReport> {
-  return stamped(await verifyChangedSnapshot(options), options.version);
+  return stamped(await verifyChangedSnapshot(options), options.version, options.redactPaths);
 }
 
 async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<VerificationReport> {
@@ -619,7 +620,7 @@ export function scopedChanges(repoPath: string, scope: VerificationTreeScope): {
 }
 
 export async function verifyScoped(options: VerifyScopedOptions): Promise<VerificationReport> {
-  return stamped(await verifyScopedTree(options), options.version);
+  return stamped(await verifyScopedTree(options), options.version, options.redactPaths);
 }
 
 async function verifyScopedTree(options: VerifyScopedOptions): Promise<VerificationReport> {
@@ -705,7 +706,7 @@ async function verifyScopedTree(options: VerifyScopedOptions): Promise<Verificat
 
 /** Verify a real commit range and bind the receipt to the clean commit that was actually executed. */
 export async function verifyRange(options: VerifyRangeOptions): Promise<VerificationReport> {
-  return stamped(await verifyCommitRange(options), options.version);
+  return stamped(await verifyCommitRange(options), options.version, options.redactPaths);
 }
 
 async function verifyCommitRange(options: VerifyRangeOptions): Promise<VerificationReport> {
@@ -749,14 +750,30 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
 /**
  * Under --redact-paths the analysis plans with real paths, so the selected tests can run, and the receipt
  * carries digests instead (the same sha256-12 as the observation report): the selected tests and their
- * reasons, and those paths wherever the command and reason text name them.
+ * reasons, and those paths wherever the command and reason text name them. The text also names the files
+ * the snapshot lists (a file the run changed); `stamped` digests the lists themselves (redactSnapshot).
  */
-function redactReceipt(report: VerificationReport, result: ObservationReport["result"]): VerificationReport {
+function redactReceipt(report: VerificationReport, result: ObservationReport["result"], repoPath: string): VerificationReport {
   const digest = (path: string) => redactPath(path, (input) => createHash("sha256").update(input).digest("hex"));
-  const known = [...new Set([...(result?.selectedTests ?? []), ...(result?.testsOutsideFullSuite ?? []), ...(result?.changedFiles ?? [])])]
-    .filter((path) => path.length > 0)
-    .sort((left, right) => right.length - left.length);
-  const scrub = (text: string) => known.reduce((current, path) => current.split(path).join(digest(path)), text);
+  const snapshot = report.snapshot;
+  const known = [...new Set([
+    ...(result?.selectedTests ?? []), ...(result?.testsOutsideFullSuite ?? []), ...(result?.changedFiles ?? []),
+    ...(snapshot.written_during_verification ?? []), ...(snapshot.changed_during_verification ?? []).map((change) => change.path),
+    ...(snapshot.line_ending_only_changes ?? []),
+  ])].filter((path) => path.length > 0);
+  // A command names a path as written, or as the `node --test` glob that matches only it, either one
+  // shell-escaped when it holds glob characters: `d[1].test.js` runs as "d@([[])1@([]]).test.js".
+  const shellForm = (text: string) => commandSpecToString({ executable: "", args: [text] }).slice(1);
+  const forms = known.flatMap((path) => {
+    const glob = nodeTestGlobForPath(path);
+    return [...new Set([path, shellForm(path), ...(glob ? [glob, shellForm(glob)] : [])])].map((form) => [form, digest(path)] as const);
+  });
+  // The outside-suite reason names the separate project's directory, which is no file the run knows.
+  const outside = result?.testsOutsideFullSuite ?? [];
+  const projectReason = outside.length ? separateProjectReason(repoPath, outside) : undefined;
+  if (projectReason) forms.push([projectReason, separateProjectReason(repoPath, outside, digest)!]);
+  forms.sort((left, right) => right[0].length - left[0].length);
+  const scrub = (text: string) => forms.reduce((current, [form, hidden]) => current.split(form).join(hidden), text);
   return {
     ...report,
     reason: scrub(report.reason),
@@ -779,6 +796,20 @@ function redactReceipt(report: VerificationReport, result: ObservationReport["re
         introduced: report.failure_baseline.introduced.map(scrub),
       },
     } : {}),
+  };
+}
+
+/**
+ * The snapshot's file lists under --redact-paths: the files the run wrote or changed, and the files that
+ * differ only by line endings. Applied to every receipt, including the ones that return before the run.
+ */
+function redactSnapshot(snapshot: VerificationReport["snapshot"]): VerificationReport["snapshot"] {
+  const digest = (path: string) => redactPath(path, (input) => createHash("sha256").update(input).digest("hex"));
+  return {
+    ...snapshot,
+    ...(snapshot.written_during_verification ? { written_during_verification: snapshot.written_during_verification.map(digest) } : {}),
+    ...(snapshot.changed_during_verification ? { changed_during_verification: snapshot.changed_during_verification.map((change) => ({ ...change, path: digest(change.path) })) } : {}),
+    ...(snapshot.line_ending_only_changes ? { line_ending_only_changes: snapshot.line_ending_only_changes.map(digest) } : {}),
   };
 }
 
