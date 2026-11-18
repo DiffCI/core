@@ -1468,7 +1468,11 @@ export async function buildDependencyGraph(
       // TypeScript may resolve a Vue import to a declaration shim. Preserve the actual SFC edge.
       if (resolvableSpecifier.endsWith(".vue")) {
         const compilerAliases = Object.entries(importerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
-        const candidate = findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases.length ? compilerAliases : profile.pathAliases, importerOptions.baseUrl ?? dirname(sf.fileName));
+        // `paths` resolve against `baseUrl`, or without one against the declaring tsconfig's directory
+        // (TypeScript's pathsBasePath), never the importer's. Root aliases are repo-relative, as for assets.
+        const candidate = compilerAliases.length
+          ? findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases, importerOptions.baseUrl ?? (importerOptions as { pathsBasePath?: string }).pathsBasePath ?? dirname(sf.fileName))
+          : findAssetCandidate(sf.fileName, resolvableSpecifier, profile.pathAliases, profile.tsconfig?.baseUrl ? resolve(repoPath, profile.tsconfig.baseUrl) : repoPath);
         const target = candidate && toRelativeInternal(repoPath, candidate);
         if (target && internalSourcePaths.has(target)) {
           addEdge(importerRel, target, ref.kind, ref);
