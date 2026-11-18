@@ -23,7 +23,14 @@ export function isConventionalCiConfigPath(path: string): boolean {
   if (path.startsWith(".github/workflows/")) return true;
   const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
   if (/(?:^|\.)gitlab-ci\.ya?ml$/.test(base)) return true; // .gitlab-ci.yml, test.gitlab-ci.yml
-  return path.startsWith(".gitlab/") && YAML.test(path); // .gitlab/ci/*.yml and similar
+  if (path.startsWith(".gitlab/") && YAML.test(path)) return true; // .gitlab/ci/*.yml and similar
+  // Other providers' conventional pipeline files (#183). Azure Pipelines is where the DiffCIObserve task runs;
+  // before this, a change to its pipeline was an unknown file narrowed to the tests that read it.
+  if (/^azure-pipelines\.ya?ml$/.test(base)) return true;
+  if (/^\.(?:azure-pipelines|azuredevops)\//.test(path) && YAML.test(path)) return true;
+  if (path.startsWith(".circleci/") || path.startsWith(".buildkite/")) return true;
+  if (path === "bitbucket-pipelines.yml" || path === ".travis.yml") return true;
+  return path.slice(path.lastIndexOf("/") + 1) === "Jenkinsfile";
 }
 
 export interface GitlabIncludes {

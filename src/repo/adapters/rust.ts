@@ -16,6 +16,7 @@ export interface CargoTarget {
 export interface CargoPackage {
   id: string;
   name: string;
+  version?: string;
   manifest_path: string;
   targets: CargoTarget[];
   source?: string | null;
@@ -124,7 +125,8 @@ export function parseCargoMetadata(output: string): CargoMetadata {
     if (!object(pkg) || typeof pkg.id !== "string" || !pkg.id || typeof pkg.name !== "string"
       || !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(pkg.name) || typeof pkg.manifest_path !== "string"
       || !isAbsolute(pkg.manifest_path) || !Array.isArray(pkg.targets) || !pkg.targets.length
-      || (pkg.source !== undefined && pkg.source !== null && typeof pkg.source !== "string")) {
+      || (pkg.source !== undefined && pkg.source !== null && typeof pkg.source !== "string")
+      || (pkg.version !== undefined && typeof pkg.version !== "string")) {
       throw new Error("Invalid Cargo package metadata");
     }
     for (const target of pkg.targets) {
@@ -197,7 +199,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean; module?: string[] }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean; runsPrograms: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -212,7 +214,9 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
       if (depth) return undefined;
       continue;
     }
-    const raw = /^r(#{0,255})"/.exec(source.slice(i));
+    // Byte and C raw strings (`br"\"`, `cr#"say "hi""#`) take no escapes either; read as a `b`/`c`
+    // identifier and an ordinary string, a backslash or quote inside would hide the code after them.
+    const raw = /^[bc]?r(#{0,255})"/.exec(source.slice(i));
     if (raw) {
       const start = i + raw[0].length, end = source.indexOf(`"${raw[1]}`, start);
       if (end < 0) return undefined;
@@ -238,23 +242,54 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   // dependency edge cannot see is code that reaches another crate's modelled Rust inputs at run or
   // build time. Report literal paths (the caller checks which crates they reach) and Cargo/rustc
   // invocations; ordinary identifiers such as `fs`, `process`, `unsafe` or `metadata` are not inputs.
-  const inputs: Array<{ path: string; code: boolean }> = [];
+  const inputs: Array<{ path: string; code: boolean; module?: string[] }> = [];
+  // Inline `mod name { ... }` blocks open around each token, for `#[path]` (null: any other brace).
+  const blocks: Array<string | null> = [];
   const paths: string[] = [];
   let compiles = false;
+  let runsPrograms = false;
   const includeArguments = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i]!.value === "mod" && tokens[i + 1]?.value === "target" && tokens[i + 2]?.value === ";") return undefined;
+    if (tokens[i]!.value === "{") blocks.push(tokens[i - 2]?.value === "mod" && /^[A-Za-z_]/.test(tokens[i - 1]?.value ?? "") ? tokens[i - 1]!.value : null);
+    if (tokens[i]!.value === "}") blocks.pop();
     if (tokens[i]!.value === "#") {
       let j = i + 1;
       if (tokens[j]?.value === "!") j++;
       if (tokens[j]?.value === "[") {
         let depth = 1;
+        const paths: string[] = [];
         for (j++; j < tokens.length && depth; j++) {
           if (tokens[j]!.value === "[") depth++;
           if (tokens[j]!.value === "]") depth--;
-          if (tokens[j]!.value === "path" && tokens[j + 1]?.value === "=") return undefined;
+          if (tokens[j]!.value === "path" && tokens[j + 1]?.value === "=") {
+            // `#[path = "x.rs"]` or `#[cfg_attr(pred, path = "x.rs")]` with a plain literal.
+            const literal = tokens[j + 2]?.literal;
+            if (tokens[i + 1]?.value === "!" || !["[", ","].includes(tokens[j - 1]?.value ?? "") || literal === undefined
+              || !["]", ",", ")"].includes(tokens[j + 3]?.value ?? "") || /[\0\r\n]/.test(literal)) return undefined;
+            paths.push(literal);
+          }
         }
         if (depth) return undefined;
+        if (paths.length) {
+          // Only on a file module (`mod name;`), after any other attributes and visibility: on an
+          // inline module the path would move every module declared inside it.
+          let k = j;
+          for (;;) {
+            if (tokens[k]?.value === "#" && tokens[k + 1]?.value === "[") {
+              let nested = 1;
+              for (k += 2; k < tokens.length && nested; k++) nested += tokens[k]!.value === "[" ? 1 : tokens[k]!.value === "]" ? -1 : 0;
+            } else if (tokens[k]?.value === "pub" && tokens[k + 1]?.value === "(") {
+              k = tokens.findIndex((token, index) => index > k && token.value === ")") + 1;
+              if (!k) return undefined;
+            } else if (tokens[k]?.value === "pub") k++;
+            else break;
+          }
+          if (tokens[k]?.value !== "mod" || !/^[A-Za-z_]/.test(tokens[k + 1]?.value ?? "") || tokens[k + 2]?.value !== ";") return undefined;
+          const module = blocks.filter((name): name is string => name !== null);
+          if (blocks.length !== module.length) return undefined;
+          for (const path of paths) inputs.push({ path, code: true, module });
+        }
       }
     }
     if (tokens[i]!.value === "use") {
@@ -266,6 +301,13 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
     }
     if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
       && tokens[i + 4]?.value === "(" && /^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")) compiles = true;
+    // Any other program (a script, a shell, a tool) could read files no Rust edge shows. Running the
+    // package's own binary (`env!("CARGO_BIN_EXE_name")`) is Rust code Cargo already models. This is a
+    // token heuristic: clap's `Command::new("app")` counts too, which only fails closed.
+    if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
+      && tokens[i + 4]?.value === "(" && !/^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")
+      && !(tokens[i + 5]?.value === "env" && tokens[i + 6]?.value === "!" && tokens[i + 7]?.value === "(" && /^CARGO_BIN_EXE_/.test(tokens[i + 8]?.literal ?? ""))) runsPrograms = true;
+    if (["duct", "xshell", "subprocess"].includes(tokens[i]!.value) || (tokens[i]!.value === "cmd" && tokens[i + 1]?.value === "!")) runsPrograms = true;
     // `env!("CARGO")`, `env::var("RUSTC")` and similar name the toolchain a test is about to run.
     if (["CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER"].includes(tokens[i]!.literal ?? "")) compiles = true;
     if (!["include", "include_str", "include_bytes"].includes(tokens[i]!.value) || tokens[i + 1]?.value !== "!") continue;
@@ -288,7 +330,7 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   });
   const navigates = navigatesUpward(tokens);
   // Code that climbs out of its crate can walk to README or docs without naming them.
-  return { inputs, paths, compiles, navigates, documentation: documentation || navigates };
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates, runsPrograms };
 }
 
 /** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,
@@ -305,6 +347,89 @@ function navigatesUpward(tokens: ReadonlyArray<{ value: string; literal?: string
     if (tokens[index - 1]?.value !== "." || tokens[index + 1]?.value !== "(") return false;
     return token.value === "parent" || token.value === "ancestors" || (pathBuf && token.value === "pop");
   });
+}
+
+/** Doc-comment words that keep a fenced block Rust (rustdoc's doctest attributes). Any other word
+ * (`text`, `toml`, `sh`, ...) makes the block another language unless `rust` is also given. */
+const DOCTEST_ATTRIBUTE = /^(?:rust|ignore(?:-\S+)?|should_panic|no_run|compile_fail|edition\d{4}|standalone_crate|test_harness|allow_fail|E\d{4})$/;
+
+/** Rustdoc compiles and runs the code blocks in doc comments (`///`, `//!`, `/** *\/`, `/*! *\/`)
+ * as doctests, from the crate directory. The input scan skips comments, so this returns the code of
+ * every block that may be Rust: fenced blocks with no other language and indented blocks, with
+ * rustdoc's hidden-line `# ` prefix removed. */
+function doctestCode(source: string): string {
+  const code: string[] = [];
+  for (const group of docComments(source)) {
+    const indent = Math.min(...group.filter(line => line.trim()).map(line => /^\s*/.exec(line)![0].length));
+    let fence: string | undefined; let rust = false; let previousBlank = true; let indented = false;
+    for (const raw of group) {
+      const line = raw.slice(Number.isFinite(indent) ? indent : 0);
+      const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (fence === undefined && marker) {
+        const words = marker[2]!.split(/[\s,{}.]+/).filter(Boolean);
+        fence = marker[1]!; rust = !words.length || words.includes("rust") || words.every(word => DOCTEST_ATTRIBUTE.test(word));
+      } else if (fence !== undefined && marker && marker[1]!.startsWith(fence) && !marker[2]!.trim()) fence = undefined;
+      else if (fence !== undefined) { if (rust) code.push(line.replace(/^\s*#(?: |$)/, "")); }
+      // An indented block (four spaces after a blank line) is a doctest too.
+      else if (/^ {4}/.test(line) && (previousBlank || indented)) { code.push(line.slice(4).replace(/^\s*#(?: |$)/, "")); indented = true; continue; }
+      if (line.trim()) indented = false;
+      previousBlank = !line.trim();
+    }
+  }
+  return code.join("\n");
+}
+
+/** The text of each doc comment in a file, as lines: a run of `///` or `//!` lines, or one `/** *\/`
+ * or `/*! *\/` block (leading `*` removed). Strings, character literals and plain comments are skipped
+ * the way the input scan skips them, so a `"/**"` glob or a commented-out `///` is not a doc comment. */
+function docComments(source: string): string[][] {
+  const groups: string[][] = [];
+  let lineGroup: string[] | undefined; let lineGroupEnd = -1;
+  for (let i = 0; i < source.length;) {
+    if (source.startsWith("//", i)) {
+      const end = source.indexOf("\n", i) < 0 ? source.length : source.indexOf("\n", i);
+      const doc = /^\/\/(?:\/(?!\/)|!)(.*)$/.exec(source.slice(i, end).replace(/\r$/, ""));
+      if (doc) {
+        if (!lineGroup || !/^[ \t]*\r?\n[ \t]*$/.test(source.slice(lineGroupEnd, i))) groups.push(lineGroup = []);
+        lineGroup.push(doc[1]!); lineGroupEnd = end;
+      }
+      i = end; continue;
+    }
+    if (source.startsWith("/*", i)) {
+      const start = i; let depth = 1; i += 2;
+      while (i < source.length && depth) {
+        if (source.startsWith("/*", i)) { depth++; i += 2; }
+        else if (source.startsWith("*/", i)) { depth--; i += 2; }
+        else i++;
+      }
+      if (/^\/\*(?:\*(?![*/])|!)/.test(source.slice(start, start + 4))) {
+        const lines = source.slice(start + 3, depth ? i : i - 2).split(/\r?\n/);
+        const starred = lines.slice(1).filter(line => line.trim()).every(line => /^\s*\*/.test(line));
+        groups.push(starred ? lines.map((line, index) => index ? line.replace(/^\s*\*/, "") : line) : lines);
+      }
+      continue;
+    }
+    const raw = /^[bc]?r(#{0,255})"/.exec(source.slice(i, i + 260));
+    if (raw) { const end = source.indexOf(`"${raw[1]}`, i + raw[0].length); i = end < 0 ? source.length : end + raw[1]!.length + 1; continue; }
+    if (source[i] === '"') { for (i++; i < source.length && source[i] !== '"'; i++) if (source[i] === "\\") i++; i++; continue; }
+    const character = /^'(?:\\.|[^'\\\n])'/.exec(source.slice(i, i + 4));
+    if (character) { i += character[0].length; continue; }
+    const identifier = /^[A-Za-z0-9_]+/.exec(source.slice(i, i + 256));
+    i += identifier ? identifier[0].length : 1;
+  }
+  return groups;
+}
+
+/** The inputs of a Rust file's code and of its doctests. */
+function rustSourceInputs(source: string): ReturnType<typeof rustInputs> {
+  const code = rustInputs(source);
+  const docs = code && rustInputs(doctestCode(source));
+  if (!code || !docs) return undefined;
+  const merged: Record<string, unknown> = { ...code, inputs: [...code.inputs, ...docs.inputs], paths: [...code.paths, ...docs.paths] };
+  // Each flag is set when either scan sets it. Combining them by key keeps that true for a flag
+  // rustInputs gains later (such as one #250 adds), instead of silently dropping the doctests' value.
+  for (const [key, value] of Object.entries(docs)) if (typeof value === "boolean") merged[key] = merged[key] === true || value;
+  return merged as NonNullable<ReturnType<typeof rustInputs>>;
 }
 
 /** A string that names a file or directory rather than ordinary text. */
@@ -334,10 +459,23 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
     const defaults = metadata.workspace_default_members;
     if (!defaults) result.blockers.push("Cargo metadata without default workspace members requires full validation; use Cargo 1.71 or later");
     const tested = new Set(defaults ?? []);
+    result.rustAllMembersTested = defaults !== undefined && metadata.workspace_members.every(id => tested.has(id));
     if (new Set(members.map(pkg => pkg.name)).size !== members.length) {
       result.blockers.push("Ambiguous Cargo workspace package names require full validation");
       return result;
     }
+    // `cargo test -p NAME` and `cargo tree -p NAME` stop with "specification is ambiguous" when a
+    // dependency has a member's name (an older release of the same crate, say). Name such a member
+    // NAME@VERSION, which Cargo accepts, or fall back when even that cannot tell them apart.
+    const specs = new Map<string, string>();
+    for (const pkg of members) {
+      const named = metadata.packages.filter(other => other.name === pkg.name);
+      if (named.length === 1) specs.set(pkg.id, pkg.name);
+      else if (pkg.version && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pkg.version) && named.filter(other => other.version === pkg.version).length === 1) {
+        specs.set(pkg.id, `${pkg.name}@${pkg.version}`);
+      } else result.blockers.push(`Cargo package ${pkg.name} has no unambiguous package specification; full validation required`);
+    }
+    const spec = (pkg: CargoPackage) => specs.get(pkg.id) ?? pkg.name;
     const packages: Array<{ pkg: CargoPackage; directory: string; manifest: string }> = [];
     for (const pkg of members) {
       const manifest = repositoryPath(root, pkg.manifest_path, known);
@@ -412,13 +550,22 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           continue;
         }
         result.testFiles.push(path);
-        result.testPackages[path] = pkg.name;
-        result.rustTestTargets[path] = { name: target.name, kind };
+        result.testPackages[path] = spec(pkg);
+        // Plain `cargo test` builds and runs a target with `required-features` only when Cargo enabled
+        // those features for its package, and skips it silently otherwise. The planner keeps such a
+        // package whole (`-p name`, never `--test name`), so Cargo makes the same decision for the
+        // selected command as for the full run: the feature check below gives the package the full
+        // run's features.
+        const requiredFeatures = target["required-features"]?.length ? [...target["required-features"]].sort() : undefined;
+        result.rustTestTargets[path] = { name: target.name, kind, ...(requiredFeatures ? { requiredFeatures } : {}) };
       }
     }
     const moduleTrees = packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path)))
       .filter((path): path is string => path !== undefined).map(path => dirname(path) === "." ? "" : dirname(path));
     if (!completeRustInventory(root, known, moduleTrees)) result.blockers.push("Incomplete Rust source inventory or symlinked inputs require full validation");
+    // Crate roots, for `#[path]` inside inline modules; directories of `#[path]` modules, checked below.
+    const targetRoots = new Set(packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path))));
+    const pathModuleTrees: string[] = [];
     result.sourcePaths = [...new Set(result.sourcePaths)].sort();
     result.testFiles.sort();
     if (!result.testFiles.length) result.blockers.push("Cargo metadata found no supported test targets");
@@ -470,13 +617,10 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       const anchor = anchors.get(id)!;
       for (const other of packages) if (other.manifest !== anchor) result.edges.push({ from: anchor, to: other.manifest, kind: "import" });
     }
-    if (packages.some(({ pkg }) => pkg.targets.some(target => target["required-features"]?.length))) {
-      result.blockers.push("Cargo targets requiring features need an explicitly supported test invocation; full validation required");
-    }
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
       if (!sourceOwner) continue;
-      const scanned = rustInputs(readFileSync(resolve(root, source), "utf8"));
+      const scanned = rustSourceInputs(readFileSync(resolve(root, source), "utf8"));
       if (scanned === undefined) {
         result.blockers.push(`Rust computed includes or path attributes require full validation: ${source}`);
         continue;
@@ -486,16 +630,21 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
       // Model these as dependencies of this crate instead of blocking the repository.
       if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
+      if (scanned.runsPrograms) result.rustRunsPrograms = true;
       const reached = new Set<string>();
       if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);
       for (const literal of scanned.paths) {
         const clean = literal.replace(/\\/g, "/").replace(/^(?:[A-Za-z]:)?\/+/, "");
         const glob = clean.search(/[*?[{]/);
         const prefix = glob < 0 ? clean : clean.slice(0, clean.lastIndexOf("/", glob) + 1);
-        for (const base of new Set([sourceOwner.directory, dirname(source) === "." ? "" : dirname(source)])) {
+        // Also from the workspace root: rustc and proc macros run there, and `[env]` paths such as
+        // CARGO_WORKSPACE_DIR start there. From the root, only a path below it names a crate.
+        const bases = [sourceOwner.directory, dirname(source) === "." ? "" : dirname(source)];
+        for (const [index, base] of [...bases, ""].entries()) {
           const joined = posix.normalize(posix.join(base || ".", prefix || "."));
           if (joined === ".." || joined.startsWith("../")) continue;
           const rel = joined === "." ? "" : joined.replace(/\/+$/, "");
+          if (index === bases.length && !rel) continue;
           const inside = rel ? owner(rel) ?? owner(`${rel}/`) : packages.find(pkg => pkg.directory === "");
           if (inside) reached.add(inside.manifest);
           for (const other of packages) if (other.directory && (rel === "" || under(other.directory, rel) || other.directory === rel)) reached.add(other.manifest);
@@ -504,7 +653,15 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       reached.delete(sourceOwner.manifest);
       for (const manifest of reached) result.edges.push({ from: sourceOwner.manifest, to: manifest, kind: "import" });
       for (const input of scanned.inputs) {
-        const path = repositoryPath(root, resolve(root, dirname(source), input.path), known);
+        // A `#[path]` is relative to the file's directory; inside inline modules, also to their
+        // names, below the file's stem unless it is a crate root or mod.rs.
+        const modRs = targetRoots.has(source) || /(?:^|\/)mod\.rs$/.test(source);
+        if (input.module?.length && !modRs) {
+          result.blockers.push(`Rust computed includes or path attributes require full validation: ${source}`);
+          continue;
+        }
+        const base = input.module ? posix.join(dirname(source), ...input.module) : dirname(source);
+        const path = repositoryPath(root, resolve(root, base, input.path), known);
         if (!path || owner(path)?.pkg.id !== sourceOwner.pkg.id) {
           result.blockers.push(`Rust include outside its crate or unavailable requires full validation: ${source}`);
           continue;
@@ -513,27 +670,37 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           result.blockers.push(`Rust include code with a non-Rust extension requires full validation: ${source}`);
           continue;
         }
+        if (input.module) {
+          // Module source of the same crate: already a source of it. What it declares is looked up
+          // from its own directory, so that tree must be complete too.
+          pathModuleTrees.push(dirname(path) === "." ? "" : dirname(path));
+          result.edges.push({ from: source, to: path, kind: "import" });
+          continue;
+        }
         if (!result.sourcePaths.includes(path)) result.assetPaths.push(path);
         result.edges.push({ from: source, to: path, kind: "asset" });
       }
     }
+    if (pathModuleTrees.length && !completeRustInventory(root, known, pathModuleTrees)) result.blockers.push("Incomplete Rust source inventory or symlinked inputs require full validation");
     result.assetPaths = [...new Set(result.assetPaths)].sort();
+    result.rustCrateDirectories = [...new Set(packages.map(({ directory }) => directory))].sort();
+    result.rustRunsPrograms ??= false;
     // Selective commands must give every package the features the full invocation gives it. Cargo
     // resolves each tested crate alone and with its dependents (what a change to it selects); the
     // planner checks each selected set against those units.
     if (!cargoFeaturesVary(metadata)) result.rustFeatureCoverage = { deficits: {}, units: [] };
     else {
-      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => pkg.name);
+      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => spec(pkg));
       const dependents = new Map<string, string[]>();
       for (const edge of result.edges) {
         if (edge.from.endsWith("Cargo.toml") && edge.to.endsWith("Cargo.toml") && edge.from !== edge.to) {
           dependents.set(edge.to, [...(dependents.get(edge.to) ?? []), edge.from]);
         }
       }
-      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, pkg.name]));
+      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, spec(pkg)]));
       const units = new Map<string, string[]>();
       for (const { pkg, manifest } of packages) {
-        if (tested.has(pkg.id)) units.set(pkg.name, [pkg.name]);
+        if (tested.has(pkg.id)) units.set(spec(pkg), [spec(pkg)]);
         const seen = new Set([manifest]); const pending = [manifest];
         while (pending.length) for (const next of dependents.get(pending.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); pending.push(next); }
         const closure = [...seen].map(path => byManifest.get(path)).filter((name): name is string => name !== undefined && testedNames.includes(name)).sort();
@@ -568,11 +735,14 @@ function cargoFeatureResolver(repoPath: string): CargoFeatureResolver {
 /** Configuration keys that change how crates are compiled, which code is compiled or what runs the
  * tests. Aliases, registries, network, terminal, `[env]` and target-dir settings apply equally to
  * the selected and the full invocation, so they do not block. */
-const BUILD_CONFIG = /^\s*(?:build\s*\.\s*)?(?:rustflags|rustdocflags|target|rustc|rustdoc|rustc-wrapper|rustc-workspace-wrapper)\s*=|^\s*\[\s*(?:target|patch|unstable)\b|^\s*(?:target|patch|unstable)\s*\.|^\s*(?:paths|include)\s*=/m;
+const BUILD_CONFIG = /^\s*(?:build\s*\.\s*)?(?:rustflags|rustdocflags|target|rustc|rustdoc|rustc-wrapper|rustc-workspace-wrapper)\s*=|^\s*\[\s*(?:target|patch|unstable)\b|^\s*(?:target|patch|unstable)\s*\.|^\s*(?:paths|include)\s*=|^\s*(?:build|patch|unstable)\s*=/m;
 const COMPILER_ENVIRONMENT = /^(?:RUSTFLAGS|RUSTDOCFLAGS|CARGO_ENCODED_RUST(?:DOC)?FLAGS|CARGO_BUILD_RUST(?:DOC)?FLAGS|CARGO_BUILD_TARGET|RUSTC|RUSTDOC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC(?:_WRAPPER|_WORKSPACE_WRAPPER)?|CARGO_BUILD_RUSTDOC|CARGO_TARGET_.+_(?:RUNNER|RUSTFLAGS))$/;
 
+/** TOML spells the same key bare, quoted (`"build".rustflags`) or as an inline table
+ * (`build = { rustflags = [...] }`); Cargo reads them all. Unquote simple keys before matching, and
+ * treat a whole `build`, `patch` or `unstable` inline table as build-changing. */
 function changesBuild(path: string): boolean {
-  try { return BUILD_CONFIG.test(readFileSync(path, "utf8")); }
+  try { return BUILD_CONFIG.test(readFileSync(path, "utf8").replace(/(["'])([A-Za-z0-9_-]+)\1/g, "$2")); }
   catch { return existsSync(path); }
 }
 

@@ -161,3 +161,17 @@ test("a read-only token warns and never fails, and outputs are still written", a
   assert.match(readFileSync(outputPath, "utf8"), /^full-suite-required=false$/m);
   assert.ok(logged.some((line) => line.startsWith("::warning") && line.includes("pull-requests: write")));
 });
+
+// #278: a path that is not a git checkout leaves no evidence; the comment must not report a changed tree.
+test("a refusal with no checkout to compare does not warn that the working tree changed", () => {
+  const refused = report({ status: "REFUSED", stage: "context", reason: "not a git repository, or HEAD could not be resolved", result: undefined,
+    nonInterference: { worktreeUnchanged: false, reportWrittenOutsideRepository: true, workflowFindings: [] } });
+  const text = formatComment(refused, { marker: commentMarker("w/j") });
+  assert.doesNotMatch(text, /working tree changed/);
+  assert.equal(impactOutputs(refused)["full-suite-required"], "true");
+
+  const moved = report({ nonInterference: { headShaBefore: "a".repeat(40), headShaAfter: "b".repeat(40), worktreeDigestBefore: "d", worktreeDigestAfter: "d", worktreeUnchanged: false, workflowFindings: [] } });
+  assert.match(formatComment(moved, { marker: commentMarker("w/j") }), /working tree changed/);
+  const lost = report({ nonInterference: { headShaBefore: "a".repeat(40), worktreeDigestBefore: "d", worktreeUnchanged: false, workflowFindings: [] } });
+  assert.match(formatComment(lost, { marker: commentMarker("w/j") }), /working tree changed/);
+});

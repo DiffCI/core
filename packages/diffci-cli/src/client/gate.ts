@@ -209,13 +209,20 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   const repoPath = resolve(options.repoPath);
   const run = options.run ?? measureCommand;
   const started = Date.now();
-  const remaining = () => Math.max(options.timeoutMs - (Date.now() - started), 0);
-  const execute = (command: string): CommandMeasurement => run(command, { cwd: repoPath, timeoutMs: remaining(), tailBytes: options.tailBytes });
+  // The step budget starts after the analysis: a slow analysis must not leave the full gate unrun.
+  let stepsStarted = started;
+  // A step that would start with no time left is not run: a 0ms timeout would mean no limit at all.
+  const execute = (command: string): CommandMeasurement | undefined => {
+    const remaining = options.timeoutMs - (Date.now() - stepsStarted);
+    return remaining > 0 ? run(command, { cwd: repoPath, timeoutMs: remaining, tailBytes: options.tailBytes }) : undefined;
+  };
+  const step = (measurement: CommandMeasurement | undefined): StepRun => measurement ? stepRun(measurement) : { status: "not_run" };
 
   // 1. What DiffCI would do: a plan made elsewhere, or an analysis here. Never fatal: the full gate runs
   //    whatever happens here.
   const supplied = options.plan !== undefined ? usablePlan(options.plan, options.expectHead) : undefined;
   const plan = supplied ? supplied.plan : await planGate(options);
+  stepsStarted = Date.now();
   const analysis: GateReport["analysis"] = plan?.analysis ?? { status: "PLAN_UNUSABLE", reason: supplied?.reason, fallback_reasons: [] };
   const unplanned = analysis.reason ?? "the change could not be analysed";
   const analysisMs = supplied?.plan ? 0 : plan?.analysis.duration_ms ?? 0;
@@ -227,7 +234,7 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   // 2. The full gate, every leaf, continuing past failures so each one is attributed.
   const checks: GateCheckReport[] = full.map((check) => {
     const decided = decisionOf.get(check.id);
-    const measured = stepRun(execute(check.command));
+    const measured = step(execute(check.command));
     return {
       id: check.id, kind: check.kind,
       decision: decided?.decision ?? "UNPLANNED",
@@ -242,7 +249,7 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   let tests: GateTestReport | undefined;
   if (testCommand) {
     const measurement = execute(testCommand);
-    const fullRun = { ...stepRun(measurement), ...(measurement.failingTests?.length ? { failing_tests: measurement.failingTests } : {}) };
+    const fullRun = { ...step(measurement), ...(measurement?.failingTests?.length ? { failing_tests: measurement.failingTests } : {}) };
     tests = {
       command: testCommand, full: fullRun,
       selection: plan?.tests.selection ?? "unavailable",
@@ -257,22 +264,25 @@ export async function runGate(options: GateOptions): Promise<GateReport> {
   //    unless --measure-selected asks for timings on a passing build.
   for (const check of checks) {
     if (check.full.status === "passed" && !options.measureSelected) continue;
+    // A step the time limit left unrun has no result, so it cannot be a miss.
+    if (check.full.status === "not_run") continue;
     if (check.decision === "SKIP") { check.missed = check.full.status !== "passed"; continue; }
     if (check.decision !== "NARROWED" || !check.narrowed_command) continue;
-    check.narrowed = stepRun(execute(check.narrowed_command));
+    check.narrowed = step(execute(check.narrowed_command));
     if (check.full.status !== "passed") check.missed = check.narrowed.status === "passed";
   }
   if (tests?.selected_commands && (tests.full.status !== "passed" || options.measureSelected)) {
     const runs = tests.selected_commands.map((command) => execute(command));
-    const failed = runs.find((measurement) => stepRun(measurement).status !== "passed");
-    tests.selected = { ...stepRun(failed ?? runs[runs.length - 1]!), wall_ms: runs.reduce((sum, measurement) => sum + measurement.wallMs, 0) };
+    const failed = runs.findIndex((measurement) => step(measurement).status !== "passed");
+    tests.selected = { ...step(runs[failed >= 0 ? failed : runs.length - 1]), wall_ms: runs.reduce((sum, measurement) => sum + (measurement?.wallMs ?? 0), 0) };
     if (tests.full.status !== "passed") tests.missed = tests.selected.status === "passed";
   }
 
   // 4. Summary. The build's result is the full gate's, never DiffCI's.
   const failedSteps = [...checks.filter((check) => check.full.status !== "passed").map((check) => check.id), ...(tests && tests.full.status !== "passed" ? ["tests"] : [])];
   const fullMs = checks.reduce((sum, check) => sum + (check.full.wall_ms ?? 0), 0) + (tests?.full.wall_ms ?? 0);
-  let estimated = false;
+  // A step the time limit left unrun has no time in either total, so the comparison is not fully measured.
+  let estimated = checks.some((check) => check.full.status === "not_run") || tests?.full.status === "not_run";
   let diffciMs = analysisMs;
   for (const check of checks) {
     if (check.decision === "SKIP") continue;
@@ -317,6 +327,9 @@ export function gateExitCode(report: GateReport): number {
 }
 
 const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
+/** A step the time limit left unrun did not fail; it reads as not run, and the gate's reason says it failed. */
+const stepLabel = (status: StepStatus): string => status === "passed" ? "ok  " : status === "not_run" ? "--  " : "FAIL";
+const notRun = (status: StepStatus): string => status === "not_run" ? " (not run)" : "";
 
 export function formatGateSummary(report: GateReport): string {
   const lines = [
@@ -325,12 +338,12 @@ export function formatGateSummary(report: GateReport): string {
     `  analysis: ${report.analysis.status}${report.analysis.mode ? ` (${report.analysis.mode})` : ""}${report.analysis.reason ? ` - ${report.analysis.reason}` : ""}`,
   ];
   for (const check of report.checks) {
-    lines.push(`  ${check.full.status === "passed" ? "ok  " : "FAIL"} ${check.id} ${seconds(check.full.wall_ms ?? 0)} - DiffCI: ${check.decision}${check.missed ? " (MISSED)" : ""}`);
+    lines.push(`  ${stepLabel(check.full.status)} ${check.id} ${seconds(check.full.wall_ms ?? 0)}${notRun(check.full.status)} - DiffCI: ${check.decision}${check.missed ? " (MISSED)" : ""}`);
   }
   if (report.tests) {
     const t = report.tests;
     const scope = t.selection === "selected" ? `${t.tests_selected}/${t.tests_available} test files` : t.selection;
-    lines.push(`  ${t.full.status === "passed" ? "ok  " : "FAIL"} tests ${seconds(t.full.wall_ms ?? 0)} - DiffCI: ${scope}${t.missed ? " (MISSED)" : ""}`);
+    lines.push(`  ${stepLabel(t.full.status)} tests ${seconds(t.full.wall_ms ?? 0)}${notRun(t.full.status)} - DiffCI: ${scope}${t.missed ? " (MISSED)" : ""}`);
   }
   const s = report.summary;
   lines.push(`  full gate ${seconds(s.full_ms)}, DiffCI ${seconds(s.diffci_ms)} (${s.basis}), would save ${seconds(s.saved_ms)}`);

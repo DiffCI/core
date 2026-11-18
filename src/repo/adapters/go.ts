@@ -134,7 +134,11 @@ export const goAdapter: RepositoryAdapter = {
   detect: ({ files }) => files.some((file) => file === "go.mod" || file.endsWith(".go")),
   analyze(context) {
     const failure = contribution(this);
-    const nestedRoots = context.files.filter(f => f.endsWith("/go.mod")).map(f => f.slice(0, -"go.mod".length));
+    // With a root module, a go.mod under testdata/, _x/ or .x/ is a fixture: `go list ./...` never
+    // enters those directories, so it is not a nested module of the build.
+    const rooted = context.files.includes("go.mod");
+    const nestedRoots = context.files.filter(f => f.endsWith("/go.mod") && !(rooted && isGoDiscoveryIgnoredPath(f)))
+      .map(f => f.slice(0, -"go.mod".length));
     const scoped = context.profile.diffciConfig?.go?.scope === "root-module";
     // No root module and no workspace, and every Go file sits inside a nested module: those modules are
     // tools beside a repository written in another language (Paperclip's tools/agent-shim, 2026-11-11).

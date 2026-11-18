@@ -11,7 +11,7 @@ import fc from "fast-check";
 import { evaluateCondition, renderCommand, resolveExpression } from "../../src/ci-inference/expression.js";
 import { firstCommandTokens } from "../../src/ci-inference/purpose.js";
 import { expressionReferences } from "../../src/ci-inference/resolve.js";
-import { discoverGateChecks } from "../../src/planner/pipeline-steps.js";
+import { discoverGateChecks, expandsBetweenDoubleQuotes } from "../../src/planner/pipeline-steps.js";
 import { nodeTestGlobForPath } from "../../src/planner/test-command.js";
 import { contentNamesPath, referencePattern, referenceTokens, widenCharacterClasses } from "../../src/repo/file-references.js";
 import { workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
@@ -110,6 +110,12 @@ describe("fuzz: linear rewrites agree with the regexes they replaced", () => {
     fc.assert(fc.property(pieces("$", "{", "}", " ", "${{", "}}", "a", "==", "'b'"), (expression) => {
       const old = expression.trim().replace(/^\$\{\{\s*|\s*\}\}$/g, "").trim();
       assert.equal(evaluateCondition(expression, context).expression, old);
+    }), runs(1000));
+  });
+
+  it("double-quoted expansion in a script part (#300)", () => {
+    fc.assert(fc.property(pieces("\"", "$", "`", "a", " ", "'"), (part) => {
+      assert.equal(expandsBetweenDoubleQuotes(part), /"[^"]*[$`][^"]*"/.test(part));
     }), runs(1000));
   });
 

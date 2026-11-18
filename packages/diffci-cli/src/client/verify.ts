@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { commandSpecToString, nodeTestGlobForPath } from "@diffci.com/core/planner/test-command";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -7,11 +8,11 @@ import type { DependencyGraphResult } from "@diffci.com/core/repo/types";
 
 import { appendToCommand, batchCommand, measureCommands, orderCommand, splitCommand, subsetCommand } from "./command-batches.js";
 import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
-import { checkAtBaseline, compareWithBaseline, type FailureBaseline } from "./failure-baseline.js";
+import { checkAtBaseline, compareWithBaseline, type CheckBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
 import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
-import { makeGitRunner, observe } from "./observe.js";
+import { makeGitRunner, observe, separateProjectReason } from "./observe.js";
 import { redactPath, type ObservationCommitRange, type ObservationReport, type SelectionReason } from "./report.js";
 import { createIsolatedWorktree } from "./isolated-worktree.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
@@ -225,10 +226,13 @@ async function executeObservation(
   before: WorkingTreeSnapshot,
   observation: ObservationReport,
 ): Promise<VerificationReport> {
-  const enforcement = options.policy === "enforce"
-    ? evaluateEnforcement(collectEnforcementContext(makeGitRunner(options.repoPath), options.env, observation), observation)
+  // The analysis sees real paths, but under --redact-paths enforce keeps treating the paths as redacted.
+  const context = options.policy === "enforce" ? collectEnforcementContext(makeGitRunner(options.repoPath), options.env, observation) : undefined;
+  const enforcement = context
+    ? evaluateEnforcement(options.redactPaths ? { ...context, pathsRedacted: true } : context, observation)
     : undefined;
-  const report = await executeWithPolicy(options, scope, before, observation, enforcement);
+  const executed = await executeWithPolicy(options, scope, before, observation, enforcement);
+  const report = options.redactPaths ? redactReceipt(executed, observation.result, options.repoPath) : executed;
   if (!enforcement) return report;
   return { ...report, enforcement: { ...enforcement, applied: enforcement.fired_fallback === null && report.selection === "selected" } };
 }
@@ -405,11 +409,22 @@ async function executeWithPolicy(
     };
   }
   const checkBaseline = options.baselineOnFailure && checkBase && checkHead
-    ? (check: { command: string }, remainingMs: number) => checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: Math.max(remainingMs, 0) })
+    // With no time left the base rerun would get a 0ms limit, which means none: report it as unknown instead.
+    ? (check: { command: string }, remainingMs: number): CheckBaseline => remainingMs <= 0
+      ? { status: "unknown", base_sha: checkBase, reason: "the time limit ran out before the base run" }
+      : checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: remainingMs })
     : undefined;
   const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes, baseline: checkBaseline });
   const checks = checkRun?.results.length ? checkRun.results : undefined;
   const failedCheck = checkRun?.failure?.check;
+  // Checks the time limit left no room for were never run, so the tests must not run (with no limit) either.
+  const unrunChecks = checkRun?.outOfTime ? checkRun.results.filter((check) => check.status === "not_run") : [];
+  // Every check can run and still use the whole budget (a slow last check, or a base rerun after a
+  // failure that also fails at the base). The tests would then get a 0ms limit, which means none.
+  const testBudgetMs = options.timeoutMs - (checkRun?.wallMs ?? 0);
+  const budgetUsedByChecks = Boolean(checkRun && !checkRun.failure && !unrunChecks.length && testBudgetMs <= 0
+    && checkRun.results.some((check) => check.status !== "skipped" && check.status !== "not_run"));
+  const testsOutOfTime = unrunChecks.length > 0 || budgetUsedByChecks;
   // Checks that also fail at the base: still a failed verdict (required CI fails either way), but they
   // no longer stop the run before the change's own failures.
   const preexistingChecks = checkRun?.preexisting ?? [];
@@ -419,13 +434,15 @@ async function executeWithPolicy(
   // Every test run goes under a probe that records which `node --test` files started (selected ones must)
   // and each one's duration and result for the outcome log (2026-11-06). Outside node:test it does nothing.
   const expectedNodeTests = selection === "selected" && result ? selectedNodeTests(command, result.selectedTests) : [];
-  const trace = !checkRun?.failure ? traceNodeTestFiles(options.repoPath) : undefined;
+  const trace = !checkRun?.failure && !testsOutOfTime ? traceNodeTestFiles(options.repoPath) : undefined;
   let startedNodeTests: string[] | undefined;
   let execution: CommandMeasurement;
   try {
     execution = checkRun?.failure
       ? checkRun.failure.measurement
-      : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: Math.max(options.timeoutMs - (checkRun?.wallMs ?? 0), 0), tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
+      : testsOutOfTime
+      ? checksOutOfTime(command, checkRun?.wallMs ?? 0)
+      : measureCommands(runCommands, { cwd: options.repoPath, timeoutMs: testBudgetMs, tailBytes: options.tailBytes, env: trace?.env, stopOnFailure: options.failFast, stopOnFailureWithin: firstPass?.parts.length });
     startedNodeTests = trace?.read();
     const nodeResults = trace?.results() ?? [];
     if (nodeResults.length) execution = { ...execution, testResults: mergeTestFileResults(execution.testResults, nodeResults) };
@@ -485,6 +502,10 @@ async function executeWithPolicy(
       ? `the runner reported ${String(execution.runnerTestCount)} test(s) for ${selectedCount} selected test file(s), so some selected tests did not run; run the full test command instead`
     : succeeded
       ? checks ? `${reason}; ${checkSummary(checks)}` : reason
+      : unrunChecks.length
+        ? `gate check(s) ${unrunChecks.map((check) => check.id).join(", ")} did not run within the ${options.timeoutMs}ms time limit; tests were not run`
+      : budgetUsedByChecks
+        ? `gate checks used the whole ${options.timeoutMs}ms time limit (${String(checkRun?.wallMs ?? 0)}ms); tests were not run`
       : failedCheck
         ? `gate check ${failedCheck.id} ${failedCheck.status === "timed_out" ? "timed out" : `failed with exit code ${String(failedCheck.exit_code)}`}; tests were not run (${failedCheck.command})`
       : execution.timedOut
@@ -493,7 +514,7 @@ async function executeWithPolicy(
           ? `${preexistingChecks.length} gate check(s) failed that also fail at the base commit; nothing this change introduced failed (${preexistingChecks.map((check) => check.id).join(", ")})`
           : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
-  const failureBaseline = verification === "failed" && !failedCheck && !execution.timedOut && options.baselineOnFailure && baselineSha
+  const failureBaseline = verification === "failed" && !failedCheck && !testsOutOfTime && !execution.timedOut && options.baselineOnFailure && baselineSha
     // The base reruns only the parts that ran here: a first-pass failure is compared without the full suite.
     ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands: stoppedInFirstPass ? firstPass.parts : commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
     : undefined;
@@ -534,14 +555,14 @@ async function executeWithPolicy(
   };
 }
 
-function stamped(report: VerificationReport, version: string): VerificationReport {
+function stamped(report: VerificationReport, version: string, redactPaths: boolean | undefined): VerificationReport {
   const { schema, schema_version, produced_at, ...rest } = report;
-  return { schema, schema_version, produced_at, diffci_version: version, ...rest };
+  return { schema, schema_version, produced_at, diffci_version: version, ...rest, ...(redactPaths ? { snapshot: redactSnapshot(report.snapshot) } : {}) };
 }
 
 /** Verify exactly the staged, unstaged, and non-ignored untracked content currently on disk. */
 export async function verifyChanged(options: VerifyChangedOptions): Promise<VerificationReport> {
-  return stamped(await verifyChangedSnapshot(options), options.version);
+  return stamped(await verifyChangedSnapshot(options), options.version, options.redactPaths);
 }
 
 async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<VerificationReport> {
@@ -584,7 +605,7 @@ async function verifyChangedSnapshot(options: VerifyChangedOptions): Promise<Ver
       engineSha: options.engineSha,
       baseOverride: before.baseSha,
       headOverride: before.commitSha,
-      redactPaths: options.redactPaths,
+      // Planned with real paths so the selected tests can run; only the receipt is redacted (redactReceipt).
       reportPath: join(temporaryDirectory, "observation.json"),
       selectTestPhases: true,
       ...(options.onGraph ? { onGraph: options.onGraph } : {}),
@@ -616,7 +637,7 @@ export function scopedChanges(repoPath: string, scope: VerificationTreeScope): {
 }
 
 export async function verifyScoped(options: VerifyScopedOptions): Promise<VerificationReport> {
-  return stamped(await verifyScopedTree(options), options.version);
+  return stamped(await verifyScopedTree(options), options.version, options.redactPaths);
 }
 
 async function verifyScopedTree(options: VerifyScopedOptions): Promise<VerificationReport> {
@@ -702,7 +723,7 @@ async function verifyScopedTree(options: VerifyScopedOptions): Promise<Verificat
 
 /** Verify a real commit range and bind the receipt to the clean commit that was actually executed. */
 export async function verifyRange(options: VerifyRangeOptions): Promise<VerificationReport> {
-  return stamped(await verifyCommitRange(options), options.version);
+  return stamped(await verifyCommitRange(options), options.version, options.redactPaths);
 }
 
 async function verifyCommitRange(options: VerifyRangeOptions): Promise<VerificationReport> {
@@ -733,7 +754,7 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
       engineSha: options.engineSha,
       baseOverride: options.baseOverride,
       headOverride: options.headOverride,
-      redactPaths: options.redactPaths,
+      // Planned with real paths so the selected tests can run; only the receipt is redacted (redactReceipt).
       reportPath: join(temporaryDirectory, "observation.json"),
       selectTestPhases: true,
     });
@@ -743,11 +764,95 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
   }
 }
 
+/**
+ * Under --redact-paths the analysis plans with real paths, so the selected tests can run, and the receipt
+ * carries digests instead (the same sha256-12 as the observation report): the selected tests and their
+ * reasons, and those paths wherever the command and reason text name them. The text also names the files
+ * the snapshot lists (a file the run changed); `stamped` digests the lists themselves (redactSnapshot).
+ */
+function redactReceipt(report: VerificationReport, result: ObservationReport["result"], repoPath: string): VerificationReport {
+  const digest = (path: string) => redactPath(path, (input) => createHash("sha256").update(input).digest("hex"));
+  const snapshot = report.snapshot;
+  const known = [...new Set([
+    ...(result?.selectedTests ?? []), ...(result?.testsOutsideFullSuite ?? []), ...(result?.changedFiles ?? []),
+    ...(snapshot.written_during_verification ?? []), ...(snapshot.changed_during_verification ?? []).map((change) => change.path),
+    ...(snapshot.line_ending_only_changes ?? []),
+  ])].filter((path) => path.length > 0);
+  // A command names a path as written, or as the `node --test` glob that matches only it, either one
+  // shell-escaped when it holds glob characters: `d[1].test.js` runs as "d@([[])1@([]]).test.js".
+  const shellForm = (text: string) => commandSpecToString({ executable: "", args: [text] }).slice(1);
+  const forms = known.flatMap((path) => {
+    const glob = nodeTestGlobForPath(path);
+    return [...new Set([path, shellForm(path), ...(glob ? [glob, shellForm(glob)] : [])])].map((form) => [form, digest(path)] as const);
+  });
+  // The outside-suite reason names the separate project's directory, which is no file the run knows.
+  const outside = result?.testsOutsideFullSuite ?? [];
+  const projectReason = outside.length ? separateProjectReason(repoPath, outside) : undefined;
+  if (projectReason) forms.push([projectReason, separateProjectReason(repoPath, outside, digest)!]);
+  forms.sort((left, right) => right[0].length - left[0].length);
+  const scrub = (text: string) => forms.reduce((current, [form, hidden]) => current.split(form).join(hidden), text);
+  return {
+    ...report,
+    reason: scrub(report.reason),
+    required_actions: report.required_actions.map(scrub),
+    ...(report.selected_tests ? { selected_tests: report.selected_tests.map(digest) } : {}),
+    ...(report.selection_reasons ? {
+      selection_reasons: Object.fromEntries(Object.entries(report.selection_reasons).map(([test, why]) => [digest(test), { ...why, changed_file: digest(why.changed_file) }])),
+    } : {}),
+    ...(report.command !== undefined ? { command: scrub(report.command) } : {}),
+    ...(report.commands ? { commands: report.commands.map(scrub) } : {}),
+    ...(report.first_pass ? { first_pass: { ...report.first_pass, commands: report.first_pass.commands.map(scrub) } } : {}),
+    ...(report.execution ? { execution: redactMeasurement(report.execution, scrub) } : {}),
+    // Gate checks name the changed files in their reasons, and a NARROWED check's command lists them.
+    ...(report.checks ? { checks: report.checks.map((check) => ({ ...check, command: scrub(check.command), reason: scrub(check.reason) })) } : {}),
+    ...(report.failure_baseline ? {
+      failure_baseline: {
+        ...report.failure_baseline,
+        reason: scrub(report.failure_baseline.reason),
+        preexisting: report.failure_baseline.preexisting.map(scrub),
+        introduced: report.failure_baseline.introduced.map(scrub),
+      },
+    } : {}),
+  };
+}
+
+/**
+ * The snapshot's file lists under --redact-paths: the files the run wrote or changed, and the files that
+ * differ only by line endings. Applied to every receipt, including the ones that return before the run.
+ */
+function redactSnapshot(snapshot: VerificationReport["snapshot"]): VerificationReport["snapshot"] {
+  const digest = (path: string) => redactPath(path, (input) => createHash("sha256").update(input).digest("hex"));
+  return {
+    ...snapshot,
+    ...(snapshot.written_during_verification ? { written_during_verification: snapshot.written_during_verification.map(digest) } : {}),
+    ...(snapshot.changed_during_verification ? { changed_during_verification: snapshot.changed_during_verification.map((change) => ({ ...change, path: digest(change.path) })) } : {}),
+    ...(snapshot.line_ending_only_changes ? { line_ending_only_changes: snapshot.line_ending_only_changes.map(digest) } : {}),
+  };
+}
+
+/** The run's command, output tails, failing test names and per-file results, with the known paths as digests. */
+function redactMeasurement(execution: CommandMeasurement, scrub: (text: string) => string): CommandMeasurement {
+  return {
+    ...execution,
+    command: scrub(execution.command),
+    stdoutTail: scrub(execution.stdoutTail),
+    stderrTail: scrub(execution.stderrTail),
+    ...(execution.failingTests ? { failingTests: execution.failingTests.map(scrub) } : {}),
+    ...(execution.testResults ? { testResults: execution.testResults.map((result) => ({ ...result, file: scrub(result.file) })) } : {}),
+  };
+}
+
 function checkSummary(checks: readonly CheckResult[]): string {
   const ran = checks.filter((check) => check.status === "passed").length;
   const narrowed = checks.filter((check) => check.status === "passed" && check.decision === "NARROWED").length;
   const skipped = checks.length - ran;
   return `ran ${ran} gate check(s) first${narrowed ? ` (${narrowed} narrowed to changed files)` : ""}${skipped ? `, skipped ${skipped} the change does not affect` : ""}`;
+}
+
+/** The measurement recorded when the time limit ran out during the gate checks, before the tests started. */
+function checksOutOfTime(command: string, wallMs: number): CommandMeasurement {
+  const now = new Date().toISOString();
+  return { command, exitCode: null, signal: null, timedOut: true, startedAt: now, finishedAt: now, wallMs: 0, stdoutTail: "", stderrTail: `gate checks used the time limit (${wallMs}ms); tests were not run` };
 }
 
 export function verificationExitCode(report: VerificationReport): number {

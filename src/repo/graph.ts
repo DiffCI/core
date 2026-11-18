@@ -5,6 +5,7 @@ import { dirname, extname, isAbsolute, join, normalize, posix, relative, resolve
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { rustAdapter } from "./adapters/rust.js";
+import type { AdapterContribution } from "./adapters/types.js";
 import { rustTestInvocation } from "./adapters/rust-invocation.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
@@ -204,21 +205,30 @@ function globPattern(glob: string): NonNullable<ImportRef["patterns"]>[number] |
   const firstWild = body.search(/[*?{[]/);
   const cut = body.lastIndexOf("/", firstWild < 0 ? body.length : firstWild);
   if (cut < 0 || body.includes("[")) return undefined;
-  let regex = "";
-  const rest = body.slice(cut + 1);
-  for (let i = 0; i < rest.length; i++) {
-    const char = rest[i]!;
-    if (rest.startsWith("**/", i)) { regex += "(?:.*/)?"; i += 2; }
-    else if (rest.startsWith("**", i)) { regex += ".*"; i += 1; }
-    else if (char === "*") regex += "[^/]*";
-    else if (char === "?") regex += "[^/]";
-    else if (char === "{") {
-      const close = rest.indexOf("}", i);
-      if (close < 0) return undefined;
-      regex += `(?:${rest.slice(i + 1, close).split(",").map(escapeRegex).join("|")})`;
-      i = close;
-    } else regex += escapeRegex(char);
-  }
+  // Brace alternatives are globs too (`{index,*-icon}.ts`); escaping them as literals matched only the
+  // literal ones and dropped the rest. Nested braces are not translated and keep the load computed.
+  const translate = (text: string): string | undefined => {
+    let regex = "";
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i]!;
+      if (text.startsWith("**/", i)) { regex += "(?:.*/)?"; i += 2; }
+      else if (text.startsWith("**", i)) { regex += ".*"; i += 1; }
+      else if (char === "*") regex += "[^/]*";
+      else if (char === "?") regex += "[^/]";
+      else if (char === "{") {
+        const close = text.indexOf("}", i);
+        if (close < 0 || text.slice(i + 1, close).includes("{")) return undefined;
+        const alternatives = text.slice(i + 1, close).split(",").map(translate);
+        if (alternatives.some((alternative) => alternative === undefined)) return undefined;
+        regex += `(?:${alternatives.join("|")})`;
+        i = close;
+      } else if (char === "}") return undefined;
+      else regex += escapeRegex(char);
+    }
+    return regex;
+  };
+  const regex = translate(body.slice(cut + 1));
+  if (regex === undefined) return undefined;
   // Vite resolves a glob starting with "/" from its project root, not the filesystem root.
   return { base: body.slice(0, cut + 1), regex, negated, ...(body.startsWith("/") ? { viteRoot: true } : {}) };
 }
@@ -1085,8 +1095,12 @@ export async function buildDependencyGraph(
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
   const rustModeled = contributions.some((item) => item.id === "rust");
-  if (rustModeled && files.some(file => /\.(?:[cm]?[jt]sx?|vue|go|py|java|kt|cs|svelte|astro|c|h|cpp|cc|cxx)$/.test(file))) {
-    adapterBlockers.push("Mixed Rust/language repositories require explicit cross-language dependencies; full validation required");
+  const rustScope = rustLanguageFileScope(contributions);
+  const mixedRustFiles = rustModeled ? files.filter(file => /\.(?:[cm]?[jt]sx?|vue|go|py|java|kt|cs|svelte|astro|c|h|cpp|cc|cxx)$/.test(file)) : [];
+  if (mixedRustFiles.length) {
+    const reason = "Mixed Rust/language repositories require explicit cross-language dependencies; full validation required";
+    adapterBlockers.push(reason);
+    for (const file of mixedRustFiles) addScope(reason, rustScope(file));
   }
   const pythonModeled = contributions.some((item) => item.id === "python");
   const unmodeledLanguageFiles = contributions.length ? files.filter((file) => (!pythonModeled && /\.py$/.test(file)) || (!rustModeled && /\.rs$/.test(file)) || /\.(?:cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file)) : [];
@@ -1095,7 +1109,7 @@ export async function buildDependencyGraph(
     adapterBlockers.push(reason);
     // Files in a top-level dot-directory outside every package (agent skills, editor tooling) are confined
     // to that directory: no package's sources or tests can load them.
-    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : ""));
+    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : "") || rustScope(file));
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
   // Rust test targets are not Go packages; other adapters keep their existing routing here.
@@ -1113,7 +1127,7 @@ export async function buildDependencyGraph(
     profile.rustTestTargets = { ...rustContribution.rustTestTargets };
     profile.rustSources = [...new Set(rustContribution.sourcePaths)].sort();
     profile.rustAssets = [...new Set(rustContribution.assetPaths)].sort();
-    profile.rustTestInvocation = rustTestInvocation(repoPath, files);
+    profile.rustTestInvocation = rustTestInvocation(repoPath, files, { allMembersTested: rustContribution.rustAllMembersTested });
     if (rustContribution.rustFeatureCoverage) profile.rustFeatureCoverage = rustContribution.rustFeatureCoverage;
     profile.rustDocumentationReaders = [...new Set(rustContribution.rustDocumentationReaders ?? [])].sort();
   }
@@ -1127,7 +1141,10 @@ export async function buildDependencyGraph(
   profile.testFilePaths = [...new Set([...profile.testFilePaths, ...adapterTests])].sort();
   if (profile.testUniverse) {
     profile.testUniverse.discoveredTestFiles = profile.testFilePaths.length;
-    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || contributions.some((item) => item.id === "go" || item.id === "maven" || item.id === "python" || item.id === "rust")) && profile.testFilePaths.length === 0;
+    const runners: Record<string, string> = { go: "go test", maven: "Maven", python: "pytest", rust: "cargo test" };
+    const adapterRunners = contributions.flatMap((item) => runners[item.id] ? [runners[item.id]!] : []);
+    if (adapterRunners.length) profile.testUniverse.adapterRunners = adapterRunners;
+    profile.testUniverse.blindSpot = (profile.testUniverse.declaredFrameworks.length > 0 || adapterRunners.length > 0) && profile.testFilePaths.length === 0;
   }
   const entryPointPaths = new Set(profile.entryPoints.map((e) => e.path));
 
@@ -1378,6 +1395,19 @@ export async function buildDependencyGraph(
     return undefined;
   }
 
+  /** The JavaScript file a repository declaration file describes, when it exists and is not excluded. */
+  function declarationImplementation(declarationRel: string): string | undefined {
+    const match = /^(.*)\.d\.([mc]?)ts$/.exec(declarationRel);
+    if (!match) return undefined;
+    const extensions = match[2] === "m" ? [".mjs"] : match[2] === "c" ? [".cjs"] : [".js", ".jsx"];
+    for (const extension of extensions) {
+      const candidate = match[1] + extension;
+      if (isExcludedPath(candidate, options.excludeDirs ?? []) || candidate.split("/").includes("node_modules")) continue;
+      if (internalSourcePaths.has(candidate) || existsSync(join(repoPath, candidate))) return candidate;
+    }
+    return undefined;
+  }
+
   /** Parses an implementation file an import reaches outside the initial walk, rather than silently dropping
    * the edge or loading every TypeScript declaration library again; false, with a blocker, past the budget. */
   function followImplementation(absolute: string, rel: string): boolean {
@@ -1468,7 +1498,11 @@ export async function buildDependencyGraph(
       // TypeScript may resolve a Vue import to a declaration shim. Preserve the actual SFC edge.
       if (resolvableSpecifier.endsWith(".vue")) {
         const compilerAliases = Object.entries(importerOptions.paths ?? {}).map(([pattern, substitutions]) => ({ pattern, substitutions }));
-        const candidate = findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases.length ? compilerAliases : profile.pathAliases, importerOptions.baseUrl ?? dirname(sf.fileName));
+        // `paths` resolve against `baseUrl`, or without one against the declaring tsconfig's directory
+        // (TypeScript's pathsBasePath), never the importer's. Root aliases are repo-relative, as for assets.
+        const candidate = compilerAliases.length
+          ? findAssetCandidate(sf.fileName, resolvableSpecifier, compilerAliases, importerOptions.baseUrl ?? (importerOptions as { pathsBasePath?: string }).pathsBasePath ?? dirname(sf.fileName))
+          : findAssetCandidate(sf.fileName, resolvableSpecifier, profile.pathAliases, profile.tsconfig?.baseUrl ? resolve(repoPath, profile.tsconfig.baseUrl) : repoPath);
         const target = candidate && toRelativeInternal(repoPath, candidate);
         if (target && internalSourcePaths.has(target)) {
           addEdge(importerRel, target, ref.kind, ref);
@@ -1576,6 +1610,11 @@ export async function buildDependencyGraph(
         if (!resolved.endsWith(".d.ts") && !followImplementation(resolved, targetRel)) continue;
         internalSourcePaths.add(targetRel);
         addEdge(importerRel, targetRel, ref.kind, ref);
+        // A hand-written declaration beside its JavaScript (`foo.d.ts` next to `foo.js`) is what TypeScript
+        // resolves to, but the runner loads the JavaScript. Without this edge a change to `foo.js` reached
+        // no importer and selected nothing.
+        const implementation = declarationImplementation(targetRel);
+        if (implementation && followImplementation(join(repoPath, implementation), implementation)) addEdge(importerRel, implementation, ref.kind, ref);
         recordReference("internal-source", importerRel, ref);
         continue;
       }
@@ -2216,6 +2255,28 @@ function confinedConfigScope(repoPath: string, configRel: string, config: unknow
     if (target === ".." || target.startsWith(`..${sep}`) || target.startsWith("../") || /^[A-Za-z]:|^[\\/]/.test(target)) return "";
   }
   return directory;
+}
+
+/** In a Cargo-only repository, the directory a helper script or native source is confined to: the
+ * deepest member crate that contains it, or its top-level directory outside every crate of a virtual
+ * workspace. Cargo can reach such a file only through code in that crate (a build script, which already
+ * depends on every crate, or an `include!`, which falls back), and a change to the file itself keeps the
+ * full suite, so only changes that reach the directory need full validation. "" (global) when another
+ * adapter is active, when Rust code starts external programs that could run the file from anywhere, for
+ * languages another engine could test (JavaScript, Go, Java and so on), for files that look like
+ * Python tests, and inside a root package. */
+function rustLanguageFileScope(contributions: readonly AdapterContribution[]): (file: string) => string {
+  const rust = contributions.length === 1 && contributions[0]!.id === "rust" ? contributions[0]! : undefined;
+  const crates = rust?.rustCrateDirectories;
+  if (!rust || !crates || rust.rustRunsPrograms !== false) return () => "";
+  return (file: string) => {
+    if (!/\.(?:py|c|h|cc|cpp|cxx)$/.test(file)) return "";
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    if (/^(?:test_.*|.*_test|conftest)\.py$/.test(name)) return "";
+    const crate = crates.filter(directory => directory === "" || file.startsWith(`${directory}/`)).sort((a, b) => b.length - a.length)[0];
+    if (crate !== undefined) return crate;
+    return file.includes("/") ? file.slice(0, file.indexOf("/")) : "";
+  };
 }
 
 /** Moves blockers confined to directories out of `adapterBlockers` and returns them scoped to those

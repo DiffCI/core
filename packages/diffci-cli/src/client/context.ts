@@ -21,7 +21,8 @@
 import { existsSync, readFileSync } from "node:fs";
 
 /** Injected so tests can drive this without a real repository. Returns stdout, or a failure. */
-export type GitRunner = (args: string[]) => { ok: true; stdout: string } | { ok: false; error: string };
+/** `stderr` is only inspected, never reported: a failed fetch can print a remote URL with credentials. */
+export type GitRunner = (args: string[]) => { ok: true; stdout: string } | { ok: false; error: string; stderr?: string };
 
 export interface ObservationEnvironment {
   [key: string]: string | undefined;
@@ -179,6 +180,24 @@ function mergeBase(git: GitRunner, a: string, b: string): string | undefined {
   return result.ok ? result.stdout.trim() || undefined : undefined;
 }
 
+/**
+ * The base for a push that created its branch (2026-11-18). There is no `before`, and the head's parent
+ * covers only the last of the commits the push brought, so a change made earlier in the same push was
+ * never analysed. The commits the new branch adds are the ones not on the default branch, so the merge
+ * base with the default branch's remote-tracking ref is the base - the same range a pull request from the
+ * branch would get. Undefined when that ref is not in this checkout, or the head is already on it (nothing
+ * new to compare), and the caller then falls back to the labelled `head-parent` range.
+ */
+function branchCreationBase(git: GitRunner, headSha: string, defaultBranch: string | undefined): string | undefined {
+  if (!defaultBranch || !/^[A-Za-z0-9._/-]+$/.test(defaultBranch) || defaultBranch.startsWith("-") || defaultBranch.includes("..")) {
+    return undefined;
+  }
+  const tip = resolveSha(git, `refs/remotes/origin/${defaultBranch}`);
+  if (!tip) return undefined;
+  const common = mergeBase(git, tip, headSha);
+  return common && common !== headSha && commitExists(git, common) ? common : undefined;
+}
+
 /** The one sentence every "commit missing locally" refusal ends with, so the fix is never a guess. */
 const DEEPEN_HINT =
   "the commit is not in this checkout - add `fetch-depth: 0` to the actions/checkout step in the job that runs DiffCI (this does not affect any other job)";
@@ -190,6 +209,16 @@ const GITLAB_DEEPEN_HINT =
 /** Azure Pipelines checks out shallow (`fetchDepth: 1`) by default in pipelines created since 2022. */
 const AZURE_DEEPEN_HINT =
   "the commit is not in this checkout - set `fetchDepth: 0` on the `checkout` step of the job that runs DiffCI (this does not affect any other job)";
+
+/** For a path that is not a git checkout: where the checkout is, not how deep it is (#278). */
+function notACheckoutHint(env: ObservationEnvironment): string {
+  if (env.GITHUB_ACTIONS === "true") {
+    return "set the DiffCI Action's `repository-path` (or `--repo`) to the directory actions/checkout cloned into - its `path:` when the checkout step sets one";
+  }
+  if (env.GITLAB_CI === "true") return "run DiffCI in the cloned project directory, or pass `--repo` with that directory";
+  if (isAzurePipelines(env)) return "set the DiffCIObserve task's `repositoryPath` (or `--repo`) to the directory the `checkout` step cloned into - its `path:` when it sets one";
+  return "pass `--repo` with the directory of a git checkout";
+}
 
 function deepenHint(env: ObservationEnvironment): string {
   if (env.GITLAB_CI === "true") return GITLAB_DEEPEN_HINT;
@@ -293,6 +322,10 @@ function resolveGitlabRange(env: ObservationEnvironment, git: GitRunner): Commit
     if (before && before !== ZERO_SHA && commitExists(git, before)) {
       return { ok: true, range: { baseSha: before, headSha, source: "push-event" } };
     }
+    if (before === ZERO_SHA || before === undefined) {
+      const common = branchCreationBase(git, headSha, asString(env.CI_DEFAULT_BRANCH));
+      if (common) return { ok: true, range: { baseSha: common, headSha, source: "push-event", mergeBaseSha: common } };
+    }
     const parent = resolveSha(git, `${headSha}^`);
     if (!parent) {
       return {
@@ -324,6 +357,12 @@ export function resolveCommitRangeFetchingHistory(options: ResolveCommitRangeOpt
   const first = resolveCommitRange(options);
   if (first.ok) return first;
   const { env, git } = options;
+  // A path that is not a git checkout at all (#278): no history depth fixes that, so the deepen hint
+  // would send the user the wrong way. Name the setting that points DiffCI at the checkout instead.
+  const inside = git(["rev-parse", "--is-inside-work-tree"]);
+  // Only git saying so means "not a checkout": dubious ownership or a missing git binary fail differently.
+  if (!inside.ok && !/not a git repository/i.test(inside.stderr ?? "")) return first;
+  if (!inside.ok || inside.stdout.trim() !== "true") return { ok: false, reason: `this path is not a git checkout: ${notACheckoutHint(env)}` };
   if (env.GITHUB_ACTIONS !== "true" && env.GITLAB_CI !== "true" && !isAzurePipelines(env)) return first;
   const shallow = git(["rev-parse", "--is-shallow-repository"]);
   if (!shallow.ok || shallow.stdout.trim() !== "true") return first;
@@ -400,8 +439,14 @@ export function resolveCommitRange(options: ResolveCommitRangeOptions): CommitRa
     if (before && before !== ZERO_SHA && commitExists(git, before)) {
       return { ok: true, range: { baseSha: before, headSha, source: "push-event" } };
     }
-    // A branch's first push has no `before`. The head's own parent is the honest substitute and is
-    // labelled as such - it answers "what did this commit change", not "what did this push change".
+    // A branch's first push has no `before`. Its merge base with the default branch covers every commit
+    // the push brought; only when that cannot be computed is the head's own parent used, labelled as
+    // such - it answers "what did this commit change", not "what did this push change".
+    if (before === ZERO_SHA) {
+      const defaultBranch = asString(nested(payload, "repository", "default_branch")) ?? asString(env.GITHUB_DEFAULT_BRANCH);
+      const common = branchCreationBase(git, headSha, defaultBranch);
+      if (common) return { ok: true, range: { baseSha: common, headSha, source: "push-event", mergeBaseSha: common } };
+    }
     const parent = resolveSha(git, `${headSha}^`);
     if (!parent) {
       return {

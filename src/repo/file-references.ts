@@ -563,6 +563,50 @@ function directTestPhases(content: string, target: string, pattern: RegExp, ance
   return found.length > 0 ? found : undefined;
 }
 
+const PROGRAM_INTERPRETERS = new Set(["node", "tsx", "ts-node", "bun"]);
+const NO_PROGRAM_FLAGS = /^(?:--test(?:=|$)|--run(?:=|$)|-e$|--eval(?:=|$)|-p$|--print(?:=|$)|--check$|-c$|--help$|-h$|--version$|-v$)/;
+
+/**
+ * The programs the root test closure runs with an interpreter, by repository path, each with the `&&`
+ * phases that run it and whether every one of them can run alone (`direct`, as for directTestPhases)
+ * (2026-11-18). `node scripts/check.mjs && node --test` runs `scripts/check.mjs` as part of the suite,
+ * though no test imports it, so a change to it, or to code it imports, is a change to the suite.
+ * `node --test`, `node -e` and similar phases run no program file.
+ */
+export function testScriptPrograms(scripts: Readonly<Record<string, string>>): Map<string, { phases: string[]; direct: boolean }> {
+  const programs = new Map<string, { phases: string[]; direct: boolean }>();
+  for (const name of testScriptClosure(scripts)) {
+    // A phase of `a || b` or `a; b` is not one that can run alone, so only whole `&&` phases are direct.
+    const parts = (scripts[name] ?? "").split("&&").flatMap((part) => {
+      const pieces = part.split(/\|\||;/).map((piece) => piece.trim());
+      return pieces.map((phase) => ({ phase, alone: pieces.length === 1 }));
+    });
+    for (const { phase, alone } of parts) {
+      const words = phase.split(/\s+/).map((word) => word.replace(/^[\x22\x27]+|[\x22\x27]+$/g, ""));
+      // An `npx tsx` or `npx --yes tsx` prefix runs the same interpreter.
+      let start = 0;
+      if (words[0] === "npx") { start = 1; while (words[start]?.startsWith("-")) start += 1; }
+      if (!PROGRAM_INTERPRETERS.has(words[start] ?? "")) continue;
+      let index = start + 1;
+      let runsNoProgram = false;
+      while (index < words.length && words[index]!.startsWith("-")) {
+        if (NO_PROGRAM_FLAGS.test(words[index]!)) runsNoProgram = true;
+        index += PHASE_VALUE_FLAGS.has(words[index]!) ? 2 : 1;
+      }
+      const program = words[index];
+      if (runsNoProgram || !program || !/\.[cm]?[jt]sx?$/.test(program) || /[*?[\]{}$\x60]/.test(program)) continue;
+      const path = posix.normalize(program);
+      if (path.startsWith("../") || posix.isAbsolute(path)) continue;
+      const direct = alone && start === 0 && index === words.length - 1 && !/[|;<>\x60$(]/.test(phase);
+      const entry = programs.get(path) ?? { phases: [], direct: true };
+      if (!entry.phases.includes(phase)) entry.phases.push(phase);
+      entry.direct &&= direct;
+      programs.set(path, entry);
+    }
+  }
+  return programs;
+}
+
 function packageJsonNames(content: string, pattern: RegExp, target: string, ancestors: boolean, cwd: string): "yes" | "no" | "unparseable" {
   let parsed: unknown;
   try { parsed = JSON.parse(content); } catch { return "unparseable"; }

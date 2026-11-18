@@ -99,6 +99,34 @@ export function creditReadme(readme, pulls, repository = "DiffCI/core") {
   return { readme: readme.slice(0, start) + lines.join("\n"), credited };
 }
 
+/**
+ * Pull requests a maintainer squashed onto main by hand (when GitHub could not merge them) are closed, not
+ * merged. Count one as merged when a main commit titled "… (#N)" was written by the pull request's author.
+ */
+export function withHandLanded(pulls, commits) {
+  const authors = new Map();
+  for (const commit of commits) {
+    const number = commit.commit?.message?.split("\n")[0].match(/\(#(\d+)\)$/)?.[1];
+    if (number && commit.author?.login) authors.set(Number(number), commit.author.login.toLowerCase());
+  }
+  return pulls.map((pr) => !pr.merged_at && pr.user && authors.get(pr.number) === pr.user.login.toLowerCase()
+    ? { ...pr, merged_at: "landed-by-hand" } : pr);
+}
+
+async function mainCommits(repository, token) {
+  const commits = [];
+  for (let page = 1; page <= 5; page++) {
+    const response = await fetch(`https://api.github.com/repos/${repository}/commits?sha=main&per_page=100&page=${page}`, {
+      headers: { Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!response.ok) throw new Error(`GitHub API ${response.status}: ${await response.text()}`);
+    const batch = await response.json();
+    commits.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return commits;
+}
+
 async function mergedPulls(repository, token) {
   const pulls = [];
   for (let page = 1; page <= 10; page++) {
@@ -111,7 +139,7 @@ async function mergedPulls(repository, token) {
     pulls.push(...batch);
     if (batch.length < 100 || batch.some((pr) => pr.number < FIRST_AUTOMATED_PR)) break;
   }
-  return pulls;
+  return withHandLanded(pulls, await mainCommits(repository, token));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

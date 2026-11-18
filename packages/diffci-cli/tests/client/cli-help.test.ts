@@ -4,6 +4,8 @@ import { describe, it } from "node:test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildClient } from "../helpers/build-client.js";
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const CLI = join(ROOT, "dist-client", "src", "client", "cli.js");
 
@@ -34,18 +36,7 @@ const COMMANDS = [
 
 describe("CLI help", () => {
   it("lists every CLI command", () => {
-    const build = spawnSync(
-      process.execPath,
-      [
-        join(ROOT, "node_modules", "typescript", "bin", "tsc"),
-        "-p",
-        "tsconfig.client.json",
-      ],
-      { cwd: ROOT, encoding: "utf8" },
-    );
-
-    assert.ifError(build.error);
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    buildClient();
 
     const result = spawnSync(process.execPath, [CLI, "help"], {
       cwd: ROOT,
@@ -62,5 +53,10 @@ describe("CLI help", () => {
         `Help output is missing command: diffci ${command}`,
       );
     }
+
+    // Usage counting is on by default and only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or
+    // DIFFCI_SHARE_USAGE=0 stop it (docs/telemetry.md), so the old opt-in flag does nothing.
+    assert.ok(!result.stdout.includes("--share-usage"), "help lists --share-usage, which no code reads");
+    assert.ok(result.stdout.includes("DIFFCI_SHARE_USAGE=0"), "help names the environment switch that stops counting");
   });
 });

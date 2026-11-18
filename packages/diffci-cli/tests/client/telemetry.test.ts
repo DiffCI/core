@@ -81,3 +81,21 @@ test("delivery distinguishes receipt acceptance, forwarding success, rejection a
   }
   assert.equal((await deliverUsageSignal({ ...signal, fetchImpl: async () => { throw new DOMException("timeout", "TimeoutError"); } })).status, "timed-out");
 });
+
+// #303: the Azure DevOps task runs the CLI with DIFFCI_SURFACE=azure-devops-task
+// (integrations/azure-devops/DiffCIObserve/index.js); it was counted as `cli`.
+test("each CI wrapper's surface is counted as itself, and unknown values as cli", async () => {
+  const home = mkdtempSync(join(tmpdir(), "diffci-telemetry-"));
+  const env = { DIFFCI_TELEMETRY_HOME: home, TF_BUILD: "True" };
+  const originalFetch = globalThis.fetch;
+  const originalError = console.error;
+  const bodies: any[] = [];
+  globalThis.fetch = async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response(null, { status: 200 }); };
+  console.error = () => {};
+  try {
+    for (const surface of ["github-action", "gitlab-component", "azure-devops-task", "something-else"]) {
+      await recordUsage("observe", "observed", "0.3.54", {}, { ...env, DIFFCI_SURFACE: surface });
+    }
+    assert.deepEqual(bodies.map((body) => body.surface), ["github-action", "gitlab-component", "azure-devops-task", "cli"]);
+  } finally { globalThis.fetch = originalFetch; console.error = originalError; rmSync(home, { recursive: true, force: true }); }
+});
