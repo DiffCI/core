@@ -586,6 +586,41 @@ test("Cargo feature-unified unit tests are recorded per crate instead of blockin
   } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
+test("literal #[path] modules inside their crate narrow; other path attributes still fall back", () => {
+  const lib = '#[cfg_attr(unix, path = "sys/unix.rs")]\n#[cfg_attr(windows, path = "sys/windows.rs")]\n#[allow(dead_code)]\npub(crate) mod sys;\n'
+    + 'mod a { #[path = "inner.rs"] pub mod b; }\n#[path = "../shared/x.rs"] mod shared;\n';
+  const files = { "Cargo.toml": '[workspace]\nmembers = ["app", "other"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": lib,
+    "app/src/sys/unix.rs": "", "app/src/sys/windows.rs": "", "app/src/a/inner.rs": "", "app/shared/x.rs": "", "app/src/plain.rs": "",
+    "other/Cargo.toml": manifest("other"), "other/src/lib.rs": "" };
+  const root = fixture(files);
+  try {
+    const context = { repoPath: root, files: Object.keys(files), profile: analyzeRepository({ repoPath: root }) };
+    const output = metadata(root, [pkg(root, "app", "app"), pkg(root, "other", "other")]);
+    const result = analyzeRustMetadata(context, output);
+    assert.deepEqual(result.blockers, []);
+    for (const module of ["app/src/sys/unix.rs", "app/src/sys/windows.rs", "app/src/a/inner.rs", "app/shared/x.rs"]) {
+      assert.ok(result.sourcePaths.includes(module), module);
+      assert.ok(result.edges.some(edge => edge.from === "app/src/lib.rs" && edge.to === module), module);
+    }
+    assert.ok(!result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "other/Cargo.toml"));
+    // A path module outside the target's tree makes its own directory part of the inventory.
+    writeFileSync(join(root, "app/shared/untracked.rs"), "");
+    assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => reason.includes("Incomplete Rust source inventory")));
+    rmSync(join(root, "app/shared/untracked.rs"));
+    for (const [file, source] of [
+      ["app/src/lib.rs", '#[path = "../../other/src/lib.rs"] mod external;'], ["app/src/lib.rs", '#[path = "missing.rs"] mod missing;'],
+      ["app/src/lib.rs", '#[path = "sys"] mod sys { mod unix; }'], ["app/src/lib.rs", '#![path = "sys/unix.rs"]'],
+      ["app/src/lib.rs", '#[path = concat!("sys/", "unix.rs")] mod sys;'], ["app/src/lib.rs", '#[doc(path = "sys/unix.rs")] mod sys;'],
+      // Inside an inline module of a file that is not a crate root or mod.rs, the base depends on how it was loaded.
+      ["app/src/plain.rs", 'mod q { #[path = "../sys/unix.rs"] mod z; }'],
+    ]) {
+      writeFileSync(join(root, file), source);
+      assert.ok(analyzeRustMetadata(context, output).blockers.some(reason => /Rust (?:computed includes|include outside)/.test(reason)), source);
+      writeFileSync(join(root, file), file === "app/src/lib.rs" ? lib : "");
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("symlinks outside module trees and linked non-Rust files do not block", (t) => {
   const files = { "Cargo.toml": '[workspace]\nmembers=["app"]\n', "app/Cargo.toml": manifest("app"), "app/src/lib.rs": "", "LICENSE": "MIT", "docs/guide.md": "" };
   const root = fixture(files);
