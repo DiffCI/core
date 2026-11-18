@@ -603,10 +603,14 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
         const clean = literal.replace(/\\/g, "/").replace(/^(?:[A-Za-z]:)?\/+/, "");
         const glob = clean.search(/[*?[{]/);
         const prefix = glob < 0 ? clean : clean.slice(0, clean.lastIndexOf("/", glob) + 1);
-        for (const base of new Set([sourceOwner.directory, dirname(source) === "." ? "" : dirname(source)])) {
+        // Also from the workspace root: rustc and proc macros run there, and `[env]` paths such as
+        // CARGO_WORKSPACE_DIR start there. From the root, only a path below it names a crate.
+        const bases = [sourceOwner.directory, dirname(source) === "." ? "" : dirname(source)];
+        for (const [index, base] of [...bases, ""].entries()) {
           const joined = posix.normalize(posix.join(base || ".", prefix || "."));
           if (joined === ".." || joined.startsWith("../")) continue;
           const rel = joined === "." ? "" : joined.replace(/\/+$/, "");
+          if (index === bases.length && !rel) continue;
           const inside = rel ? owner(rel) ?? owner(`${rel}/`) : packages.find(pkg => pkg.directory === "");
           if (inside) reached.add(inside.manifest);
           for (const other of packages) if (other.directory && (rel === "" || under(other.directory, rel) || other.directory === rel)) reached.add(other.manifest);
