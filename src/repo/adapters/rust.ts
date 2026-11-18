@@ -383,8 +383,11 @@ function rustSourceInputs(source: string): ReturnType<typeof rustInputs> {
   const code = rustInputs(source);
   const docs = code && rustInputs(doctestCode(source));
   if (!code || !docs) return undefined;
-  return { inputs: [...code.inputs, ...docs.inputs], paths: [...code.paths, ...docs.paths], compiles: code.compiles || docs.compiles,
-    navigates: code.navigates || docs.navigates, documentation: code.documentation || docs.documentation };
+  const merged: Record<string, unknown> = { ...code, inputs: [...code.inputs, ...docs.inputs], paths: [...code.paths, ...docs.paths] };
+  // Each flag is set when either scan sets it. Combining them by key keeps that true for a flag
+  // rustInputs gains later (such as one #250 adds), instead of silently dropping the doctests' value.
+  for (const [key, value] of Object.entries(docs)) if (typeof value === "boolean") merged[key] = merged[key] === true || value;
+  return merged as NonNullable<ReturnType<typeof rustInputs>>;
 }
 
 /** A string that names a file or directory rather than ordinary text. */
