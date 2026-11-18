@@ -271,6 +271,22 @@ describe("opt-in configuration", () => {
     assert.deepEqual(configureGraphCache({ ...base, shared: true, apiUrl: "https://api.diffci.com/x", token: "dci_x", redactPaths: true, secret: "s".repeat(32) }).notes, []);
   });
 
+  it("turns the shared tier off rather than uploading in plaintext when the secret is too short", () => {
+    const result = configureGraphCache({ ...base, shared: true, apiUrl: "https://api.diffci.com/v1/ingest/observations", token: "dci_x", secret: "short" });
+    const remote = (result.cache as unknown as { options: { remote?: unknown } } | undefined)?.options.remote;
+    assert.equal(remote, undefined, "no remote tier");
+    assert.match(result.notes.join("\n"), /shared graph cache off: DIFFCI_GRAPH_CACHE_SECRET must be at least 16 characters/);
+    assert.equal(result.notes.join("\n").includes("short"), false, "the secret is never echoed");
+  });
+
+  it("treats a secret set to an empty value as too short, not as unset", () => {
+    // A workflow's `${{ secrets.DIFFCI_GRAPH_CACHE_SECRET }}` is empty when the secret is missing.
+    const result = configureGraphCache({ ...base, shared: true, apiUrl: "https://api.diffci.com/v1/ingest/observations", token: "dci_x", secret: "" });
+    const remote = (result.cache as unknown as { options: { remote?: unknown } } | undefined)?.options.remote;
+    assert.equal(remote, undefined, "no remote tier");
+    assert.match(result.notes.join("\n"), /shared graph cache off: DIFFCI_GRAPH_CACHE_SECRET must be at least 16 characters/);
+  });
+
   it("refuses a local directory inside the checkout", () => {
     const result = configureGraphCache({ ...base, localDir: join(repoPath, ".cache") });
     assert.equal(result.cache, undefined);
