@@ -146,13 +146,30 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${glob.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")}$`);
 }
 
+/** One path segment against one shell-style glob segment, as Python's `fnmatch` reads it. */
+function segmentMatches(glob: string, segment: string): boolean {
+  const source = glob.replace(/\[!/g, "[^").replace(/[.+${}()|\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+  try { return new RegExp(`^${source}$`).test(segment); } catch { return glob === segment; }
+}
+
+/** Whether `segments` starts with directories (or is a file) that `glob` names; `**` spans any depth. */
+function globPrefixMatches(glob: readonly string[], segments: readonly string[]): boolean {
+  if (!glob.length) return true;
+  const [head, ...rest] = glob;
+  if (head === "**") return segments.some((_, index) => globPrefixMatches(rest, segments.slice(index))) || globPrefixMatches(rest, []);
+  return segments.length > 0 && segmentMatches(head!, segments[0]!) && globPrefixMatches(rest, segments.slice(1));
+}
+
 export function isPytestFile(path: string, settings: PytestSettings): boolean {
   const base = posix.basename(path);
   if (!settings.pythonFiles.some((glob) => globToRegExp(glob).test(base))) return false;
   if (!settings.testpaths.length) return true;
   return settings.testpaths.some((root) => {
     const clean = root.replace(/^\.\//, "").replace(/\/$/, "");
-    return clean === "." || clean === "" || path === clean || path.startsWith(`${clean}/`);
+    if (clean === "." || clean === "") return true;
+    // pytest expands each testpaths entry with glob.iglob(entry, recursive=True).
+    if (/[*?[]/.test(clean)) return globPrefixMatches(clean.split("/"), path.split("/"));
+    return path === clean || path.startsWith(`${clean}/`);
   });
 }
 
