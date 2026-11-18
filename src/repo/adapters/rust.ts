@@ -214,7 +214,9 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
       if (depth) return undefined;
       continue;
     }
-    const raw = /^r(#{0,255})"/.exec(source.slice(i));
+    // Byte and C raw strings (`br"\"`, `cr#"say "hi""#`) take no escapes either; read as a `b`/`c`
+    // identifier and an ordinary string, a backslash or quote inside would hide the code after them.
+    const raw = /^[bc]?r(#{0,255})"/.exec(source.slice(i));
     if (raw) {
       const start = i + raw[0].length, end = source.indexOf(`"${raw[1]}`, start);
       if (end < 0) return undefined;
