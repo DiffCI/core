@@ -675,7 +675,7 @@ _Module resource and dependency impact contributed by [@FredApps](https://github
 | `Invalid Maven lifecycle goal or profiles` | `"maven": { "goal": "install" }` | Fix: use `test` or `verify` |
 | `Maven analysis found no pom.xml` | A Java repository built with another tool | No |
 | `Maven reactor contains no Java sources` | A `pom.xml` with only resources | No |
-| `Maven …: custom source roots require full validation` | Set `<sourceDirectory>` in `pom.xml` | No |
+| `Maven …: custom source roots require full validation` | Set `<sourceDirectory>`, or a `<testSourceDirectory>` that is interpolated (`${…}`), absolute, outside the module, or declared more than once | Use a plain relative `<testSourceDirectory>` inside the module; DiffCI finds tests there |
 | `Maven …: parent dependency inheritance requires full validation` | Inherit dependencies from an external parent POM | No |
 | `Maven …: unresolved dependency coordinates require full validation` | Use a `${property}` version DiffCI cannot resolve | No |
 
