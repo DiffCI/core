@@ -381,6 +381,13 @@ test("Cargo rejects symlink escapes and duplicate target source identities", (t)
 });
 
 const cargoAvailable = spawnSync("cargo", ["--version"], { encoding: "utf8", windowsHide: true }).status === 0;
+// Windows can hold the test executables Cargo just ran (or an antivirus scan of them) open for a moment
+// after they exit, so removing a built fixture fails with EPERM or EBUSY. Retry, as rimraf does.
+const BUILT_FIXTURE = { recursive: true, force: true, maxRetries: 10, retryDelay: 200 } as const;
+/** A cold `cargo test` build of a small workspace can take over a minute on a hosted Windows runner. A
+ * spawnSync timeout kills cargo but not the rustc processes it started, which then keep the fixture
+ * locked, so the cleanup error hid the timeout (#253, `check (windows-latest, 24)`). */
+const CARGO_BUILD_TIMEOUT = 300_000;
 for (const nested of [false, true]) test(`Cargo executable maps ${nested ? "nested" : "two-member"} workspace without modifying manifests`, { skip: !cargoAvailable }, () => {
   const child = nested ? "parent/child" : "child";
   const files = { "Cargo.toml": `[workspace]\nmembers = ["parent", "${child}"]\nresolver = "2"\n`, "parent/Cargo.toml": manifest("parent"),
@@ -407,7 +414,7 @@ test("Cargo executable maps a single crate", { skip: !cargoAvailable }, () => {
     assert.deepEqual(result.blockers, []);
     assert.deepEqual(result.testPackages, { "src/lib.rs": "single", "tests/api.rs": "single" });
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
 test("Cargo executable includes optional and dev-dependencies without changing Cargo.lock", { skip: !cargoAvailable }, () => {
@@ -424,7 +431,7 @@ test("Cargo executable includes optional and dev-dependencies without changing C
     assert.ok(result.edges.some(edge => edge.from === "consumer/Cargo.toml" && edge.to === "leaf/Cargo.toml"));
     assert.ok(result.edges.some(edge => edge.from === "app/Cargo.toml" && edge.to === "consumer/Cargo.toml"));
     assert.equal(readFileSync(join(root, "Cargo.lock"), "utf8"), lock);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
 test("Cargo configuration cannot silently change the metadata command or build context", () => {
@@ -445,14 +452,14 @@ test("Cargo feature-unified unit tests are recorded per crate instead of blockin
   const root = fixture(files);
   try {
     assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
-    const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+    const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: CARGO_BUILD_TIMEOUT });
     assert.equal(full.status, 0, full.stderr);
     assert.match(full.stdout, /feature_unified_test: test/);
     const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
     assert.deepEqual(result.blockers, []);
     // Testing `a` alone would drop its `extra` feature; `b` sees `a` exactly as the full run does.
     assert.deepEqual(result.rustFeatureCoverage, { deficits: { a: ["a v0.1.0"] }, units: [{ crates: ["a", "b"], covers: ["a v0.1.0"] }, { crates: ["b"], covers: ["a v0.1.0"] }] });
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
 test("symlinks outside module trees and linked non-Rust files do not block", (t) => {
@@ -540,7 +547,7 @@ test("a realistic Cargo workspace now narrows: build script, local derive crate,
     // like the full run.
     assert.deepEqual(result.rustFeatureCoverage?.deficits, { cli: ["core v0.1.0"], core: ["core v0.1.0"], server: ["core v0.1.0"] });
     assert.deepEqual(result.rustFeatureCoverage?.units, [{ crates: ["cli", "codegen", "core", "server"], covers: ["core v0.1.0"] }]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, BUILT_FIXTURE); }
 });
 
 test("only crates plain cargo test covers are test targets (root package or default-members)", { skip: !cargoAvailable }, () => {
@@ -552,14 +559,14 @@ test("only crates plain cargo test covers are test targets (root package or defa
     const root = fixture(files);
     try {
       assert.equal(spawnSync("cargo", ["generate-lockfile", "--offline"], { cwd: root, encoding: "utf8", windowsHide: true }).status, 0);
-      const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+      const full = spawnSync("cargo", ["test", "--offline", "--locked", "--", "--list"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: CARGO_BUILD_TIMEOUT });
       assert.equal(full.status, 0, full.stderr);
       assert.doesNotMatch(full.stdout, /member: test/, layout);
       const result = rustAdapter.analyze({ repoPath: root, files: [...Object.keys(files), "Cargo.lock"], profile: analyzeRepository({ repoPath: root }) });
       assert.deepEqual(result.blockers, [], layout);
       assert.deepEqual(Object.values(result.testPackages), ["root"], layout);
       assert.ok(result.sourcePaths.includes("member/src/lib.rs"), layout);
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    } finally { rmSync(root, BUILT_FIXTURE); }
   }
 });
 
