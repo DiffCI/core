@@ -129,22 +129,26 @@ export function inferFullCommand(repoPath: string): FullCommandDecision {
   }
 
   const packagePath = join(repoPath, "package.json");
+  // A package.json without a test script is often tooling only (prettier, husky, commitlint) beside a
+  // Go or Python project, whose own runner is then the full command, as it is for the selection.
+  let noTestScript: FullCommandDecision | undefined;
   if (existsSync(packagePath)) {
     let pkg: { scripts?: { test?: unknown }; packageManager?: unknown };
     try { pkg = JSON.parse(readFileSync(packagePath, "utf8")); }
     catch { return { reason: "package.json could not be read" }; }
     if (typeof pkg.scripts?.test !== "string" || !pkg.scripts.test.trim()) {
-      return { reason: "package.json has no test script" };
+      noTestScript = { reason: "package.json has no test script" };
+    } else {
+      const manager = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
+      if (manager === "pnpm" || manager === "yarn" || manager === "bun") {
+        return { command: `${manager} test`, reason: `package.json test script via ${manager}` };
+      }
+      if (manager && manager !== "npm") return { reason: `unsupported package manager: ${manager}` };
+      if (existsSync(join(repoPath, "pnpm-lock.yaml"))) return { command: "pnpm test", reason: "package.json test script with pnpm lockfile" };
+      if (existsSync(join(repoPath, "yarn.lock"))) return { command: "yarn test", reason: "package.json test script with Yarn lockfile" };
+      if (existsSync(join(repoPath, "bun.lock")) || existsSync(join(repoPath, "bun.lockb"))) return { command: "bun test", reason: "package.json test script with Bun lockfile" };
+      return { command: "npm test", reason: "package.json test script" };
     }
-    const manager = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
-    if (manager === "pnpm" || manager === "yarn" || manager === "bun") {
-      return { command: `${manager} test`, reason: `package.json test script via ${manager}` };
-    }
-    if (manager && manager !== "npm") return { reason: `unsupported package manager: ${manager}` };
-    if (existsSync(join(repoPath, "pnpm-lock.yaml"))) return { command: "pnpm test", reason: "package.json test script with pnpm lockfile" };
-    if (existsSync(join(repoPath, "yarn.lock"))) return { command: "yarn test", reason: "package.json test script with Yarn lockfile" };
-    if (existsSync(join(repoPath, "bun.lock")) || existsSync(join(repoPath, "bun.lockb"))) return { command: "bun test", reason: "package.json test script with Bun lockfile" };
-    return { command: "npm test", reason: "package.json test script" };
   }
 
   if (existsSync(join(repoPath, "go.mod"))) return { command: "go test ./...", reason: "root Go module" };
@@ -155,7 +159,7 @@ export function inferFullCommand(repoPath: string): FullCommandDecision {
       ? { command: `${interpreter} -m pytest`, reason: "Python project tested with pytest" }
       : { reason: "Python project, but no Python 3 interpreter (python3, python or py -3) is on PATH" };
   }
-  return { reason: "no supported full test command could be inferred" };
+  return noTestScript ?? { reason: "no supported full test command could be inferred" };
 }
 
 function pythonInterpreter(cwd: string): string | undefined {
