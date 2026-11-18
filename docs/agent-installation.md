@@ -179,7 +179,7 @@ settings, not from a file. In **Settings > Copilot > MCP servers**, save:
     "diffci": {
       "type": "local",
       "command": "npx",
-      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.55", "diffci-mcp"],
+      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.56", "diffci-mcp"],
       "tools": [
         "diffci_changed_files",
         "diffci_select_tests",
@@ -217,7 +217,7 @@ To add the server by hand:
   "mcpServers": {
     "diffci": {
       "command": "npx",
-      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.55", "diffci-mcp"],
+      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.56", "diffci-mcp"],
       "autoApprove": [
         "diffci_changed_files",
         "diffci_select_tests",
@@ -261,7 +261,7 @@ as well. `diffci init` writes both. To add the server by hand:
   "mcpServers": {
     "diffci": {
       "command": "npx",
-      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.55", "diffci-mcp"]
+      "args": ["--yes", "--package", "@diffci.com/diffci@0.3.56", "diffci-mcp"]
     }
   }
 }
@@ -285,7 +285,7 @@ configuration, so the Claude Code installation above is the preferred local
 path. A direct local MCP setup is also available:
 
 ```sh
-grok mcp add diffci -- npx --yes --package @diffci.com/diffci@0.3.55 diffci-mcp
+grok mcp add diffci -- npx --yes --package @diffci.com/diffci@0.3.56 diffci-mcp
 ```
 
 For Grok's cloud connector, add `https://diffci.com/mcp/v1` as a custom HTTP
@@ -316,7 +316,7 @@ launcher in `integrations/agent-plugin/mcp.json`):
 
 ```text
 command: npx
-args: ["--yes", "--package", "@diffci.com/diffci@0.3.55", "diffci-mcp"]
+args: ["--yes", "--package", "@diffci.com/diffci@0.3.56", "diffci-mcp"]
 ```
 
 For a remote-only client, configure a Streamable HTTP MCP server at
