@@ -301,6 +301,7 @@
     "tests/repo/tsconfig-variant-reason.test.ts",
     "tests/repo/tsconfig-newer-options.test.ts",
     "tests/repo/vite-config-change.test.ts",
+    "tests/repo/vite-glob-brace-wildcards.test.ts",
     "tests/repo/vitest-config-fallback.test.ts",
     "tests/repo/vue-alias-paths-base.test.ts",
     "tests/repo/vue-scope.test.ts",
