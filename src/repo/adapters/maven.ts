@@ -13,6 +13,10 @@ interface Pom {
   customSourceRoots: boolean;
   /** The module's Java test root relative to the repository, or undefined when it can't be resolved for certain. */
   testRoot?: string;
+  /** Every `<testSourceDirectory>` the POM declares, including those inside profiles. */
+  declaredTestRoots: string[];
+  /** Whether a `<testSourceDirectory>` sits inside a profile, which may or may not be active. */
+  profileTestRoot: boolean;
 }
 
 const DEFAULT_TEST_ROOT = "src/test/java";
@@ -66,6 +70,10 @@ function parsePom(path: string, source: string): Pom {
   // Nested plugin/dependency coordinates are not the project's own identity. In
   // particular, a dependency's ${project.groupId} must not shadow an inherited ID.
   const identity = own.replace(/<(dependencies|dependencyManagement|build|profiles|reporting|properties)\b[^>]*>[\s\S]*?<\/\1>/g, "");
+  // A profile's <testSourceDirectory> applies only when that profile is active, which this static
+  // adapter can't tell, so such a POM falls back.
+  const declaredTestRoots = tags(xml, "testSourceDirectory");
+  const profileTestRoot = declaredTestRoots.length !== tags(xml.replace(/<profiles\b[^>]*>[\s\S]*?<\/profiles>/g, ""), "testSourceDirectory").length;
   const dependencies = tags(xml, "dependency")
     .map(value => ({ groupId: first(value, "groupId") ?? "", artifactId: first(value, "artifactId") ?? "" }))
     .filter(value => value.artifactId);
@@ -76,7 +84,8 @@ function parsePom(path: string, source: string): Pom {
     parent: parent === undefined ? undefined : { groupId: first(parent, "groupId") ?? "", artifactId: first(parent, "artifactId") ?? "" },
     dependencies,
     customSourceRoots: tags(xml, "sourceDirectory").some(root => root !== "src/main/java"),
-    testRoot: resolveTestRoot(dir, tags(xml, "testSourceDirectory")),
+    testRoot: profileTestRoot ? undefined : resolveTestRoot(dir, declaredTestRoots),
+    declaredTestRoots, profileTestRoot,
   };
 }
 
@@ -105,6 +114,20 @@ export function analyzeMaven(context: AdapterContext): AdapterContribution {
   const members = new Map<Pom, string[]>();
   const resources = new Map<Pom, string[]>();
   const anchors = new Map<Pom, string>();
+
+  // A module that declares no <testSourceDirectory> inherits the nearest local parent's. Unless that is
+  // the default root, fall back rather than assume src/test/java.
+  for (const pom of poms) {
+    if (pom.declaredTestRoots.length) continue;
+    const visited = new Set<Pom>([pom]);
+    let ancestor = pom.parent && findPom(pom.parent);
+    while (ancestor && !visited.has(ancestor) && !ancestor.declaredTestRoots.length) {
+      visited.add(ancestor);
+      ancestor = ancestor.parent && findPom(ancestor.parent);
+    }
+    if (ancestor && !visited.has(ancestor) &&
+      (ancestor.profileTestRoot || resolveTestRoot("", ancestor.declaredTestRoots) !== DEFAULT_TEST_ROOT)) pom.testRoot = undefined;
+  }
 
   for (const pom of poms) {
     if (pom.customSourceRoots || pom.testRoot === undefined) result.blockers.push(`Maven ${pom.path}: custom source roots require full validation`);

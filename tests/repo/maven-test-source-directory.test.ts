@@ -98,3 +98,49 @@ for (const [name, build] of [
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 }
+
+for (const [name, build] of [
+  ["only inside a profile", "<profiles><profile><id>it</id><build><testSourceDirectory>tests</testSourceDirectory></build></profile></profiles>"],
+  ["in the build and repeated inside a profile", "<testSourceDirectory>tests</testSourceDirectory><profiles><profile><id>it</id><build><testSourceDirectory>tests</testSourceDirectory></build></profile></profiles>"],
+]) {
+  test(`Maven falls back for a <testSourceDirectory> ${name}`, async () => {
+    const root = fixture(reactor(build, "application/src/test/java/example/AppTest.java"));
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(graph.adapterBlockers?.some((reason) => blocker.test(reason)), graph.adapterBlockers?.join("; "));
+      const impact = new ImpactAnalyzer().analyze(delta("library/src/main/java/example/Library.java"), graph, graph.profile);
+      assert.equal(impact.fallbackRequired, true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+function inheriting(parentBuild: string, childBuild: string, testPath: string): Record<string, string> {
+  const files = reactor(childBuild, testPath);
+  files["pom.xml"] = parent.replace("</modules>", `</modules><build>${parentBuild}</build>`);
+  files["application/pom.xml"] = files["application/pom.xml"]!.replace("<project>", "<project><parent><groupId>example</groupId><artifactId>parent</artifactId><version>1</version></parent>");
+  return files;
+}
+
+test("Maven falls back for a module that inherits a custom <testSourceDirectory> from a local parent", async () => {
+  const root = fixture(inheriting("<testSourceDirectory>tests</testSourceDirectory>", "", "application/tests/example/AppTest.java"));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(graph.adapterBlockers?.some((reason) => reason.startsWith("Maven application/pom.xml:") && blocker.test(reason)), graph.adapterBlockers?.join("; "));
+    const impact = new ImpactAnalyzer().analyze(delta("library/src/main/java/example/Library.java"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const [name, parentBuild, childBuild, testPath] of [
+  ["the parent declares the default root", "<testSourceDirectory>src/test/java</testSourceDirectory>", "", "application/src/test/java/example/AppTest.java"],
+  ["the module declares its own root", "<testSourceDirectory>it</testSourceDirectory>", "<testSourceDirectory>tests</testSourceDirectory>", "application/tests/example/AppTest.java"],
+]) {
+  test(`Maven resolves an inheriting module's test root when ${name}`, async () => {
+    const root = fixture(inheriting(parentBuild, childBuild, testPath));
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.deepEqual(graph.adapterBlockers, []);
+      assert.equal(graph.profile.mavenTestModules?.[testPath], "application");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
