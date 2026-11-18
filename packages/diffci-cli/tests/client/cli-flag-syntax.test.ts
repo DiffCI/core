@@ -45,3 +45,29 @@ it("reads --flag=true as the flag and --flag=false as leaving it off", () => {
   const off = verify(["--changed=false", "--paths", "a"]);
   assert.doesNotMatch(off.stderr, /accepts one of --changed/);
 });
+
+it("preserves boolean-looking values for string options", () => {
+  for (const value of ["false", "true"]) {
+    for (const args of [[`--policy=${value}`], ["--policy", value]]) {
+      const result = verify(args);
+      assert.equal(result.status, 2, result.stderr);
+      assert.match(result.stderr, new RegExp(`--policy accepts only "enforce", got "${value}"`));
+    }
+  }
+  const refs = verify(["--head=true", "--base=false", "--changed"]);
+  assert.match(refs.stderr, /got --changed and --base\/--head/);
+});
+
+it("rejects empty inline values instead of interpreting them as zero or defaults", () => {
+  for (const name of ["timeout-ms", "policy", "head", "paths"]) {
+    const result = verify([`--${name}=`]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`--${name} requires a value`));
+  }
+});
+
+it("rejects an on/off flag with an inline value other than true or false", () => {
+  const result = verify(["--changed=yes"]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--changed is an on\/off flag; use --changed, --changed=true or --changed=false/);
+});

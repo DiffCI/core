@@ -91,6 +91,16 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
+// Only on/off options may interpret inline booleans. Values such as a ref named "true"
+// or an invalid policy named "false" must reach the command's normal validation intact.
+const BOOLEAN_FLAGS = new Set([
+  "baseline-on-failure", "changed", "checks", "curve", "enforce", "fail-fast", "fail-on-error",
+  "fixed-order", "force", "force-analysis", "help", "install", "internal-usage", "json",
+  "measure-selected", "no-agent-hooks", "no-checks", "no-coverage", "no-hook", "no-log", "no-mcp",
+  "no-rank", "no-reuse", "no-send", "no-skill", "open-issue", "quiet", "redact-paths",
+  "shared-graph-cache", "staged", "timings", "verification-workflow", "workflow",
+]);
+
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const args = argv.slice(2);
   const flags: Record<string, string | boolean> = {};
@@ -106,6 +116,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     const equals = token.indexOf("=");
     const key = equals > 2 ? token.slice(2, equals) : token.slice(2);
     const inline = equals > 2 ? token.slice(equals + 1) : undefined;
+    if (inline === "") throw new Error(`--${key} requires a value`);
     const next = args[i + 1];
     if (key === "paths") {
       // `--paths a b c` takes every value up to the next flag, and repeats add to it; NUL separates
@@ -116,12 +127,14 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       flags.paths = values.length ? values.join("\0") : true;
       continue;
     }
-    if (inline === "true") {
+    if (BOOLEAN_FLAGS.has(key) && inline === "true") {
       // On/off flags are read with `=== true`, so `--json=true` stored as the string "true" was off
       // with no error. `=true` turns the flag on and `=false` leaves it off, as if it were not given.
       flags[key] = true;
-    } else if (inline === "false") {
+    } else if (BOOLEAN_FLAGS.has(key) && inline === "false") {
       delete flags[key];
+    } else if (BOOLEAN_FLAGS.has(key) && inline !== undefined) {
+      throw new Error(`--${key} is an on/off flag; use --${key}, --${key}=true or --${key}=false`);
     } else if (inline !== undefined) {
       flags[key] = inline;
     } else if (next !== undefined && !next.startsWith("--")) {
