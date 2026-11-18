@@ -21,10 +21,16 @@ export interface AdapterContribution {
   testFiles: string[];
   testPackages: Record<string, string>;
   /** Cargo target roots; a lib/bin root represents the crate's unit tests. */
-  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example" }>;
+  rustTestTargets?: Record<string, { name: string; kind: "lib" | "bin" | "test" | "bench" | "example"; requiredFeatures?: string[] }>;
   /** Rust files that may read documentation: workspace build scripts, and sources naming a
    * documentation path in a string literal. */
   rustDocumentationReaders?: string[];
+  /** Directories of the workspace's Cargo packages ("" for a root package), for confining blockers on
+   * non-Rust files to the crate that owns them. */
+  rustCrateDirectories?: string[];
+  /** Whether any workspace Rust source starts an external program other than Cargo, rustc or the
+   * package's own binaries. Such a program could read any file, so nothing can be confined to a crate. */
+  rustRunsPrograms?: boolean;
   /** Packages whose Cargo features change when a tested crate runs without the rest of the full invocation. */
   rustFeatureCoverage?: { deficits: Record<string, string[]>; units: Array<{ crates: string[]; covers: string[] }> };
   executionEnv?: Record<string, string>;

@@ -5,6 +5,7 @@ import { dirname, extname, isAbsolute, join, normalize, posix, relative, resolve
 import ts from "typescript";
 import { adapterFiles, REPOSITORY_ADAPTERS } from "./adapters/index.js";
 import { rustAdapter } from "./adapters/rust.js";
+import type { AdapterContribution } from "./adapters/types.js";
 import { rustTestInvocation } from "./adapters/rust-invocation.js";
 import { pythonAdapter } from "./adapters/python.js";
 import { analyzeRepository, type AnalyzeRepositoryOptions } from "./analyzer.js";
@@ -1094,8 +1095,12 @@ export async function buildDependencyGraph(
     adapterBlockers.push("Mixed Go/JavaScript repositories require explicit cross-language dependencies; full validation required");
   }
   const rustModeled = contributions.some((item) => item.id === "rust");
-  if (rustModeled && files.some(file => /\.(?:[cm]?[jt]sx?|vue|go|py|java|kt|cs|svelte|astro|c|h|cpp|cc|cxx)$/.test(file))) {
-    adapterBlockers.push("Mixed Rust/language repositories require explicit cross-language dependencies; full validation required");
+  const rustScope = rustLanguageFileScope(contributions);
+  const mixedRustFiles = rustModeled ? files.filter(file => /\.(?:[cm]?[jt]sx?|vue|go|py|java|kt|cs|svelte|astro|c|h|cpp|cc|cxx)$/.test(file)) : [];
+  if (mixedRustFiles.length) {
+    const reason = "Mixed Rust/language repositories require explicit cross-language dependencies; full validation required";
+    adapterBlockers.push(reason);
+    for (const file of mixedRustFiles) addScope(reason, rustScope(file));
   }
   const pythonModeled = contributions.some((item) => item.id === "python");
   const unmodeledLanguageFiles = contributions.length ? files.filter((file) => (!pythonModeled && /\.py$/.test(file)) || (!rustModeled && /\.rs$/.test(file)) || /\.(?:cs|svelte|astro)$/.test(file) || !contributions.some((item) => item.id === "maven") && /\.(?:java|kt)$/.test(file)) : [];
@@ -1104,7 +1109,7 @@ export async function buildDependencyGraph(
     adapterBlockers.push(reason);
     // Files in a top-level dot-directory outside every package (agent skills, editor tooling) are confined
     // to that directory: no package's sources or tests can load them.
-    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : ""));
+    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : "") || rustScope(file));
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
   // Rust test targets are not Go packages; other adapters keep their existing routing here.
@@ -2250,6 +2255,28 @@ function confinedConfigScope(repoPath: string, configRel: string, config: unknow
     if (target === ".." || target.startsWith(`..${sep}`) || target.startsWith("../") || /^[A-Za-z]:|^[\\/]/.test(target)) return "";
   }
   return directory;
+}
+
+/** In a Cargo-only repository, the directory a helper script or native source is confined to: the
+ * deepest member crate that contains it, or its top-level directory outside every crate of a virtual
+ * workspace. Cargo can reach such a file only through code in that crate (a build script, which already
+ * depends on every crate, or an `include!`, which falls back), and a change to the file itself keeps the
+ * full suite, so only changes that reach the directory need full validation. "" (global) when another
+ * adapter is active, when Rust code starts external programs that could run the file from anywhere, for
+ * languages another engine could test (JavaScript, Go, Java and so on), for files that look like
+ * Python tests, and inside a root package. */
+function rustLanguageFileScope(contributions: readonly AdapterContribution[]): (file: string) => string {
+  const rust = contributions.length === 1 && contributions[0]!.id === "rust" ? contributions[0]! : undefined;
+  const crates = rust?.rustCrateDirectories;
+  if (!rust || !crates || rust.rustRunsPrograms !== false) return () => "";
+  return (file: string) => {
+    if (!/\.(?:py|c|h|cc|cpp|cxx)$/.test(file)) return "";
+    const name = file.slice(file.lastIndexOf("/") + 1);
+    if (/^(?:test_.*|.*_test|conftest)\.py$/.test(name)) return "";
+    const crate = crates.filter(directory => directory === "" || file.startsWith(`${directory}/`)).sort((a, b) => b.length - a.length)[0];
+    if (crate !== undefined) return crate;
+    return file.includes("/") ? file.slice(0, file.indexOf("/")) : "";
+  };
 }
 
 /** Moves blockers confined to directories out of `adapterBlockers` and returns them scoped to those

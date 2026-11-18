@@ -16,6 +16,7 @@ export interface CargoTarget {
 export interface CargoPackage {
   id: string;
   name: string;
+  version?: string;
   manifest_path: string;
   targets: CargoTarget[];
   source?: string | null;
@@ -124,7 +125,8 @@ export function parseCargoMetadata(output: string): CargoMetadata {
     if (!object(pkg) || typeof pkg.id !== "string" || !pkg.id || typeof pkg.name !== "string"
       || !/^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(pkg.name) || typeof pkg.manifest_path !== "string"
       || !isAbsolute(pkg.manifest_path) || !Array.isArray(pkg.targets) || !pkg.targets.length
-      || (pkg.source !== undefined && pkg.source !== null && typeof pkg.source !== "string")) {
+      || (pkg.source !== undefined && pkg.source !== null && typeof pkg.source !== "string")
+      || (pkg.version !== undefined && typeof pkg.version !== "string")) {
       throw new Error("Invalid Cargo package metadata");
     }
     for (const target of pkg.targets) {
@@ -197,7 +199,7 @@ function completeRustInventory(root: string, files: ReadonlySet<string>, trees: 
 
 /** A small lexer, not a Rust parser: ignore comments/strings, but never guess
  * a computed include. Nested comments and raw strings must not hide an input. */
-function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean } | undefined {
+function rustInputs(source: string): { inputs: Array<{ path: string; code: boolean }>; paths: string[]; compiles: boolean; navigates: boolean; documentation: boolean; runsPrograms: boolean } | undefined {
   const tokens: Array<{ value: string; literal?: string }> = [];
   for (let i = 0; i < source.length;) {
     if (/\s/.test(source[i]!)) { i++; continue; }
@@ -241,6 +243,7 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   const inputs: Array<{ path: string; code: boolean }> = [];
   const paths: string[] = [];
   let compiles = false;
+  let runsPrograms = false;
   const includeArguments = new Set<number>();
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i]!.value === "mod" && tokens[i + 1]?.value === "target" && tokens[i + 2]?.value === ";") return undefined;
@@ -266,6 +269,13 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
     }
     if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
       && tokens[i + 4]?.value === "(" && /^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")) compiles = true;
+    // Any other program (a script, a shell, a tool) could read files no Rust edge shows. Running the
+    // package's own binary (`env!("CARGO_BIN_EXE_name")`) is Rust code Cargo already models. This is a
+    // token heuristic: clap's `Command::new("app")` counts too, which only fails closed.
+    if (tokens[i]!.value === "Command" && tokens[i + 1]?.value === ":" && tokens[i + 2]?.value === ":" && tokens[i + 3]?.value === "new"
+      && tokens[i + 4]?.value === "(" && !/^(?:cargo|rustc|rustdoc)(?:\.exe)?$|^cargo-/.test(tokens[i + 5]?.literal ?? "")
+      && !(tokens[i + 5]?.value === "env" && tokens[i + 6]?.value === "!" && tokens[i + 7]?.value === "(" && /^CARGO_BIN_EXE_/.test(tokens[i + 8]?.literal ?? ""))) runsPrograms = true;
+    if (["duct", "xshell", "subprocess"].includes(tokens[i]!.value) || (tokens[i]!.value === "cmd" && tokens[i + 1]?.value === "!")) runsPrograms = true;
     // `env!("CARGO")`, `env::var("RUSTC")` and similar name the toolchain a test is about to run.
     if (["CARGO", "RUSTC", "RUSTDOC", "RUSTC_WRAPPER"].includes(tokens[i]!.literal ?? "")) compiles = true;
     if (!["include", "include_str", "include_bytes"].includes(tokens[i]!.value) || tokens[i + 1]?.value !== "!") continue;
@@ -288,7 +298,7 @@ function rustInputs(source: string): { inputs: Array<{ path: string; code: boole
   });
   const navigates = navigatesUpward(tokens);
   // Code that climbs out of its crate can walk to README or docs without naming them.
-  return { inputs, paths, compiles, navigates, documentation: documentation || navigates };
+  return { inputs, paths, compiles, navigates, documentation: documentation || navigates, runsPrograms };
 }
 
 /** Code that climbs out of its crate directory in code (`.parent()`, `.ancestors()`, `PathBuf::pop`,
@@ -338,6 +348,18 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       result.blockers.push("Ambiguous Cargo workspace package names require full validation");
       return result;
     }
+    // `cargo test -p NAME` and `cargo tree -p NAME` stop with "specification is ambiguous" when a
+    // dependency has a member's name (an older release of the same crate, say). Name such a member
+    // NAME@VERSION, which Cargo accepts, or fall back when even that cannot tell them apart.
+    const specs = new Map<string, string>();
+    for (const pkg of members) {
+      const named = metadata.packages.filter(other => other.name === pkg.name);
+      if (named.length === 1) specs.set(pkg.id, pkg.name);
+      else if (pkg.version && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pkg.version) && named.filter(other => other.version === pkg.version).length === 1) {
+        specs.set(pkg.id, `${pkg.name}@${pkg.version}`);
+      } else result.blockers.push(`Cargo package ${pkg.name} has no unambiguous package specification; full validation required`);
+    }
+    const spec = (pkg: CargoPackage) => specs.get(pkg.id) ?? pkg.name;
     const packages: Array<{ pkg: CargoPackage; directory: string; manifest: string }> = [];
     for (const pkg of members) {
       const manifest = repositoryPath(root, pkg.manifest_path, known);
@@ -412,8 +434,14 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
           continue;
         }
         result.testFiles.push(path);
-        result.testPackages[path] = pkg.name;
-        result.rustTestTargets[path] = { name: target.name, kind };
+        result.testPackages[path] = spec(pkg);
+        // Plain `cargo test` builds and runs a target with `required-features` only when Cargo enabled
+        // those features for its package, and skips it silently otherwise. The planner keeps such a
+        // package whole (`-p name`, never `--test name`), so Cargo makes the same decision for the
+        // selected command as for the full run: the feature check below gives the package the full
+        // run's features.
+        const requiredFeatures = target["required-features"]?.length ? [...target["required-features"]].sort() : undefined;
+        result.rustTestTargets[path] = { name: target.name, kind, ...(requiredFeatures ? { requiredFeatures } : {}) };
       }
     }
     const moduleTrees = packages.flatMap(({ pkg }) => pkg.targets.map(target => resolvedPath(root, target.src_path)))
@@ -470,9 +498,6 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       const anchor = anchors.get(id)!;
       for (const other of packages) if (other.manifest !== anchor) result.edges.push({ from: anchor, to: other.manifest, kind: "import" });
     }
-    if (packages.some(({ pkg }) => pkg.targets.some(target => target["required-features"]?.length))) {
-      result.blockers.push("Cargo targets requiring features need an explicitly supported test invocation; full validation required");
-    }
     for (const source of result.sourcePaths.filter(path => path.endsWith(".rs"))) {
       const sourceOwner = owner(source);
       if (!sourceOwner) continue;
@@ -486,6 +511,7 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       // file). Code that climbs out of its crate in code can reach any crate, like code that compiles.
       // Model these as dependencies of this crate instead of blocking the repository.
       if (scanned.documentation) (result.rustDocumentationReaders ??= []).push(source);
+      if (scanned.runsPrograms) result.rustRunsPrograms = true;
       const reached = new Set<string>();
       if (scanned.compiles || scanned.navigates) for (const other of packages) reached.add(other.manifest);
       for (const literal of scanned.paths) {
@@ -518,22 +544,24 @@ export function analyzeRustMetadata(context: AdapterContext, output: string, res
       }
     }
     result.assetPaths = [...new Set(result.assetPaths)].sort();
+    result.rustCrateDirectories = [...new Set(packages.map(({ directory }) => directory))].sort();
+    result.rustRunsPrograms ??= false;
     // Selective commands must give every package the features the full invocation gives it. Cargo
     // resolves each tested crate alone and with its dependents (what a change to it selects); the
     // planner checks each selected set against those units.
     if (!cargoFeaturesVary(metadata)) result.rustFeatureCoverage = { deficits: {}, units: [] };
     else {
-      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => pkg.name);
+      const testedNames = packages.filter(({ pkg }) => tested.has(pkg.id)).map(({ pkg }) => spec(pkg));
       const dependents = new Map<string, string[]>();
       for (const edge of result.edges) {
         if (edge.from.endsWith("Cargo.toml") && edge.to.endsWith("Cargo.toml") && edge.from !== edge.to) {
           dependents.set(edge.to, [...(dependents.get(edge.to) ?? []), edge.from]);
         }
       }
-      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, pkg.name]));
+      const byManifest = new Map(packages.map(({ pkg, manifest }) => [manifest, spec(pkg)]));
       const units = new Map<string, string[]>();
       for (const { pkg, manifest } of packages) {
-        if (tested.has(pkg.id)) units.set(pkg.name, [pkg.name]);
+        if (tested.has(pkg.id)) units.set(spec(pkg), [spec(pkg)]);
         const seen = new Set([manifest]); const pending = [manifest];
         while (pending.length) for (const next of dependents.get(pending.pop()!) ?? []) if (!seen.has(next)) { seen.add(next); pending.push(next); }
         const closure = [...seen].map(path => byManifest.get(path)).filter((name): name is string => name !== undefined && testedNames.includes(name)).sort();

@@ -169,6 +169,59 @@ test("registered Rust graph propagates crate roots and manifests and fails close
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test("helper scripts and native sources in a Cargo-only workspace are confined to their crate", async t => {
+  // A generator script inside a crate (servo/rust-url's data-url/src/make_base64_decode_table.py) and a
+  // top-level tool script used to make every Rust change fall back.
+  const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers=["core", "app", "other", "solo"]\n', ".github/workflows/test.yml": workflow(),
+    "core/src/make_table.py": "print('table')\n", "other/native/shim.c": "int shim(void) { return 1; }\n", "tools/release.py": "print('release')\n" };
+  for (const name of ["core", "app", "other", "solo"]) {
+    files[`${name}/Cargo.toml`] = `[package]\nname="${name}"\nversion="0.1.0"\n`;
+    files[`${name}/src/lib.rs`] = "pub fn value() {}";
+  }
+  const root = fixture(files);
+  const packages = ["core", "app", "other", "solo"].map(name => ({ id: name, name, manifest_path: join(root, name, "Cargo.toml"), dependencies: [], features: {}, targets: [
+    { name, kind: ["lib"], src_path: join(root, name, "src/lib.rs"), test: true, doctest: true },
+  ] }));
+  const metadata = JSON.stringify({ packages, workspace_members: packages.map(p => p.id), workspace_default_members: packages.map(p => p.id), workspace_root: root, resolve: { nodes: packages.map(p => ({ id: p.id, dependencies: p.id === "app" ? ["core"] : [] })) } });
+  t.mock.method(rustAdapter, "analyze", (context: AdapterContext) => analyzeRustMetadata(context, metadata));
+  const mixed = "Mixed Rust/language repositories require explicit cross-language dependencies; full validation required";
+  const unmodeled = "Unmodeled languages alongside an adapter require full validation";
+  try {
+    let graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, []);
+    assert.deepEqual(graph.scopedAdapterBlockers, [
+      { reason: mixed, directories: ["core", "other", "tools"] },
+      { reason: unmodeled, directories: ["core", "tools"] },
+    ]);
+    // solo reaches no crate that owns a script.
+    const narrowed = new ImpactAnalyzer().analyze(delta("solo/src/lib.rs"), graph, graph.profile);
+    assert.equal(narrowed.fallbackRequired, false, String(narrowed.fallbackReasons));
+    assert.deepEqual(narrowed.affectedTests.map(test => test.path), ["solo/src/lib.rs"]);
+    // A change that reaches a crate owning a script (app depends on core), or the script itself, keeps
+    // the full suite.
+    for (const path of ["core/src/lib.rs", "app/src/lib.rs", "other/src/lib.rs", "core/src/make_table.py", "other/native/shim.c", "tools/release.py"]) {
+      assert.equal(new ImpactAnalyzer().analyze(delta(path), graph, graph.profile).fallbackRequired, true, path);
+    }
+    // Rust code that starts another program could run the script from anywhere; the package's own
+    // binaries and Cargo do not count.
+    writeFileSync(join(root, "app/src/lib.rs"), '#[test] fn cli() { std::process::Command::new(env!("CARGO_BIN_EXE_app")).status().unwrap(); }');
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, []);
+    writeFileSync(join(root, "app/src/lib.rs"), '#[test] fn gen() { std::process::Command::new("python3").arg("../core/src/make_table.py").status().unwrap(); }');
+    graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(graph.adapterBlockers?.includes(mixed));
+    writeFileSync(join(root, "app/src/lib.rs"), "pub fn value() {}");
+    // Python tests, JavaScript and files at the root stay repository-wide.
+    for (const extra of ["core/tests/test_table.py", "other/web/index.js", "setup.c"]) {
+      mkdirSync(dirname(join(root, extra)), { recursive: true });
+      writeFileSync(join(root, extra), "");
+      graph = await buildDependencyGraph({ repoPath: root });
+      assert.ok(graph.adapterBlockers?.includes(mixed), extra);
+      rmSync(join(root, extra));
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("documentation stays full-suite when Rust code may read it, and excluded fixture crates are confined", async t => {
   const files: Record<string, string> = { "Cargo.toml": '[workspace]\nmembers=["core", "app"]\nexclude=["tests/fixtures"]\n', ".github/workflows/test.yml": workflow(),
     "tests/fixtures/sample/Cargo.toml": '[package]\nname="sample"\nversion="0.1.0"\n', "tests/fixtures/sample/src/lib.rs": "pub fn sample() {}" };
