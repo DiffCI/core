@@ -486,6 +486,8 @@ Some changes still run the full suite whatever `inputs` says, because they chang
 npx @diffci.com/diffci@latest verify-workflow --repo .
 ```
 
+_The pytest example and the test behind it were contributed by [@sarankumar1325](https://github.com/sarankumar1325) in [#319](https://github.com/DiffCI/core/pull/319)._
+
 `verify-workflow` reads the YAML files in `.github/workflows` and finds the jobs that run the DiffCI action as an observer. It then looks for the ways those jobs could change what the rest of CI does. Each finding has a stable code and is marked `[BLOCKING]` or `[WARNING]`; only blocking findings fail the command, so a pass means no blocking interference was found, not that the warnings are harmless. For example:
 
 - `JOB_IS_A_DEPENDENCY` (blocking): another job `needs:` it.
@@ -701,6 +703,8 @@ These appear only in Python projects (a root `pyproject.toml`, `setup.py`, `setu
 | `Unresolved first-party Python import in …: …` | `import shop.generated` where `shop/generated.py` is created by a build step | No |
 | `pytest configuration DiffCI cannot read: …` | `python_files` set to something other than a string or list in `pyproject.toml` | Fix: use a literal string or list |
 | `Python analysis found no Python files` | Project files with every `.py` file inside a virtual environment | No |
+
+_Reading pytest configuration the way pytest does was improved by [@sarankumar1325](https://github.com/sarankumar1325): `pytest.ini` wins even when empty, and `.pytest.ini` is read ([#314](https://github.com/DiffCI/core/pull/314)); `pyproject.toml` lists are read as TOML strings ([#315](https://github.com/DiffCI/core/pull/315)); `tox.ini` and `setup.cfg` settings are covered by tests ([#316](https://github.com/DiffCI/core/pull/316))._
 
 ### Vue
 
