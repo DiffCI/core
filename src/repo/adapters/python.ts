@@ -102,6 +102,54 @@ function splitList(value: string): string[] {
   return value.split(/[\s,]+/).map((entry) => entry.replace(/^["']|["']$/g, "")).filter(Boolean);
 }
 
+/**
+ * The strings of a TOML array of strings that starts with `[` at `start`. Comments, commas and line breaks
+ * between the strings are skipped, and a `]`, `,` or `#` inside a quoted string stays part of the value.
+ * Anything else (a nested array, a number, a multi-line string, an escape it cannot read, no closing `]`)
+ * returns undefined, so the caller can fall back instead of guessing.
+ */
+function readTomlStringArray(text: string, start: number): string[] | undefined {
+  const values: string[] = [];
+  const escapes: Record<string, string> = { "\\": "\\", '"': '"', b: "\b", t: "\t", n: "\n", f: "\f", r: "\r" };
+  let index = start + 1;
+  let expectValue = true;
+  while (index < text.length) {
+    const char = text[index]!;
+    if (char === " " || char === "\t" || char === "\r" || char === "\n") index += 1;
+    else if (char === "#") {
+      const end = text.indexOf("\n", index);
+      index = end === -1 ? text.length : end;
+    } else if (char === "]") return values;
+    else if (char === ",") {
+      if (expectValue) return undefined;
+      expectValue = true;
+      index += 1;
+    } else if ((char === '"' || char === "'") && expectValue) {
+      if (text.startsWith(char.repeat(3), index)) return undefined;
+      let value = "";
+      index += 1;
+      for (;;) {
+        const next = text[index];
+        if (next === undefined || next === "\n") return undefined;
+        if (next === char) break;
+        if (next === "\\" && char === '"') {
+          const escaped = escapes[text[index + 1] ?? ""];
+          if (escaped === undefined) return undefined;
+          value += escaped;
+          index += 2;
+        } else {
+          value += next;
+          index += 1;
+        }
+      }
+      index += 1;
+      values.push(value);
+      expectValue = false;
+    } else return undefined;
+  }
+  return undefined;
+}
+
 /** pytest's own configuration, from the first file pytest would use. Only the keys selection depends on. */
 export function readPytestSettings(read: (path: string) => string | undefined): PytestSettings {
   const settings: PytestSettings = { pythonFiles: ["test_*.py", "*_test.py"], testpaths: [], pythonpath: [] };
@@ -123,13 +171,18 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
     const body = section[1]!;
     for (const key of keys) {
       if (file === "pyproject.toml") {
-        const match = new RegExp(`^${key}\\s*=\\s*(\\[[\\s\\S]*?\\]|"[^"]*"|'[^']*')`, "m").exec(body);
+        const match = new RegExp(`^${key}\\s*=\\s*("[^"]*"|'[^']*')`, "m").exec(body);
+        const array = new RegExp(`^${key}\\s*=\\s*(?=\\[)`, "m").exec(body);
         // A multi-line string would otherwise match as an empty one. Its contents are read as one string;
         // a basic string's line-ending backslash only joins lines. An unterminated one cannot be read.
         const multiline = new RegExp(`^${key}\\s*=\\s*("""|'{3})([\\s\\S]*?)\\1`, "m").exec(body);
         if (multiline) apply(key, splitList(multiline[1] === '"""' ? multiline[2]!.replace(/\\\r?\n/g, " ") : multiline[2]!));
         else if (new RegExp(`^${key}\\s*=\\s*(?:"""|'{3})`, "m").test(body)) settings.unreadable = `${file} ${key}`;
-        else if (match) apply(key, splitList(match[1]!.replace(/^\[|\]$/g, "")));
+        else if (array) {
+          const values = readTomlStringArray(body, array.index + array[0].length);
+          if (values) apply(key, key === "addopts" ? values.flatMap(splitList) : values);
+          else settings.unreadable = `${file} ${key}`;
+        } else if (match) apply(key, splitList(match[1]!));
         else if (new RegExp(`^${key}\\s*=`, "m").test(body)) settings.unreadable = `${file} ${key}`;
       } else {
         // INI values continue on indented lines.
