@@ -1378,6 +1378,19 @@ export async function buildDependencyGraph(
     return undefined;
   }
 
+  /** The JavaScript file a repository declaration file describes, when it exists and is not excluded. */
+  function declarationImplementation(declarationRel: string): string | undefined {
+    const match = /^(.*)\.d\.([mc]?)ts$/.exec(declarationRel);
+    if (!match) return undefined;
+    const extensions = match[2] === "m" ? [".mjs"] : match[2] === "c" ? [".cjs"] : [".js", ".jsx"];
+    for (const extension of extensions) {
+      const candidate = match[1] + extension;
+      if (isExcludedPath(candidate, options.excludeDirs ?? []) || candidate.split("/").includes("node_modules")) continue;
+      if (internalSourcePaths.has(candidate) || existsSync(join(repoPath, candidate))) return candidate;
+    }
+    return undefined;
+  }
+
   /** Parses an implementation file an import reaches outside the initial walk, rather than silently dropping
    * the edge or loading every TypeScript declaration library again; false, with a blocker, past the budget. */
   function followImplementation(absolute: string, rel: string): boolean {
@@ -1580,6 +1593,11 @@ export async function buildDependencyGraph(
         if (!resolved.endsWith(".d.ts") && !followImplementation(resolved, targetRel)) continue;
         internalSourcePaths.add(targetRel);
         addEdge(importerRel, targetRel, ref.kind, ref);
+        // A hand-written declaration beside its JavaScript (`foo.d.ts` next to `foo.js`) is what TypeScript
+        // resolves to, but the runner loads the JavaScript. Without this edge a change to `foo.js` reached
+        // no importer and selected nothing.
+        const implementation = declarationImplementation(targetRel);
+        if (implementation && followImplementation(join(repoPath, implementation), implementation)) addEdge(importerRel, implementation, ref.kind, ref);
         recordReference("internal-source", importerRel, ref);
         continue;
       }

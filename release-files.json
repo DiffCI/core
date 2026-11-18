@@ -259,6 +259,7 @@
     "tests/repo/analyzer.test.ts",
     "tests/repo/compiled-projects.test.ts",
     "tests/repo/config-patterns.test.ts",
+    "tests/repo/dts-sibling-implementation.test.ts",
     "tests/repo/file-references.test.ts",
     "tests/repo/glob-regex-literals.test.ts",
     "tests/repo/file-references-lockfiles.test.ts",
