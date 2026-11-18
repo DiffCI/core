@@ -38,6 +38,16 @@ function stripRootDir(value: string): string {
   return value.startsWith(ROOT_DIR) ? value.slice(ROOT_DIR.length).replace(/^\//, "") : value;
 }
 
+/**
+ * Jest replaces a leading `<rootDir>` in `testPathIgnorePatterns` with the absolute root directory.
+ * Ignore sources are matched against "/" + the repo-relative path, so the root becomes an anchored
+ * "^/". Anchoring keeps `<rootDir>/e2e/` from also ignoring `packages/a/e2e/`. A `<rootDir>` that
+ * is not at the front stays literal, as it does in jest.
+ */
+function rootDirIgnoreSource(source: string): string {
+  return source.startsWith(ROOT_DIR) ? `^/${source.slice(ROOT_DIR.length).replace(/^\/+/, "")}` : source;
+}
+
 export interface ExtractedTestPatterns {
   /** Declared test globs, `<rootDir>/` stripped. */
   includes: string[];
@@ -232,7 +242,7 @@ export function extractTestPatterns(source: string): ExtractedTestPatterns {
   return {
     includes: Array.from(new Set(includes)),
     excludeGlobs: Array.from(new Set((readKey("exclude") ?? []).map(stripRootDir).filter((g) => g.length > 0 && !g.includes(ROOT_DIR)))),
-    ignoreRegexSources: Array.from(new Set(readKey("testPathIgnorePatterns") ?? [])),
+    ignoreRegexSources: Array.from(new Set((readKey("testPathIgnorePatterns") ?? []).map(rootDirIgnoreSource))),
     roots,
     declaresTests,
     complete,
