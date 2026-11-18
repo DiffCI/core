@@ -356,22 +356,63 @@ jobs:
       contents: read
       id-token: write
 
+  # The public-release sync runs here, not in DiffCI.com (2026-11-18): that repository is private and its
+  # GitHub Actions cannot start jobs (billing), so the 0.3.54 sync was done by hand. This job checks it out
+  # and runs its scripts/sync-release.mjs, the same command a person runs when this job fails.
   notify-hosted-mcp:
     name: Synchronize and deploy hosted MCP
     needs: publish-mcp-registry
     runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    # Holds CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID; restrict it to cli-release-v* tags.
+    environment: diffci-com-deploy
+    concurrency:
+      group: diffci-com-release-sync
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Dispatch the verified release to the product deployer
+      - name: Check out DiffCI.com at main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: DiffCI/DiffCI.com
+          ref: main
+          path: diffci-com
+          fetch-depth: 0
+          token: ${{ secrets.DIFFCI_PRODUCT_DISPATCH_TOKEN }}
+          # The sync step below gets push access through its own environment, not a stored credential.
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: diffci-com/package-lock.json
+
+      - name: Synchronize, deploy and verify the release on DiffCI.com
         shell: bash
+        working-directory: diffci-com
         env:
-          GH_TOKEN: ${{ secrets.DIFFCI_PRODUCT_DISPATCH_TOKEN }}
           RELEASE_COMMIT: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PUSH_TOKEN: ${{ secrets.DIFFCI_PRODUCT_DISPATCH_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          version=$(node -p "require('./packages/diffci-cli/package.json').version")
-          gh api --method POST repos/DiffCI/DiffCI.com/dispatches \
-            -f event_type=diffci-core-release \
-            -f "client_payload[version]=$version" \
-            -f "client_payload[action_sha]=$RELEASE_COMMIT" >/dev/null
+          test -n "$CLOUDFLARE_API_TOKEN" && test -n "$CLOUDFLARE_ACCOUNT_ID" || {
+            echo "::error::The diffci-com-deploy environment needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID." >&2
+            exit 1
+          }
+          version=$(node -p "require('../packages/diffci-cli/package.json').version")
+          git config user.name "diffci-release-bot[bot]"
+          git config user.email "177150159+diffci-release-bot[bot]@users.noreply.github.com"
+          # Push access for this step only, as an HTTP header Git reads from the environment.
+          basic=$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)
+          echo "::add-mask::$basic"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic"
+          node scripts/sync-release.mjs --version "$version" --action-sha "$RELEASE_COMMIT"
