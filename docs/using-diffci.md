@@ -462,6 +462,16 @@ Some files reach tests without an import: fixtures loaded by name, `.env.test`, 
 }
 ```
 
+The same works for pytest. A test that opens `tests/data/prices.csv` by name has no import edge to it, so a change to the CSV runs the full suite until it is declared:
+
+```json
+{
+  "inputs": [
+    { "files": ["tests/data/**"], "tests": ["tests/test_prices.py"] }
+  ]
+}
+```
+
 When a changed file matches `files`, every test matching `tests` is selected, with the reason `DECLARED_INPUT`. Declared tests are always added to what the dependency graph selects. For an unknown file, an unread asset or fixture, code under `ops/` outside the graph, a deleted file, and a database or infrastructure definition, a declaration that selects at least one test also replaces the full-suite fallback.
 
 Some changes still run the full suite whatever `inputs` says, because they change how every test runs: test-runner and tool configuration, `package.json` and workspace manifests, lockfiles and CI workflows. So does a declaration whose `tests` match no test file, and so does any edit to `diffci.json` itself, so a change cannot narrow its own selection.
