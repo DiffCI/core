@@ -67,6 +67,38 @@ describe("pytest settings", () => {
   });
 });
 
+describe("pytest configuration file precedence (#159)", () => {
+  it("uses pytest's defaults when pytest.ini has no [pytest] section, even if pyproject.toml has settings", () => {
+    const files: Record<string, string> = {
+      "pytest.ini": "# pytest configuration lives here\n",
+      "pyproject.toml": "[tool.pytest.ini_options]\npython_files = [\"check_*.py\"]\n",
+    };
+    const settings = readPytestSettings((path) => files[path]);
+    assert.deepEqual(settings, { pythonFiles: ["test_*.py", "*_test.py"], testpaths: [], pythonpath: [] });
+    assert.ok(isPytestFile("test_x.py", settings));
+    assert.ok(!isPytestFile("check_x.py", settings));
+  });
+
+  it("stops at an empty pytest.ini", () => {
+    const files: Record<string, string> = { "pytest.ini": "", "tox.ini": "[pytest]\ntestpaths = integration\n" };
+    assert.deepEqual(readPytestSettings((path) => files[path]).testpaths, []);
+  });
+
+  it("reads .pytest.ini, after pytest.ini and before pyproject.toml", () => {
+    const hidden = readPytestSettings((path) => path === ".pytest.ini" ? "[pytest]\npython_files = check_*.py\n" : undefined);
+    assert.deepEqual(hidden.pythonFiles, ["check_*.py"]);
+    assert.ok(isPytestFile("check_x.py", hidden));
+    const both = readPytestSettings((path) => ({ "pytest.ini": "[pytest]\ntestpaths = a\n", ".pytest.ini": "[pytest]\ntestpaths = b\n" } as Record<string, string>)[path]);
+    assert.deepEqual(both.testpaths, ["a"]);
+    const overToml = readPytestSettings((path) => ({ ".pytest.ini": "", "pyproject.toml": "[tool.pytest.ini_options]\ntestpaths = [\"c\"]\n" } as Record<string, string>)[path]);
+    assert.deepEqual(overToml.testpaths, []);
+  });
+
+  it("detects a repository whose only pytest file is .pytest.ini as a Python project", () => {
+    assert.ok(pythonAdapter.detect({ files: [".pytest.ini", "test_a.py"] } as never));
+  });
+});
+
 // Only decides whether Python is available at all. Assertions use the interpreter the analysis recorded:
 // a second probe can pick another launcher on Windows (#304).
 const pythonAvailable = pythonInterpreter(process.cwd()) !== undefined;

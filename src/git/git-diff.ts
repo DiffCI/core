@@ -234,7 +234,7 @@ export const CONFIG_PATTERNS = [
   // Python projects (2026-11-06): what pytest, the interpreter and the installed packages are.
   /^pyproject\.toml$/,
   /^setup\.(?:py|cfg)$/,
-  /^pytest\.ini$/,
+  /^\.?pytest\.ini$/,
   /^tox\.ini$/,
   /^noxfile\.py$/,
   /^requirements[^/]*\.(?:txt|in)$/,

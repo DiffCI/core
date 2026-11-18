@@ -65,7 +65,7 @@ export type PythonImport = [module: string, level: number, names: string[]];
 export interface PythonFileImports { imports?: PythonImport[]; dynamic?: boolean; error?: string }
 
 const EXCLUDED_DIRS = new Set([".venv", "venv", "env", ".env", ".tox", ".nox", "site-packages", "__pycache__", ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache"]);
-const PROJECT_FILES = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", "tox.ini", "conftest.py"];
+const PROJECT_FILES = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", ".pytest.ini", "tox.ini", "conftest.py"];
 
 export function isPythonSource(path: string): boolean {
   return path.endsWith(".py") && !path.split("/").some((part) => EXCLUDED_DIRS.has(part) || part.endsWith(".egg-info"));
@@ -115,11 +115,17 @@ export function readPytestSettings(read: (path: string) => string | undefined): 
       if (plugins.length) settings.plugins = plugins;
     } else settings[key] = values;
   };
-  for (const [file, header] of [["pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
+  // pytest's search order. `pytest.ini` and `.pytest.ini` match even when empty or without a `[pytest]`
+  // section, and then pytest uses its defaults; the other files only match with their section. The first
+  // match wins and options are never merged.
+  for (const [file, header] of [["pytest.ini", "pytest"], [".pytest.ini", "pytest"], ["pyproject.toml", "tool.pytest.ini_options"], ["tox.ini", "pytest"], ["setup.cfg", "tool:pytest"]] as const) {
     const text = read(file);
     if (text === undefined) continue;
     const section = new RegExp(`^\\[${header.replace(/[.:]/g, "\\$&")}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m").exec(text);
-    if (!section) continue;
+    if (!section) {
+      if (file === "pytest.ini" || file === ".pytest.ini") return settings;
+      continue;
+    }
     const body = section[1]!;
     for (const key of keys) {
       if (file === "pyproject.toml") {
