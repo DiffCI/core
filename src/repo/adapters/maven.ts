@@ -148,6 +148,14 @@ export function analyzeMaven(context: AdapterContext): AdapterContribution {
     const sources = owned.filter(file => /\.(?:java|kt)$/.test(file) &&
       (/\/src\/(?:main|test)\/(?:java|kotlin)\//.test("/" + file) || (pom.testRoot !== undefined && file.startsWith(pom.testRoot + "/"))));
     const assets = owned.filter(file => /\/src\/(?:main|test)\/resources\//.test("/" + file));
+    // Java or Kotlin outside every root DiffCI recognises may still be compiled and run by Maven: a test root
+    // added by build-helper-maven-plugin, or one set by a parent POM outside the repository. Fail closed (#327).
+    // Resources (archetype templates, compiler-test inputs) and the Maven wrapper's downloader are not sources.
+    const known = new Set(sources);
+    if (owned.some(file => /\.(?:java|kt)$/.test(file) && !known.has(file) &&
+      !/\/src\/(?:main|test)\/resources\//.test("/" + file) && !/(?:^|\/)\.mvn\//.test(file))) {
+      result.blockers.push(`Maven ${pom.path}: Java sources outside the standard roots require full validation`);
+    }
     members.set(pom, sources);
     resources.set(pom, assets);
     const anchor = sources[0] ?? assets[0];
