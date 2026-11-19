@@ -17,6 +17,8 @@ interface Pom {
   declaredTestRoots: string[];
   /** Whether a `<testSourceDirectory>` sits inside a profile, which may or may not be active. */
   profileTestRoot: boolean;
+  /** Whether the POM configures build-helper-maven-plugin, which can add any folder, resources included, as a source root. */
+  buildHelper: boolean;
 }
 
 const DEFAULT_TEST_ROOT = "src/test/java";
@@ -86,6 +88,7 @@ function parsePom(path: string, source: string): Pom {
     customSourceRoots: tags(xml, "sourceDirectory").some(root => root !== "src/main/java"),
     testRoot: profileTestRoot ? undefined : resolveTestRoot(dir, declaredTestRoots),
     declaredTestRoots, profileTestRoot,
+    buildHelper: xml.includes("build-helper-maven-plugin"),
   };
 }
 
@@ -148,6 +151,15 @@ export function analyzeMaven(context: AdapterContext): AdapterContribution {
     const sources = owned.filter(file => /\.(?:java|kt)$/.test(file) &&
       (/\/src\/(?:main|test)\/(?:java|kotlin)\//.test("/" + file) || (pom.testRoot !== undefined && file.startsWith(pom.testRoot + "/"))));
     const assets = owned.filter(file => /\/src\/(?:main|test)\/resources\//.test("/" + file));
+    // Java or Kotlin outside every root DiffCI recognises may still be compiled and run by Maven: a test root
+    // added by build-helper-maven-plugin, or one set by a parent POM outside the repository. Fail closed (#327).
+    // Resources (archetype templates, compiler-test inputs) and the Maven wrapper's downloader are not sources,
+    // unless build-helper-maven-plugin is configured: it can add a folder under resources as a source root.
+    const known = new Set(sources);
+    if (owned.some(file => /\.(?:java|kt)$/.test(file) && !known.has(file) &&
+      (pom.buildHelper || !/\/src\/(?:main|test)\/resources\//.test("/" + file)) && !/(?:^|\/)\.mvn\//.test(file))) {
+      result.blockers.push(`Maven ${pom.path}: Java sources outside the standard roots require full validation`);
+    }
     members.set(pom, sources);
     resources.set(pom, assets);
     const anchor = sources[0] ?? assets[0];

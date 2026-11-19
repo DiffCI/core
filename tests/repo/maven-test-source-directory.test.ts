@@ -144,3 +144,67 @@ for (const [name, parentBuild, childBuild, testPath] of [
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 }
+
+const outsideRoots = /Java sources outside the standard roots require full validation/;
+
+// #327: Java or Kotlin that Maven may compile and run from a root DiffCI doesn't know falls back, for a library
+// change and for a change to that file itself.
+for (const [label, extra, buildHelper] of [
+  ["a src/it/java test root added by build-helper-maven-plugin", "application/src/it/java/example/AppIT.java", true],
+  ["a test root set by a parent POM outside the repository", "application/src/integration/java/example/AppIT.java", false],
+  ["a Kotlin file outside the roots", "application/src/it/kotlin/example/AppIT.kt", false],
+] as const) {
+  test(`Maven falls back for ${label} (#327)`, async () => {
+    const build = buildHelper
+      ? "<plugins><plugin><groupId>org.codehaus.mojo</groupId><artifactId>build-helper-maven-plugin</artifactId><executions><execution><goals><goal>add-test-source</goal></goals><configuration><sources><source>src/it/java</source></sources></configuration></execution></executions></plugin></plugins>"
+      : "";
+    const files = reactor(build, "application/src/test/java/example/AppTest.java");
+    files[extra] = "package example; class AppIT {}";
+    if (label.includes("parent POM")) {
+      files["application/pom.xml"] = files["application/pom.xml"]!.replace("<project>", "<project><parent><groupId>com.acme</groupId><artifactId>company-parent</artifactId><version>3</version></parent>");
+    }
+    const root = fixture(files);
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      assert.deepEqual(graph.adapterBlockers, ["Maven application/pom.xml: Java sources outside the standard roots require full validation"]);
+      for (const changed of ["library/src/main/java/example/Library.java", extra]) {
+        const impact = new ImpactAnalyzer().analyze(delta(changed), graph, graph.profile);
+        assert.equal(impact.fallbackRequired, true, changed);
+        assert.ok(impact.fallbackReasons.some((reason) => outsideRoots.test(reason)), impact.fallbackReasons.join("; "));
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test("Maven does not fall back for Java under resources or in the Maven wrapper (#327)", async () => {
+  const files = reactor("", "application/src/test/java/example/AppTest.java");
+  files["application/src/main/resources/archetype-resources/src/main/java/App.java"] = "public class App {}";
+  files["application/src/test/resources/compile/Input.java"] = "class Input {}";
+  files[".mvn/wrapper/MavenWrapperDownloader.java"] = "public class MavenWrapperDownloader {}";
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, []);
+    const impact = new ImpactAnalyzer().analyze(delta("library/src/main/java/example/Library.java"), graph, graph.profile);
+    assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("; "));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("A file under a resolved <testSourceDirectory> is inside the roots (#327)", async () => {
+  const root = fixture(reactor("<testSourceDirectory>tests</testSourceDirectory>", "application/tests/example/AppTest.java"));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(!graph.adapterBlockers?.some((reason) => outsideRoots.test(reason)), graph.adapterBlockers?.join("; "));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Maven falls back for Java under resources when build-helper-maven-plugin could add it as a root (#327)", async () => {
+  const build = "<plugins><plugin><groupId>org.codehaus.mojo</groupId><artifactId>build-helper-maven-plugin</artifactId><executions><execution><goals><goal>add-test-source</goal></goals><configuration><sources><source>src/test/resources/java</source></sources></configuration></execution></executions></plugin></plugins>";
+  const files = reactor(build, "application/src/test/java/example/AppTest.java");
+  files["application/src/test/resources/java/example/ResourceIT.java"] = "package example; class ResourceIT {}";
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.deepEqual(graph.adapterBlockers, ["Maven application/pom.xml: Java sources outside the standard roots require full validation"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
