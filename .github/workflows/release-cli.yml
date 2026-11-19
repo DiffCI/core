@@ -101,33 +101,34 @@ jobs:
           }
           git push --quiet origin --delete "$probe"
 
-  publish:
-    name: Publish @diffci.com/diffci
-    needs: [require-product-dispatch, require-gitlab-catalog-key, verify-muse-plugin-integrity]
+  # The release is split so the OIDC credential that npm trusted publishing accepts is never in a job that runs
+  # third-party code (DiffCI/core#301). While a job has id-token: write, every step can request that token, so:
+  #   build    installs, builds and packs with a read-only token and no id-token;
+  #   publish  only checks and publishes that tarball, with no install, build or lifecycle scripts;
+  #   release  does the GitHub Release, tags and smokes with contents: write and no id-token.
+  build:
+    name: Build and pack @diffci.com/diffci
     runs-on: ubuntu-26.04
     permissions:
-      # Creates the GitHub Release and publishes to npm with provenance.
-      contents: write
-      id-token: write
+      contents: read
     env:
       GIT_SSH_COMMAND: /bin/false
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+      integrity: ${{ steps.pack.outputs.integrity }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-          # The contents: write token must not sit in .git/config while npm ci runs install scripts;
-          # this job tags and releases through the API with GH_TOKEN, never with git push.
           persist-credentials: false
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          registry-url: https://registry.npmjs.org
           cache: npm
           cache-dependency-path: packages/diffci-cli/package-lock.json
 
-      - name: Install npm with trusted-publishing support
-        run: npm install --global npm@11
+      - name: Install the npm version that packs and publishes
+        run: npm install --global --ignore-scripts npm@11.21.2
 
       - name: Require an exact release tag
         working-directory: packages/diffci-cli
@@ -153,43 +154,140 @@ jobs:
           npm run package:check
           npm run package:smoke
 
-      - name: Publish or verify the immutable npm package
+      - name: Pack the release tarball
+        id: pack
         working-directory: packages/diffci-cli
         shell: bash
         run: |
           set -euo pipefail
-          package_name=$(node -p "require('./package.json').name")
-          package_version=$(node -p "require('./package.json').version")
-          if npm view "$package_name@$package_version" version >/dev/null 2>&1; then
-            published_git_head=$(npm view "$package_name@$package_version" gitHead)
+          # npm records gitHead itself only when it publishes from a git checkout. publish gets a tarball, so the
+          # commit goes in the packed package.json, which npm keeps. The re-run check in publish reads it back.
+          npm pkg set "gitHead=$GITHUB_SHA"
+          out="$RUNNER_TEMP/release-package"
+          mkdir -p "$out"
+          npm pack --pack-destination "$out" --json > "$RUNNER_TEMP/pack.json"
+          tarball=$(jq -r '.[0].filename' "$RUNNER_TEMP/pack.json")
+          integrity=$(jq -r '.[0].integrity' "$RUNNER_TEMP/pack.json")
+          test "$integrity" = "sha512-$(openssl dgst -sha512 -binary "$out/$tarball" | base64 -w0)"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "integrity=$integrity" >> "$GITHUB_OUTPUT"
+          echo "Packed $tarball ($integrity)"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/release-package/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish @diffci.com/diffci
+    needs: [build, require-product-dispatch, require-gitlab-catalog-key, verify-muse-plugin-integrity]
+    runs-on: ubuntu-26.04
+    permissions:
+      # Only the OIDC token npm trusted publishing exchanges. No checkout, no dependency install and no lifecycle
+      # scripts: nothing here runs code other than this file's steps, setup-node and the pinned npm.
+      id-token: write
+    env:
+      GIT_SSH_COMMAND: /bin/false
+      TARBALL: ${{ needs.build.outputs.tarball }}
+      INTEGRITY: ${{ needs.build.outputs.integrity }}
+    steps:
+      # No npm cache: a cache restored here is written by jobs that ran install scripts.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Install the npm version that packs and publishes
+        run: npm install --global --ignore-scripts npm@11.21.2
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-package
+          path: ${{ runner.temp }}/release-package
+
+      - name: Require the tarball build packed for this tag and commit
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="$RUNNER_TEMP/release-package/$TARBALL"
+          test "$INTEGRITY" = "sha512-$(openssl dgst -sha512 -binary "$file" | base64 -w0)" || {
+            echo "::error::$TARBALL does not match the integrity build recorded ($INTEGRITY)" >&2
+            exit 1
+          }
+          manifest=$(tar --extract --gzip --to-stdout --file "$file" package/package.json)
+          name=$(jq -r .name <<<"$manifest")
+          version=$(jq -r .version <<<"$manifest")
+          git_head=$(jq -r .gitHead <<<"$manifest")
+          test "$name" = "@diffci.com/diffci"
+          test "$GITHUB_REF_NAME" = "cli-release-v$version"
+          test "$git_head" = "$GITHUB_SHA"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Publish or verify the immutable npm package
+        shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+          PACKAGE_FILE: ${{ steps.package.outputs.file }}
+        run: |
+          set -euo pipefail
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version >/dev/null 2>&1; then
+            published_git_head=$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" gitHead)
             test "$published_git_head" = "$GITHUB_SHA" || {
-              echo "$package_name@$package_version already exists but is from $published_git_head, not $GITHUB_SHA" >&2
+              echo "$PACKAGE_NAME@$PACKAGE_VERSION already exists but is from $published_git_head, not $GITHUB_SHA" >&2
               exit 1
             }
-            echo "$package_name@$package_version is already published from this release commit; reconciling downstream surfaces."
+            echo "$PACKAGE_NAME@$PACKAGE_VERSION is already published from this release commit; reconciling downstream surfaces."
           else
-            npm publish --access public --provenance
+            npm publish "$PACKAGE_FILE" --access public --provenance --ignore-scripts
           fi
 
       - name: Wait for npm registry propagation
-        working-directory: packages/diffci-cli
         shell: bash
+        env:
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
           set -euo pipefail
-          package_name=$(node -p "require('./package.json').name")
-          package_version=$(node -p "require('./package.json').version")
           for attempt in {1..30}; do
-            published_version=$(npm view "$package_name@$package_version" version 2>/dev/null || true)
-            if [ "$published_version" = "$package_version" ]; then
+            published_version=$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)
+            if [ "$published_version" = "$PACKAGE_VERSION" ]; then
               exit 0
             fi
-            echo "Waiting for $package_name@$package_version on npm ($attempt/30)"
+            echo "Waiting for $PACKAGE_NAME@$PACKAGE_VERSION on npm ($attempt/30)"
             if [ "$attempt" -lt 30 ]; then
               sleep 10
             fi
           done
-          echo "$package_name@$package_version was not available from npm after 290 seconds" >&2
+          echo "$PACKAGE_NAME@$PACKAGE_VERSION was not available from npm after 290 seconds" >&2
           exit 1
+
+  release:
+    name: Release @diffci.com/diffci on GitHub
+    needs: publish
+    runs-on: ubuntu-26.04
+    permissions:
+      # Creates the GitHub Release, attaches its assets and tags the Action through the API. No id-token.
+      contents: write
+    env:
+      GIT_SSH_COMMAND: /bin/false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          # The observer smoke below installs and runs the published CLI; keep the write token off disk.
+          # This job tags and releases through the API with GH_TOKEN, never with git push.
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
 
       - name: Resolve the release smoke range
         id: release_smoke_range
@@ -302,7 +400,7 @@ jobs:
 
   publish-gitlab-component:
     name: Publish the GitLab CI/CD component
-    needs: publish
+    needs: release
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -350,7 +448,7 @@ jobs:
 
   publish-mcp-registry:
     name: Publish matching MCP Registry listing
-    needs: publish
+    needs: release
     uses: ./.github/workflows/publish-mcp-registry.yml
     permissions:
       contents: read

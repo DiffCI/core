@@ -36,3 +36,38 @@ test("jobs with a write token do not persist it in the checkout unless they push
   }
   assert.deepEqual(offenders, []);
 });
+
+// While a job has id-token: write, every step can request the OIDC token that npm trusted publishing accepts, so a
+// dependency's install script there could publish a package with valid provenance (#301). Such jobs install nothing
+// with scripts enabled and publish only with --ignore-scripts; building and packing happen in a job without it.
+test("jobs that can mint an OIDC token run no install or lifecycle scripts", () => {
+  const offenders: string[] = [];
+  for (const name of readdirSync(directory).filter((file) => /\.ya?ml$/.test(file))) {
+    const workflow = parse(readFileSync(new URL(name, directory), "utf8"));
+    for (const [id, job] of Object.entries<Job>(workflow.jobs ?? {})) {
+      const permissions = job.permissions ?? workflow.permissions;
+      const mintsOidc = permissions === "write-all" || (typeof permissions === "object" && permissions?.["id-token"] === "write");
+      if (!mintsOidc) continue;
+      for (const step of job.steps ?? []) {
+        for (const line of (step.run ?? "").split("\n")) {
+          const command = line.trim();
+          const installs = /\bnpm (ci|install|i|pack|rebuild|exec)\b|\bnpx\b|\b(yarn|pnpm|bun)\b/.test(command);
+          const publishes = /\bnpm publish\b/.test(command);
+          if ((installs || publishes) && !/--ignore-scripts\b/.test(command)) offenders.push(`${name} ${id}: ${command}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
+
+test("the release publishes the tarball the build job packed, in a job without a write token", () => {
+  const workflow = parse(readFileSync(new URL("release-cli.yml", directory), "utf8"));
+  assert.deepEqual(workflow.jobs.build.permissions, { contents: "read" });
+  assert.deepEqual(workflow.jobs.publish.permissions, { "id-token": "write" });
+  assert.ok(workflow.jobs.publish.needs.includes("build"));
+  const publishSteps: Step[] = workflow.jobs.publish.steps;
+  assert.ok(!publishSteps.some((step) => step.uses?.startsWith("actions/checkout@")), "publish checks nothing out");
+  assert.ok(publishSteps.some((step) => /npm publish "\$PACKAGE_FILE" .*--provenance --ignore-scripts/.test(step.run ?? "")));
+  assert.equal(workflow.jobs.release.permissions["id-token"], undefined);
+});
