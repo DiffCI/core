@@ -59,6 +59,9 @@ const CASES: Array<{ file: string; before: string; after: string; reason: string
   { file: ".tool-versions", before: "nodejs 22.5.0\n", after: "nodejs 24.1.0\n", reason: "Tool configuration changed: tool versions" },
   { file: "mise.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
   { file: ".mise.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
+  // mise.local.toml is mise's machine-local override, so it picks the toolchain just as mise.toml does.
+  { file: "mise.local.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
+  { file: ".mise.local.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
   { file: ".bun-version", before: "1.1.0\n", after: "1.2.0\n", reason: "Tool configuration changed: Bun version" },
 ];
 

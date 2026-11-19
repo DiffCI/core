@@ -606,7 +606,7 @@ For `Unknown changed file` and `Deleted source/asset`, `observe --json` also ret
 | `Infrastructure definition(s) changed; full validation required` | Edit a `Dockerfile` or `terraform/main.tf` | Yes: declare it in `inputs` |
 | `Database definition(s) changed; full validation required` | Add a file under `migrations/` | Yes: declare it in `inputs` |
 | `Language/framework configuration changed: …` | Edit `go.mod` or `pom.xml` | No |
-| `Tool configuration changed: … (…); full validation required` | Change `.nvmrc`, `.node-version`, `.npmrc`, `.mocharc.*`, `tsconfig.base.json`, `tsconfig.test.json`, `.tool-versions`, `mise.toml`, `.mise.toml` or `.bun-version` | No |
+| `Tool configuration changed: … (…); full validation required` | Change `.nvmrc`, `.node-version`, `.npmrc`, `.mocharc.*`, `tsconfig.base.json`, `tsconfig.test.json`, `.tool-versions`, `mise.toml`, `.mise.toml`, `mise.local.toml`, `.mise.local.toml` or `.bun-version` | No |
 | `Code that no file imports changed: …; a tool may load it by name, so full validation required` | Edit `karma.conf.js`, `.c8rc.js` or a root-level script that nothing imports | Yes: declare it in `inputs` |
 | `The test script runs …; full validation required` | Edit `scripts/check.mjs` when `package.json` has `"test": "node scripts/check.mjs && node --test"` | Yes: `verify` and the agent tools run that phase instead when it runs the program alone (`node scripts/check.mjs`) |
 | `The test script runs …, which imports …; full validation required` | Edit a module that `scripts/check.mjs` imports, with the same test script | Same as above |
