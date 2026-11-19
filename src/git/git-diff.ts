@@ -256,7 +256,7 @@ export const CONFIG_PATTERNS = [
   // falls back to the full suite; these entries make the reason name the file instead of reporting it
   // as unknown.
   /^\.tool-versions$/,
-  /^\.?mise\.toml$/,
+  /^\.?mise(?:\.local)?\.toml$/,
   /^\.bun-version$/,
 ];
 

@@ -55,7 +55,7 @@ const EXAMPLES = [
   ".npmrc",
   ".mocharc.json",
   ".tool-versions",
-  "mise.toml",
+  "mise.local.toml",
   ".bun-version",
 ];
 
