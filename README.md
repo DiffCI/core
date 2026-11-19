@@ -98,6 +98,15 @@ npx -y -p @diffci.com/diffci@latest diffci-mcp
 | `diffci_init` | Seeds agent instructions, MCP configs, the verify skill and a pre-push hook |
 | `diffci_verify_workflow` | Checks that a DiffCI GitHub Actions job cannot affect the rest of CI |
 
+A hosted, read-only guidance server runs at `https://diffci.com/mcp/v1`. It is
+listed in the [Official MCP Registry](https://registry.modelcontextprotocol.io/?q=io.github.DiffCI%2Fdiffci)
+as `io.github.DiffCI/diffci`, and on
+[Glama](https://glama.ai/mcp/servers/DiffCI/core),
+[Agent Tools](https://agent-tools.cloud/mcp/servers/diffci-diffci-com),
+[Wellknown](https://wellknown.network/agents/diffci),
+[Agenstry](https://agenstry.com/mcp/io.github.diffci/diffci) and
+[SealKeeper](https://sealkeeper.run/agents/diffci.com/diffci-com).
+
 ## Use it from your coding agent
 
 The public [`integrations/agent-plugin`](integrations/agent-plugin) package
