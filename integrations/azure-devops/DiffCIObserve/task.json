@@ -8,7 +8,7 @@
   "helpMarkDown": "Shows which tests and checks a pull request affects. [More information](https://github.com/DiffCI/core/blob/main/integrations/azure-devops/README.md)",
   "category": "Test",
   "author": "DiffCI",
-  "version": { "Major": 1, "Minor": 3, "Patch": 58 },
+  "version": { "Major": 1, "Minor": 3, "Patch": 59 },
   "instanceNameFormat": "DiffCI change impact",
   "inputs": [
     { "name": "repositoryPath", "type": "string", "label": "Repository path", "defaultValue": "$(Build.SourcesDirectory)", "required": false, "helpMarkDown": "The checkout to observe." },
