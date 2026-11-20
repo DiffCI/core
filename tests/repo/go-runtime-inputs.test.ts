@@ -406,3 +406,69 @@ test("a python helper in a modeled mixed repository naming testdata keeps full v
     "tools/test_snapshot.py": { imports: [[".snapshot", 1, ["snapshot"]]] },
   });
 });
+
+// -- review of #90: a bare `testdata` resolves inside the reading package ------------------------
+test("a sibling package reading its own testdata keeps the selective route", async () => {
+  // service's test uses the usual `filepath.Join("testdata", name)`: with the package as its
+  // working directory that names service/testdata, not p/testdata. It must not disqualify p.
+  const files = {
+    "p/testdata/p.json": "expected",
+    "service/testdata/service.json": "expected",
+    "service/service_own_test.go": 'package service\nimport (\n\t"os"\n\t"path/filepath"\n\t"testing"\n)\nfunc TestOwn(t *testing.T) { name := "service.json"; _, _ = os.ReadFile(filepath.Join("testdata", name)) }\n',
+  };
+  await fixture(files, (graph, root) => {
+    for (const path of ["p/testdata/p.json", "service/testdata/service.json"]) {
+      const { impact, plan } = planChange(graph, { path, changeType: "modified" }, { repoPath: root, fileContents: files });
+      assert.equal(impact.fallbackRequired, false, `${path}: ${impact.fallbackReasons.join("\n")}`);
+      assert.equal(plan.mode, "SELECTIVE");
+      const ownerTests = path.startsWith("p/") ? ["p/value_test.go"] : ["service/service_own_test.go", "service/service_test.go"];
+      assert.deepEqual([...plan.selectedTests].sort(), ownerTests);
+    }
+  }, {}, "service_own_test.go");
+});
+
+test("a split relative reference to the testdata still keeps full validation", async () => {
+  // The bare `testdata` token is dropped for package readers, but the bare ancestor `p` is not:
+  // foldJoinedLiterals must still see filepath.Join("..", "p", "testdata") as p's tree.
+  const files = {
+    "p/testdata/settings.json": "expected",
+    "service/service_split_test.go": 'package service\nimport (\n\t"path/filepath"\n\t"testing"\n)\nfunc TestSplit(t *testing.T) { _ = filepath.Join("..", "p", "testdata") }\n',
+  };
+  await fixture(files, (graph, root, listed) => {
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", [...allTests, "service/service_split_test.go"], { repoPath: root, fileContents: listed });
+  }, {}, "service_split_test.go");
+});
+
+test("an outside reader's bare testdata still keeps full validation", async () => {
+  // Readers outside go package discovery have an unknown working directory, so a bare `testdata`
+  // there is still treated conservatively as a reference to p's tree.
+  const files = {
+    "diffci.json": '{\n  "go": { "scope": "root-module" }\n}\n',
+    "legacy/go.mod": "module example.com/legacy\n\ngo 1.24\n",
+    "legacy/tools/manual_test.go": 'package tools\nimport (\n\t"os"\n\t"testing"\n)\nfunc TestManual(t *testing.T) { _, _ = os.ReadFile("testdata/settings.json") }\n',
+    "p/testdata/settings.json": "expected",
+  };
+  await fixture(files, (graph, root, listed) => {
+    assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", allTests, { repoPath: root, fileContents: listed });
+  });
+});
+
+test("several changed files under one testdata tree all keep the selective route", async () => {
+  // The directory-level verdict is shared by every changed file under a tree; checking it once
+  // must give each of them the same answer as checking it separately.
+  const files = { "p/testdata/one.json": "1", "p/testdata/two.json": "2" };
+  await fixture(files, (graph, root) => {
+    const change = delta({ path: "p/testdata/one.json", changeType: "modified" });
+    change.files.push({ path: "p/testdata/two.json", changeType: "modified" });
+    const impact = new ImpactAnalyzer().analyze(change, graph, graph.profile, {
+      repositoryFiles: new Set(Object.keys(files)),
+      readRepositoryFile: repositoryFileReader(root),
+    });
+    assert.equal(impact.fallbackRequired, false, impact.fallbackReasons.join("\n"));
+    for (const path of ["p/testdata/one.json", "p/testdata/two.json"]) {
+      assert.ok(impact.evidence.some(e => e.reason === "GO_TESTDATA" && e.message.includes(path)),
+        `no GO_TESTDATA evidence for ${path}`);
+    }
+    assert.deepEqual([...new Set(impact.affectedTests.filter(t => t.reasons.includes("GO_TESTDATA")).map(t => t.path))], ["p/value_test.go"]);
+  });
+});
