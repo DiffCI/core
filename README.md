@@ -9,6 +9,7 @@
 [![npm](https://img.shields.io/npm/v/@diffci.com/diffci)](https://www.npmjs.com/package/@diffci.com/diffci)
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-DiffCI%20change%20impact-blue?logo=github)](https://github.com/marketplace/actions/diffci-change-impact)
 [![GitLab CI/CD Catalog](https://img.shields.io/badge/GitLab%20CI%2FCD%20Catalog-diffci-FC6D26?logo=gitlab)](https://gitlab.com/explore/catalog/diffci/diffci)
+[![mcptry](https://mcptry.com/badge/io.github.DiffCI/diffci)](https://mcptry.com/servers/io.github.DiffCI/diffci)
 [![Sponsor](https://img.shields.io/badge/sponsor-DiffCI-ea4aaa?logo=githubsponsors)](https://github.com/sponsors/DiffCI)
 
 **Verification for AI coding agents.** DiffCI tells Claude Code, Codex, Cursor (or you) which tests and checks a change affects, runs them before the push instead of letting them fail at the full CI gate afterwards, and leaves a receipt of what ran and what was skipped. MIT licensed, runs locally, never uploads your code or reports unless you configure it (it does count runs by default: [usage counting](docs/telemetry.md)), and falls back to the full suite whenever the evidence is incomplete.
