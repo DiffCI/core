@@ -306,6 +306,82 @@ export function scriptNamesPath(body: string, target: string, pattern: RegExp, {
 
 const CONTENT_PATH_WORD = /[A-Za-z0-9._\-/@+~*?{}[\]!,$]+/g;
 
+/** `path.join(`, `posix.join(`, `os.path.join(`, `filepath.Join(`, `path.resolve(`. */
+const PATH_JOIN_CALL = /\b(?:join|Join|resolve)\s*\(/g;
+/** A string literal with no escape or substitution, so its text is exactly the string. */
+const PLAIN_LITERAL = /^(["'`])([^"'`\\\n$]*)\1$/;
+/** Arguments are scanned this far at most; a longer call is left as written. */
+const MAX_JOIN_CALL = 1000;
+
+interface CallArgument { start: number; end: number; literal?: string }
+
+/** The arguments of the call whose `(` ends just before `start`, or undefined if it does not close. */
+function callArguments(content: string, start: number): CallArgument[] | undefined {
+  const args: CallArgument[] = [];
+  const limit = Math.min(content.length, start + MAX_JOIN_CALL);
+  let depth = 0;
+  let argStart = start;
+  const finish = (end: number) => {
+    const text = content.slice(argStart, end);
+    const lead = text.length - text.trimStart().length;
+    const trimmed = text.trim();
+    if (trimmed) args.push({ start: argStart + lead, end: argStart + lead + trimmed.length, literal: PLAIN_LITERAL.exec(trimmed)?.[2] });
+  };
+  for (let i = start; i < limit; i++) {
+    const char = content[i]!;
+    if (char === '"' || char === "'" || char === "`") {
+      // Skip the literal; an unclosed one leaves the call unfolded.
+      let j = i + 1;
+      while (j < limit && content[j] !== char) j += content[j] === "\\" ? 2 : 1;
+      if (j >= limit) return undefined;
+      i = j;
+    } else if (char === "(" || char === "[" || char === "{") depth++;
+    else if (char === ")" || char === "]" || char === "}") {
+      if (depth === 0) { if (char !== ")") return undefined; finish(i); return args; }
+      depth--;
+    } else if (char === "," && depth === 0) { finish(i); argStart = i + 1; }
+  }
+  return undefined;
+}
+
+/**
+ * `content` with each run of adjacent string-literal arguments to a path-joining call written as the one
+ * path they join to (2026-11-20). `path.join("ops", "cloudflare-d1", "gateway", "x.mjs")` names
+ * `ops/cloudflare-d1/gateway/x.mjs`, but read word by word its bare `"cloudflare-d1"` named every file
+ * under that directory: DentalPresence's scripts/test-security.js, which `npm test` runs, made every
+ * change to ops/cloudflare-d1/staging-sync/plans.json - 23 of 29 migration commits - a full run.
+ *
+ * A run after a non-literal argument (`join(root, "ops", ...)`) is relative to a directory the content
+ * does not name, so it is written behind a leading variable (`$base/ops/...`), which contentNamesPath
+ * already reads as a path below an unknown directory. A run that ends at a directory still names
+ * everything under it, and a single literal between variables (`join(root, "ops", name)`) is left bare,
+ * so a dynamic path keeps the conservative answer.
+ */
+export function foldJoinedLiterals(content: string): string {
+  if (!/\b(?:join|Join|resolve)\s*\(/.test(content)) return content;
+  let folded = "";
+  let last = 0;
+  for (const call of content.matchAll(PATH_JOIN_CALL)) {
+    const start = call.index + call[0].length;
+    if (start < last) continue;
+    const args = callArguments(content, start);
+    if (!args) continue;
+    for (let i = 0; i < args.length;) {
+      if (args[i]!.literal === undefined) { i++; continue; }
+      let j = i;
+      while (j + 1 < args.length && args[j + 1]!.literal !== undefined) j++;
+      if (j > i) {
+        const joined = args.slice(i, j + 1).map((arg) => arg.literal!).filter(Boolean).join("/").replace(/\/{2,}/g, "/");
+        const path = i > 0 && !joined.startsWith("/") ? `$base/${joined}` : joined;
+        folded += `${content.slice(last, args[i]!.start)}"${path}"`;
+        last = args[j]!.end;
+      }
+      i = j + 1;
+    }
+  }
+  return folded + content.slice(last);
+}
+
 /** Keys whose list names files a tool skips: tsconfig and Vitest `exclude`, knip `ignore`, ESLint-style
  * `ignores` and `ignorePatterns`, Jest `testPathIgnorePatterns` and its siblings. */
 const EXCLUSION_LOOKBACK = 4096;
@@ -370,6 +446,8 @@ function namesDirectoryOf(content: string, readerPath: string, target: string): 
  */
 export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean, readGlobs = true): boolean {
   if (!pattern.test(content)) return false;
+  // Every path a join folds to was spelled out by its parts, so the raw test above stays a valid filter.
+  content = foldJoinedLiterals(content);
   const dirs: string[] = [];
   for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
   const names = [target, ...dirs];

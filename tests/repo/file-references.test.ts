@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { contentNamesPath, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
+import { contentNamesPath, foldJoinedLiterals, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests, workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
 import { analyzeGitDelta, packageJsonChangeKind } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
@@ -579,5 +579,43 @@ describe("reference search cost", () => {
     assert.equal(contentNamesPath(content, "tool.json", "data/x.json", referencePattern(referenceTokens("data/x.json")), true), true);
     assert.ok(Date.now() - started < 2000, `took ${Date.now() - started} ms`);
     assert.equal(contentNamesPath(`{"exclude": ["data/x.json"]}`, "tool.json", "data/x.json", referencePattern(referenceTokens("data/x.json")), true), false);
+  });
+});
+
+describe("path.join arguments read as one path (2026-11-20)", () => {
+  const names = (content: string, target: string, reader = "scripts/check.js") =>
+    contentNamesPath(content, reader, target, referencePattern(referenceTokens(target)), true);
+
+  it("folds adjacent literal arguments and marks a run after a variable", () => {
+    assert.equal(foldJoinedLiterals(`path.join("ops", "cloudflare-d1", "gateway", "x.mjs")`), `path.join("ops/cloudflare-d1/gateway/x.mjs")`);
+    assert.equal(foldJoinedLiterals(`path.join(root, "ops", 'cloudflare-d1', \`x.mjs\`)`), `path.join(root, "$base/ops/cloudflare-d1/x.mjs")`);
+    assert.equal(foldJoinedLiterals(`join(root, "ops", name, "x.json")`), `join(root, "ops", name, "x.json")`);
+    assert.equal(foldJoinedLiterals(`join(root, \`ops/\${dir}\`, "x")`), `join(root, \`ops/\${dir}\`, "x")`);
+    assert.equal(foldJoinedLiterals(`["a", "b"].join(", ")`), `["a", "b"].join(", ")`);
+  });
+
+  it("does not let a joined path to a sibling name every file under its directories", () => {
+    const reader = `const s = readFileSync(path.join(root, "ops", "cloudflare-d1", "gateway", "session.mjs"), "utf8");`;
+    assert.equal(names(reader, "ops/cloudflare-d1/staging-sync/plans.json"), false);
+    assert.equal(names(reader, "ops/cloudflare-d1/gateway/session.mjs"), true);
+  });
+
+  it("still counts a join that ends at an ancestor or continues through a variable", () => {
+    const target = "ops/cloudflare-d1/staging-sync/plans.json";
+    assert.equal(names(`readdirSync(path.join(root, "ops", "cloudflare-d1"))`, target), true);
+    assert.equal(names(`readFileSync(path.join(root, "ops", "cloudflare-d1", name))`, target), true);
+    assert.equal(names(`readFileSync(path.join(__dirname, "..", "ops", "cloudflare-d1", "staging-sync", "plans.json"))`, target), true);
+    assert.equal(names(`readFileSync(path.join("ops", "cloudflare-d1", "staging-sync", "plans.json"))`, target), true);
+  });
+
+  it("no longer falls back when npm test runs a script that joins a path to a sibling", () => {
+    const result = resolveFileReferences("ops/cloudflare-d1/staging-sync/plans.json", input({
+      "ops/cloudflare-d1/staging-sync/plans.json": "{}",
+      "scripts/test-security.js": `readProjectFile(path.join("ops", "cloudflare-d1", "gateway", "session.mjs"));`,
+      "scripts/d1-staging-sync.test.mjs": `import plans from "../ops/cloudflare-d1/staging-sync/plans.json" with { type: "json" };`,
+      "package.json": JSON.stringify({ scripts: { test: "node --test && node scripts/test-security.js" } }),
+    }, []));
+    assert.deepEqual(result.unresolvable, []);
+    assert.deepEqual(result.tests, ["scripts/d1-staging-sync.test.mjs"]);
   });
 });
