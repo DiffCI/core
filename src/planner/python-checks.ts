@@ -15,7 +15,8 @@
  *     a recipe that does not rewrite files (`--fix`, `ruff format` or `black`/`isort` without a check flag);
  *   - a direct `mypy`, `pyright`, `basedpyright`, `pyrefly check`, `ruff check` or `ruff format --check`
  *     call, optionally behind `uv run`, `poetry run`, `pdm run`, `hatch run`, `pipenv run` or `python -m`,
- *     whose every argument is a plain word and none rewrites files or writes output.
+ *     whose every argument is a plain word and none rewrites files or writes output. Before `uv run`,
+ *     --directory and --project take repository-relative paths; --offline and --no-progress take no value.
  *
  * FAILING CLOSED. Here that means adding nothing: anything not read with certainty is left out, which
  * is the behaviour before this module. Steps in disabled jobs, steps with expressions in their working
@@ -58,7 +59,7 @@ const CONTEXT_CHANGE = /^(?:cd|pushd|popd|source|\.|export|set|unset|alias)\s|\\
 const PY_TOOL = /\b(?:mypy|pyright|basedpyright|pyrefly|ruff|pylint|flake8|black|isort|pytype|lint-imports)\b/;
 const JS_TOOL = /\b(?:npm|npx|pnpm|yarn|node|tsc|eslint|prettier|bun|deno|vp|turbo|nx)\b/;
 const PY_FILE = /\.(?:py|pyi|pyx|pxd|ipynb)$/;
-const PY_CONFIG = /^(?:pyproject\.toml|setup\.cfg|setup\.py|mypy\.ini|\.mypy\.ini|pyrightconfig\.json|pyrefly\.toml|ruff\.toml|\.ruff\.toml|tox\.ini|uv\.lock|poetry\.lock|pdm\.lock|Pipfile|Pipfile\.lock|\.python-version|py\.typed|(?:requirements|constraints)[\w.-]*\.(?:txt|in))$/;
+const PY_CONFIG = /^(?:pyproject\.toml|setup\.cfg|setup\.py|mypy\.ini|\.mypy\.ini|pyrightconfig\.json|pyrefly\.toml|ruff\.toml|\.ruff\.toml|tox\.ini|uv\.toml|uv\.lock|poetry\.lock|pdm\.lock|Pipfile|Pipfile\.lock|\.python-version|py\.typed|(?:requirements|constraints)[\w.-]*\.(?:txt|in))$/;
 const MAKEFILES = ["GNUmakefile", "makefile", "Makefile"];
 
 function normalizeDir(dir: string): string | undefined {
@@ -89,11 +90,34 @@ function rewrites(line: string): boolean {
   return false;
 }
 
+/** Strip only recognized pre-run globals for matching. Keep the original command for execution so
+ * uv applies --directory and --project itself, in the order specified by the workflow. */
+function withoutUvGlobals(command: string): string | undefined {
+  if (!command.startsWith("uv --")) return command;
+  const words = command.split(" ");
+  const seen = new Set<string>();
+  let i = 1;
+  while (i < words.length) {
+    const word = words[i++]!;
+    if (word === "run") return ["uv", "run", ...words.slice(i)].join(" ");
+    const equals = word.indexOf("=");
+    const option = equals < 0 ? word : word.slice(0, equals);
+    if (seen.has(option)) return undefined;
+    seen.add(option);
+    if (word === "--offline" || word === "--no-progress") continue;
+    if (option !== "--directory" && option !== "--project") return undefined;
+    const path = equals < 0 ? words[i++] : word.slice(equals + 1);
+    if (!path || !/^[\w.][\w./-]*$/.test(path) || normalizeDir(path) === undefined) return undefined;
+  }
+  return undefined;
+}
+
 /** A direct Python tool call, normalized, with its kind; undefined when the line is anything else. */
 export function directToolCall(line: string): { command: string; kind: GateCheck["kind"] } | undefined {
   const command = line.trim().replace(/\s+/g, " ");
-  const prefix = RUNNER_PREFIX.exec(command)![0];
-  const rest = command.slice(prefix.length);
+  const invocation = withoutUvGlobals(command);
+  if (!invocation) return undefined;
+  const rest = invocation.replace(RUNNER_PREFIX, "");
   const tool = TOOL.exec(rest);
   if (!tool) return undefined;
   const args = rest.slice(tool[0].length).trim().split(" ").filter(Boolean);
@@ -129,8 +153,7 @@ function makeTarget(dir: string, target: string, read: (path: string) => string 
   return undefined;
 }
 
-/** True when every recipe line is an echo, a Python tool call, or a repository script that calls a Python
- * tool and no JavaScript tool; also returns those scripts. Undefined when any line is something else. */
+/** Repository scripts read by a Python-only recipe, or undefined when a line cannot be classified. */
 function pythonOnlyRecipe(target: MakeTarget, dir: string, read: (path: string) => string | undefined): string[] | undefined {
   if (target.prerequisites.includes(";")) return undefined;
   const scripts: string[] = [];
@@ -141,7 +164,13 @@ function pythonOnlyRecipe(target: MakeTarget, dir: string, read: (path: string) 
     if (/^(?:echo\b|printf\b|true$|:$)/.test(line)) continue;
     if (JS_TOOL.test(line)) return undefined;
     const script = /^(?:(?:bash|sh)\s+)?(\.?\/?[\w./-]+)(?:\s|$)/.exec(line)?.[1];
-    if (directToolCall(line.replace(/\s+\$\([\w]+\)/g, ""))) { usesPython = true; continue; }
+    const call = directToolCall(line.replace(/\s+\$\([\w]+\)/g, ""));
+    if (call) {
+      // A Make expansion could supply an additional uv option or the command after run.
+      if (call.command.startsWith("uv --") && line.includes("$(")) return undefined;
+      usesPython = true;
+      continue;
+    }
     if (script && script.includes("/")) {
       const path = posix.normalize(posix.join(dir, script.replace(/^\.\//, "")));
       const text = path.startsWith("..") ? undefined : read(path);
@@ -225,7 +254,10 @@ function makeCheck(line: string, stepDir: string, workflowPath: string, read: (p
 function toolCheck(line: string, workflowPath: string): PythonCheck | undefined {
   const call = directToolCall(line);
   if (!call) return undefined;
-  return { id: call.command, script: workflowPath, runsScript: false, command: call.command, kind: call.kind, decision: "RUN", reason: `run by CI workflow ${workflowPath}`, pythonOnly: true, triggers: [] };
+  return {
+    id: call.command, script: workflowPath, runsScript: false, command: call.command, kind: call.kind,
+    decision: "RUN", reason: `run by CI workflow ${workflowPath}`, pythonOnly: true, triggers: [],
+  };
 }
 
 function pythonRelevant(path: string): boolean {

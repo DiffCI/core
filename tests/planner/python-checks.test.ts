@@ -89,6 +89,39 @@ describe("discoverPythonChecks", () => {
     ]);
   });
 
+  it("reads the uv directory option in Dify's agent check, directly and in its Make recipe", () => {
+    const command = "uv --directory dify-agent run --project . pyrefly check";
+    const text = `jobs:\n  agent:\n    steps:\n      - run: ${command}\n      - run: make check\n`;
+    const checks = discoverPythonChecks(workflow(text), reader({ Makefile: `check:\n\t${command}\n` }));
+    assert.deepEqual(checks.map((c) => [c.command, c.kind, c.pythonOnly]), [
+      [command, "typecheck", true], ["make check", "typecheck", true],
+    ]);
+    for (const [path, decision] of [["dify-agent/main.py", "RUN"], ["dify-agent/uv.toml", "RUN"], ["web/main.ts", "SKIP"]] as const) {
+      assert.deepEqual(narrowPythonChecks(checks, [{ path, status: "modified" }]).map((c) => c.decision), [decision, decision]);
+    }
+    const nested = text.replace("- run:", "- working-directory: api\n        run:");
+    assert.deepEqual(discoverPythonChecks(workflow(nested), reader({})), []);
+  });
+
+  it("keeps a Make check unconditional when a Make variable supplies part of the uv invocation", () => {
+    const files = { Makefile: "check:\n\tuv --directory api run $(CHECK) pyrefly check\n" };
+    const checks = discoverPythonChecks(workflow("jobs:\n  a:\n    steps:\n      - run: make check\n"), reader(files));
+    assert.equal(checks[0]?.pythonOnly, false);
+    assert.equal(narrowPythonChecks(checks, [{ path: "web/main.ts", status: "modified" }])[0]?.decision, "RUN");
+  });
+
+  it("reads only supported uv globals with their operands before run", () => {
+    const command = "uv --offline --project=./api --no-progress run --frozen ruff check .";
+    assert.deepEqual(directToolCall(command), { command, kind: "lint" });
+    for (const line of [
+      "uv --directory run pyrefly check", "uv --project= run mypy", "uv --directory --offline run mypy",
+      "uv --directory ../api run mypy", "uv --directory /api run mypy", "uv --unknown run mypy",
+      "uv --offline --offline run mypy", "uv --project=a --project=b run mypy",
+      "uv --group dev run mypy", "uv --offline sync", "uv --offline run unknown-check .",
+      "uv --offline run ruff format .", "uv --offline run ruff check --fix .",
+    ]) assert.equal(directToolCall(line), undefined, line);
+  });
+
   it("leaves out calls that rewrite files, write output or need the shell", () => {
     for (const line of ["ruff check --fix .", "ruff format .", "mypy --install-types src", "mypy src --junit-xml out.xml", "mypy src | tee out", "mypy $SRC", "mypy \"src\""]) {
       assert.equal(directToolCall(line), undefined, line);
@@ -138,6 +171,16 @@ describe("discoverPythonChecks", () => {
 
 describe("narrowPythonChecks", () => {
   const checks = discoverPythonChecks(workflow(DIFY_WORKFLOW), reader(DIFY_FILES));
+
+  it("treats uv.toml as Python configuration for plain uv run and other Python checks", () => {
+    const text = "jobs:\n  a:\n    steps:\n      - run: uv run mypy\n      - run: python -m pyright\n";
+    const direct = discoverPythonChecks(workflow(text), reader({}));
+    for (const [path, decision] of [["uv.toml", "RUN"], ["api/uv.toml", "RUN"], ["api/uv.toml.bak", "SKIP"]] as const) {
+      assert.deepEqual(narrowPythonChecks(direct, [{ path, status: "modified" }]).map((c) => [c.command, c.decision]), [
+        ["uv run mypy", decision], ["python -m pyright", decision],
+      ], path);
+    }
+  });
 
   it("skips a Python-only check when only web files changed, and runs the rest", () => {
     const narrowed = narrowPythonChecks(checks, [{ path: "web/app/page.tsx", status: "modified" }]);
