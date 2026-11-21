@@ -497,6 +497,14 @@ export class ImpactAnalyzer {
     const dirPattern = referencePattern(dirTokens.filter(bareTestdata));
     const outsideFilePattern = referencePattern(fileTokens);
     const outsideDirPattern = referencePattern(dirTokens);
+    // A package below the owner also runs with its own directory as the working
+    // directory, so a bare `testdata` there can reach the owner's tree via `..`
+    // (for p/sub reading p/testdata, `../testdata`). Those readers need the
+    // unfiltered patterns too, or the prefilter never reaches the path resolver.
+    const below = (pkg: string) => owner === "." || pkg.startsWith(`${owner}/`);
+    const patternsFor = (pkg: string) => below(pkg)
+      ? { file: outsideFilePattern, dir: outsideDirPattern }
+      : { file: filePattern, dir: dirPattern };
     const referencesOf = (reader: string, content: string) => isGoReaderFile(reader) ? goReaderReferences(content) : content;
 
     // Directory-level verdict: same readers and same directory tokens for every changed file under
@@ -512,10 +520,11 @@ export class ImpactAnalyzer {
       dirDisqualified = false;
       for (const [pkg, readers] of this.goReadersByPackage) {
         if (pkg === owner) continue;
+        const { dir } = patternsFor(pkg);
         for (const reader of readers) {
           const content = read(reader);
           // An unreadable reader could still name the testdata, so answer conservatively.
-          if (content === undefined || contentNamesPath(referencesOf(reader, content), reader, dataDir, dirPattern, true)) {
+          if (content === undefined || contentNamesPath(referencesOf(reader, content), reader, dataDir, dir, true)) {
             dirDisqualified = true;
             break;
           }
@@ -542,10 +551,11 @@ export class ImpactAnalyzer {
     // File-specific tokens (basename and full path) still need checking per changed file.
     for (const [pkg, readers] of this.goReadersByPackage) {
       if (pkg === owner) continue;
+      const { file } = patternsFor(pkg);
       for (const reader of readers) {
         const content = read(reader);
         if (content === undefined) return undefined;
-        if (contentNamesPath(referencesOf(reader, content), reader, path, filePattern, true)) return undefined;
+        if (contentNamesPath(referencesOf(reader, content), reader, path, file, true)) return undefined;
       }
     }
     for (const reader of this.goOutsideReaders) {

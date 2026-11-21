@@ -73,6 +73,12 @@ async function fixture(
       { Dir: join(root, "p"), ImportPath: "example.com/project/p", Name: "p", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], Imports: ["os", ...(embeds.production?.length ? ["embed"] : [])], TestImports: ["testing", ...(embeds.test?.length ? ["embed"] : [])], EmbedFiles: embeds.production, TestEmbedFiles: embeds.test, XTestGoFiles: embeds.external?.length ? ["value_external_test.go"] : [], XTestImports: embeds.external?.length ? ["testing", "embed"] : [], XTestEmbedFiles: embeds.external },
       { Dir: join(root, "service"), ImportPath: "example.com/project/service", Name: "service", GoFiles: ["service.go"], TestGoFiles: extraServiceTestName ? ["service_test.go", extraServiceTestName] : ["service_test.go"], Imports: ["example.com/project/p"], TestImports: ["testing"] },
       { Dir: join(root, "unrelated"), ImportPath: "example.com/project/unrelated", Name: "unrelated", GoFiles: ["value.go"], TestGoFiles: ["value_test.go"], TestImports: ["testing"] },
+      ...(Object.keys(files).some(path => /^p\/sub\/.+\.go$/.test(path)) ? [{
+        Dir: join(root, "p/sub"), ImportPath: "example.com/project/p/sub", Name: "sub",
+        GoFiles: Object.keys(files).filter(path => /^p\/sub\/.+\.go$/.test(path) && !path.endsWith("_test.go")).map(path => path.slice("p/sub/".length)),
+        TestGoFiles: Object.keys(files).filter(path => /^p\/sub\/.+\.go$/.test(path) && path.endsWith("_test.go")).map(path => path.slice("p/sub/".length)),
+        Imports: ["path/filepath"], TestImports: ["testing"],
+      }] : []),
       // A helper package reported without test files is still a reported package: mirrors whatever
       // testutil sources the fixture carries (currently golden.go importing "os").
       ...(Object.keys(files).some(path => /^testutil\/.+\.go$/.test(path) && !path.endsWith("_test.go")) ? [{
@@ -405,6 +411,24 @@ test("a python helper in a modeled mixed repository naming testdata keeps full v
     "tools/snapshot.py": { imports: [] },
     "tools/test_snapshot.py": { imports: [[".snapshot", 1, ["snapshot"]]] },
   });
+});
+
+// A package below the owner runs with its own directory, so `../testdata` still
+// reaches the owner's tree. The unfiltered pattern must stay for those readers.
+test("a package below the owner reading testdata through .. keeps full validation", async (t) => {
+  const readers: Record<string, string> = {
+    "join": 'package sub\nimport (\n\t"path/filepath"\n\t"testing"\n)\nfunc TestSub(t *testing.T) { name := "settings.json"; _ = filepath.Join("..", "testdata", name) }',
+    "readdir": 'package sub\nimport (\n\t"os"\n\t"testing"\n)\nfunc TestSub(t *testing.T) { _, _ = os.ReadDir("../testdata") }',
+    "glob": 'package sub\nimport (\n\t"path/filepath"\n\t"testing"\n)\nfunc TestSub(t *testing.T) { _, _ = filepath.Glob("../testdata/*.json") }',
+  };
+  for (const [name, source] of Object.entries(readers)) {
+    await t.test(`below owner: ${name}`, async () => {
+      const files = { "p/testdata/settings.json": "expected", "p/sub/sub_test.go": source };
+      await fixture(files, (graph, root, listed) => {
+        assertFullRuntimeFallback(graph, { path: "p/testdata/settings.json", changeType: "modified" }, "p/testdata/settings.json", [...allTests, "p/sub/sub_test.go"], { repoPath: root, fileContents: listed });
+      });
+    });
+  }
 });
 
 // -- review of #90: a bare `testdata` resolves inside the reading package ------------------------
