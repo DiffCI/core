@@ -333,6 +333,7 @@
     "packages/diffci-cli/tests/client/agent-default-path.test.ts",
     "packages/diffci-cli/tests/client/check.test.ts",
     "packages/diffci-cli/tests/client/cli-agent.test.ts",
+    "packages/diffci-cli/tests/client/cli-flag-syntax.test.ts",
     "packages/diffci-cli/tests/client/hook-refresh.test.ts",
     "packages/diffci-cli/tests/client/hook.test.ts",
     "packages/diffci-cli/tests/client/shallow-history.test.ts",

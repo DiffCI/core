@@ -91,6 +91,19 @@ interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
+// Only on/off options may interpret inline booleans. Values such as a ref named "true"
+// or an invalid policy named "false" must reach the command's normal validation intact.
+const BOOLEAN_FLAGS = new Set([
+  "baseline-on-failure", "changed", "checks", "curve", "enforce", "fail-fast", "fail-on-error",
+  "fixed-order", "force", "force-analysis", "help", "install", "internal-usage", "json",
+  "measure-selected", "no-agent-hooks", "no-checks", "no-coverage", "no-hook", "no-log", "no-mcp",
+  "no-rank", "no-reuse", "no-send", "no-skill", "open-issue", "quiet", "redact-paths",
+  "shared-graph-cache", "staged", "timings", "verification-workflow", "workflow",
+]);
+
+/** A malformed flag: a usage error, so it exits 2 like the commands' own argument errors. */
+class FlagError extends Error {}
+
 function parseArgs(argv: readonly string[]): ParsedArgs {
   const args = argv.slice(2);
   const flags: Record<string, string | boolean> = {};
@@ -101,17 +114,33 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
       command ??= token;
       continue;
     }
-    const key = token.slice(2);
+    // `--name=value` is the same flag as `--name value`. Read as a flag named "name=value" it was
+    // silently ignored: `verify --policy=enforce` verified without enforcement.
+    const equals = token.indexOf("=");
+    const key = equals > 2 ? token.slice(2, equals) : token.slice(2);
+    const inline = equals > 2 ? token.slice(equals + 1) : undefined;
+    if (inline === "") throw new FlagError(`--${key} requires a value`);
     const next = args[i + 1];
     if (key === "paths") {
       // `--paths a b c` takes every value up to the next flag, and repeats add to it; NUL separates
       // them because no path contains one.
       const values: string[] = typeof flags.paths === "string" ? flags.paths.split("\0") : [];
+      if (inline) values.push(inline);
       while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("--")) values.push(args[++i]!);
       flags.paths = values.length ? values.join("\0") : true;
       continue;
     }
-    if (next !== undefined && !next.startsWith("--")) {
+    if (BOOLEAN_FLAGS.has(key) && inline === "true") {
+      // On/off flags are read with `=== true`, so `--json=true` stored as the string "true" was off
+      // with no error. `=true` turns the flag on and `=false` leaves it off, as if it were not given.
+      flags[key] = true;
+    } else if (BOOLEAN_FLAGS.has(key) && inline === "false") {
+      delete flags[key];
+    } else if (BOOLEAN_FLAGS.has(key) && inline !== undefined) {
+      throw new FlagError(`--${key} is an on/off flag; use --${key}, --${key}=true or --${key}=false`);
+    } else if (inline !== undefined) {
+      flags[key] = inline;
+    } else if (next !== undefined && !next.startsWith("--")) {
       flags[key] = next;
       i++;
     } else {
@@ -1726,5 +1755,5 @@ main().catch((error: unknown) => {
     return;
   }
   console.error(`DiffCI ${command ?? "command"} failed: ${message}`);
-  process.exitCode = 1;
+  process.exitCode = error instanceof FlagError ? 2 : 1;
 });
