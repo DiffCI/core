@@ -172,6 +172,16 @@ describe("discoverPythonChecks", () => {
 describe("narrowPythonChecks", () => {
   const checks = discoverPythonChecks(workflow(DIFY_WORKFLOW), reader(DIFY_FILES));
 
+  it("treats uv.toml as Python configuration for plain uv run and other Python checks", () => {
+    const text = "jobs:\n  a:\n    steps:\n      - run: uv run mypy\n      - run: python -m pyright\n";
+    const direct = discoverPythonChecks(workflow(text), reader({}));
+    for (const [path, decision] of [["uv.toml", "RUN"], ["api/uv.toml", "RUN"], ["api/uv.toml.bak", "SKIP"]] as const) {
+      assert.deepEqual(narrowPythonChecks(direct, [{ path, status: "modified" }]).map((c) => [c.command, c.decision]), [
+        ["uv run mypy", decision], ["python -m pyright", decision],
+      ], path);
+    }
+  });
+
   it("skips a Python-only check when only web files changed, and runs the rest", () => {
     const narrowed = narrowPythonChecks(checks, [{ path: "web/app/page.tsx", status: "modified" }]);
     assert.deepEqual(narrowed.map((c) => [c.command, c.decision]), [["make type-check-core", "SKIP"], ["make -C dify-agent check", "RUN"]]);

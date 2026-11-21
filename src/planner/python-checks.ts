@@ -41,8 +41,6 @@ export interface PythonCheck extends GateCheck {
   pythonOnly: boolean;
   /** Repository paths besides Python files and configuration whose change runs the check. */
   triggers: string[];
-  /** Additional configuration filenames that trigger the check in any project directory. */
-  configNames?: string[];
 }
 
 export interface WorkflowFile {
@@ -61,7 +59,7 @@ const CONTEXT_CHANGE = /^(?:cd|pushd|popd|source|\.|export|set|unset|alias)\s|\\
 const PY_TOOL = /\b(?:mypy|pyright|basedpyright|pyrefly|ruff|pylint|flake8|black|isort|pytype|lint-imports)\b/;
 const JS_TOOL = /\b(?:npm|npx|pnpm|yarn|node|tsc|eslint|prettier|bun|deno|vp|turbo|nx)\b/;
 const PY_FILE = /\.(?:py|pyi|pyx|pxd|ipynb)$/;
-const PY_CONFIG = /^(?:pyproject\.toml|setup\.cfg|setup\.py|mypy\.ini|\.mypy\.ini|pyrightconfig\.json|pyrefly\.toml|ruff\.toml|\.ruff\.toml|tox\.ini|uv\.lock|poetry\.lock|pdm\.lock|Pipfile|Pipfile\.lock|\.python-version|py\.typed|(?:requirements|constraints)[\w.-]*\.(?:txt|in))$/;
+const PY_CONFIG = /^(?:pyproject\.toml|setup\.cfg|setup\.py|mypy\.ini|\.mypy\.ini|pyrightconfig\.json|pyrefly\.toml|ruff\.toml|\.ruff\.toml|tox\.ini|uv\.toml|uv\.lock|poetry\.lock|pdm\.lock|Pipfile|Pipfile\.lock|\.python-version|py\.typed|(?:requirements|constraints)[\w.-]*\.(?:txt|in))$/;
 const MAKEFILES = ["GNUmakefile", "makefile", "Makefile"];
 
 function normalizeDir(dir: string): string | undefined {
@@ -155,13 +153,11 @@ function makeTarget(dir: string, target: string, read: (path: string) => string 
   return undefined;
 }
 
-/** True when every recipe line is an echo, a Python tool call, or a repository script that calls a Python
- * tool and no JavaScript tool; also returns those scripts. Undefined when any line is something else. */
-function pythonOnlyRecipe(target: MakeTarget, dir: string, read: (path: string) => string | undefined): { scripts: string[]; uvGlobals: boolean } | undefined {
+/** Repository scripts read by a Python-only recipe, or undefined when a line cannot be classified. */
+function pythonOnlyRecipe(target: MakeTarget, dir: string, read: (path: string) => string | undefined): string[] | undefined {
   if (target.prerequisites.includes(";")) return undefined;
   const scripts: string[] = [];
   let usesPython = false;
-  let uvGlobals = false;
   for (const raw of target.recipe) {
     const line = raw.replace(/^[@+-]+/, "").trim();
     if (/\$\(MAKE\)|\$\{MAKE\}|(?:^|\s)make\s/.test(line)) return undefined;
@@ -170,11 +166,8 @@ function pythonOnlyRecipe(target: MakeTarget, dir: string, read: (path: string) 
     const script = /^(?:(?:bash|sh)\s+)?(\.?\/?[\w./-]+)(?:\s|$)/.exec(line)?.[1];
     const call = directToolCall(line.replace(/\s+\$\([\w]+\)/g, ""));
     if (call) {
-      if (call.command.startsWith("uv --")) {
-        // A Make expansion could supply an additional uv option or the command after run.
-        if (line.includes("$(")) return undefined;
-        uvGlobals = true;
-      }
+      // A Make expansion could supply an additional uv option or the command after run.
+      if (call.command.startsWith("uv --") && line.includes("$(")) return undefined;
       usesPython = true;
       continue;
     }
@@ -188,7 +181,7 @@ function pythonOnlyRecipe(target: MakeTarget, dir: string, read: (path: string) 
     }
     return undefined;
   }
-  return usesPython ? { scripts, uvGlobals } : undefined;
+  return usesPython ? scripts : undefined;
 }
 
 function makeKind(target: string, recipe: readonly string[]): GateCheck["kind"] {
@@ -243,7 +236,7 @@ function makeCheck(line: string, stepDir: string, workflowPath: string, read: (p
   if (dir === undefined) return undefined;
   const found = makeTarget(dir, target!, read);
   if (!found || found.recipe.some(rewrites)) return undefined;
-  const recipe = found.prerequisites ? undefined : pythonOnlyRecipe(found, dir, read);
+  const scripts = found.prerequisites ? undefined : pythonOnlyRecipe(found, dir, read);
   const command = dir ? `make -C ${dir} ${target}` : `make ${target}`;
   return {
     id: command,
@@ -253,9 +246,8 @@ function makeCheck(line: string, stepDir: string, workflowPath: string, read: (p
     kind: makeKind(target!, found.recipe),
     decision: "RUN",
     reason: `run by CI workflow ${workflowPath}`,
-    pythonOnly: recipe !== undefined,
-    triggers: [found.path, ...(recipe?.scripts ?? [])],
-    ...(recipe?.uvGlobals && { configNames: ["uv.toml"] }),
+    pythonOnly: scripts !== undefined,
+    triggers: [found.path, ...(scripts ?? [])],
   };
 }
 
@@ -265,7 +257,6 @@ function toolCheck(line: string, workflowPath: string): PythonCheck | undefined 
   return {
     id: call.command, script: workflowPath, runsScript: false, command: call.command, kind: call.kind,
     decision: "RUN", reason: `run by CI workflow ${workflowPath}`, pythonOnly: true, triggers: [],
-    ...(call.command.startsWith("uv --") && { configNames: ["uv.toml"] }),
   };
 }
 
@@ -277,7 +268,7 @@ function pythonRelevant(path: string): boolean {
 export function narrowPythonChecks(checks: readonly PythonCheck[], changes: readonly ChangedPath[]): PythonCheck[] {
   return checks.map((check) => {
     if (!check.pythonOnly) return { ...check, reason: `${check.reason}; not read as Python-only, runs as written` };
-    const hit = changes.find((change) => pythonRelevant(change.path) || check.triggers.includes(change.path) || check.configNames?.includes(posix.basename(change.path)));
+    const hit = changes.find((change) => pythonRelevant(change.path) || check.triggers.includes(change.path));
     return hit
       ? { ...check, reason: `${check.reason}; ${hit.path} changed` }
       : { ...check, decision: "SKIP", reason: `${check.reason}; no changed Python file or Python configuration` };
