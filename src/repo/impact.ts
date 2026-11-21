@@ -356,6 +356,10 @@ export class ImpactAnalyzer {
    * package with tests and no other package's test file names it by reference; every other
    * discovery-excluded path keeps full validation. */
   private goPackageTestDataOwner = new Map<string, string>();
+  /** Directory-level verdicts keyed by testdata directory, scoped to one analysis run. Every
+   * changed file under the same tree asks the same question of the same readers; the file-specific
+   * token check stays per file (review of #90). */
+  private goTestDataDirDisqualified = new Map<string, boolean>();
 
   /** Test files known to the graph: nodes matching the profile's test globs or the test-file matcher. */
   private knownTestPaths(profile: RepositoryProfile, graph: DependencyGraph): string[] {
@@ -405,6 +409,7 @@ export class ImpactAnalyzer {
    */
   private mapGoPackageTestData(delta: GitDelta, profile: RepositoryProfile): Map<string, string> {
     this.goPackageTestDataOwner = new Map();
+    this.goTestDataDirDisqualified = new Map();
     const byOwner = new Map<string, string[]>();
     for (const [test, owner] of Object.entries(profile.goTestPackages ?? {})) {
       if (!test.endsWith("_test.go")) continue;
@@ -480,27 +485,84 @@ export class ImpactAnalyzer {
     const tests = byOwner.get(owner);
     if (!tests?.length) return undefined;
     const dataDir = [...segments.slice(0, at), "testdata"].join("/");
-    const filePattern = referencePattern(referenceTokens(path));
-    const dirPattern = referencePattern(referenceTokens(dataDir));
-    const disqualifies = (reader: string): boolean => {
-      const content = readRepositoryFile(reader);
-      // A listed test file that cannot be read could still name the testdata; without its
-      // contents the conservative answer is no selective route at all.
-      if (content === undefined) return true;
-      const references = isGoReaderFile(reader) ? goReaderReferences(content) : content;
-      return contentNamesPath(references, reader, path, filePattern, true)
-          || contentNamesPath(references, reader, dataDir, dirPattern, true);
+    const bareTestdata = (token: { value: string; bare: boolean }) => !(token.bare && token.value === "testdata");
+    const fileTokens = referenceTokens(path);
+    const dirTokens = referenceTokens(dataDir);
+    // A go-reported package's readers run with that package as their working directory, so a bare
+    // `testdata` there names their own tree, not this one. Drop that token for them (but keep the
+    // slash-bearing path and the bare ancestor package name, so `filepath.Join("..", "p",
+    // "testdata")` is still caught). Readers outside package discovery have an unknown working
+    // directory and keep the conservative, unfiltered pattern (review of #90).
+    const filePattern = referencePattern(fileTokens.filter(bareTestdata));
+    const dirPattern = referencePattern(dirTokens.filter(bareTestdata));
+    const outsideFilePattern = referencePattern(fileTokens);
+    const outsideDirPattern = referencePattern(dirTokens);
+    // A package below the owner also runs with its own directory as the working
+    // directory, so a bare `testdata` there can reach the owner's tree via `..`
+    // (for p/sub reading p/testdata, `../testdata`). Those readers need the
+    // unfiltered patterns too, or the prefilter never reaches the path resolver.
+    const below = (pkg: string) => owner === "." || pkg.startsWith(`${owner}/`);
+    const patternsFor = (pkg: string) => below(pkg)
+      ? { file: outsideFilePattern, dir: outsideDirPattern }
+      : { file: filePattern, dir: dirPattern };
+    const referencesOf = (reader: string, content: string) => isGoReaderFile(reader) ? goReaderReferences(content) : content;
+
+    // Directory-level verdict: same readers and same directory tokens for every changed file under
+    // this tree. Cache it for the rest of the analysis run and short-circuit the whole tree when a
+    // reader names it (review of #90). One read per reader even across both checks below.
+    const contents = new Map<string, string | undefined>();
+    const read = (reader: string) => {
+      if (!contents.has(reader)) contents.set(reader, readRepositoryFile(reader));
+      return contents.get(reader);
     };
+    let dirDisqualified = this.goTestDataDirDisqualified.get(dataDir);
+    if (dirDisqualified === undefined) {
+      dirDisqualified = false;
+      for (const [pkg, readers] of this.goReadersByPackage) {
+        if (pkg === owner) continue;
+        const { dir } = patternsFor(pkg);
+        for (const reader of readers) {
+          const content = read(reader);
+          // An unreadable reader could still name the testdata, so answer conservatively.
+          if (content === undefined || contentNamesPath(referencesOf(reader, content), reader, dataDir, dir, true)) {
+            dirDisqualified = true;
+            break;
+          }
+        }
+        if (dirDisqualified) break;
+      }
+      // Readers outside the go-reported packages (tests of nested modules or other languages,
+      // ordinary `.go` files outside package discovery, non-test source modules in a mixed
+      // repository) never take the package-owned convention: their tests run with a different
+      // working directory, so a reference there disqualifies like a cross-package one (review #85).
+      if (!dirDisqualified) {
+        for (const reader of this.goOutsideReaders) {
+          const content = read(reader);
+          if (content === undefined || contentNamesPath(referencesOf(reader, content), reader, dataDir, outsideDirPattern, true)) {
+            dirDisqualified = true;
+            break;
+          }
+        }
+      }
+      this.goTestDataDirDisqualified.set(dataDir, dirDisqualified);
+    }
+    if (dirDisqualified) return undefined;
+
+    // File-specific tokens (basename and full path) still need checking per changed file.
     for (const [pkg, readers] of this.goReadersByPackage) {
       if (pkg === owner) continue;
-      if (readers.some(disqualifies)) return undefined;
+      const { file } = patternsFor(pkg);
+      for (const reader of readers) {
+        const content = read(reader);
+        if (content === undefined) return undefined;
+        if (contentNamesPath(referencesOf(reader, content), reader, path, file, true)) return undefined;
+      }
     }
-    // Readers outside the go-reported packages (tests of nested modules or other languages, ordinary
-    // `.go` files outside package discovery, non-test source modules in a mixed repository) never
-    // take the package-owned convention, since their tests run with a different working directory;
-    // a reference there disqualifies the selective route exactly like a cross-package one
-    // (2026-11-09, review of #85).
-    if ([...this.goOutsideReaders].some(disqualifies)) return undefined;
+    for (const reader of this.goOutsideReaders) {
+      const content = read(reader);
+      if (content === undefined) return undefined;
+      if (contentNamesPath(referencesOf(reader, content), reader, path, outsideFilePattern, true)) return undefined;
+    }
     return owner;
   }
 
