@@ -165,7 +165,9 @@ jobs:
           npm pkg set "gitHead=$GITHUB_SHA"
           out="$RUNNER_TEMP/release-package"
           mkdir -p "$out"
-          npm pack --pack-destination "$out" --json > "$RUNNER_TEMP/pack.json"
+          # The previous step built the client. --ignore-scripts keeps prepack's build log out of stdout, which
+          # npm pack --json otherwise mixes into the JSON (0.3.61's first run failed in jq on it).
+          npm pack --ignore-scripts --pack-destination "$out" --json > "$RUNNER_TEMP/pack.json"
           tarball=$(jq -r '.[0].filename' "$RUNNER_TEMP/pack.json")
           integrity=$(jq -r '.[0].integrity' "$RUNNER_TEMP/pack.json")
           test "$integrity" = "sha512-$(openssl dgst -sha512 -binary "$out/$tarball" | base64 -w0)"
