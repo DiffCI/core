@@ -28,7 +28,7 @@ If DiffCI saves you CI time, a ⭐ helps others find it.
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: DiffCI/core@v0.3.60
+- uses: DiffCI/core@v0.3.61
 ```
 
 Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same answer appears on the pull request itself, updated in place on each push:

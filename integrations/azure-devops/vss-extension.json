@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "diffci",
   "name": "DiffCI change impact",
-  "version": "0.3.60",
+  "version": "0.3.61",
   "publisher": "diffci",
   "public": false,
   "description": "Shows which tests and checks a pull request affects, and why, in every Azure Pipelines run. Observation only; never fails the pipeline.",
