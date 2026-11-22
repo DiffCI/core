@@ -56,6 +56,7 @@ import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
 import { formatJobSummary } from "./job-summary.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage, telemetryNotice } from "./telemetry.js";
+import { observationSelection, planSelection, verificationSelection } from "./usage-signal.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, verifyScoped, type VerificationReport } from "./verify.js";
@@ -173,7 +174,7 @@ async function runPlanCommand(args: readonly string[]): Promise<number> {
     repoPath = values.get("--repo") ?? process.cwd();
     const plan = await analyzeCheckout({ repoPath, base, head: values.get("--head") ?? "HEAD" });
     console.log(JSON.stringify(plan, null, 2));
-    await recordUsage("plan", plan.plan.mode === "SELECTIVE" ? "selective" : "full", observerIdentity().version, {}, process.env, repoPath);
+    await recordUsage("plan", plan.plan.mode === "SELECTIVE" ? "selective" : "full", observerIdentity().version, {}, process.env, repoPath, planSelection(plan.plan));
     return 0;
   } catch (error: unknown) {
     console.error(JSON.stringify({ error: error instanceof Error ? error.message : String(error), recommendation: "RUN_FULL_CI" }));
@@ -669,7 +670,7 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
       if (refreshed) console.error(refreshed);
     } catch { /* keeping an old hook never fails verification */ }
   }
-  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath);
+  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath, verificationSelection(report));
   if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   if (reportPath) {
     mkdirSync(dirname(reportPath), { recursive: true });
@@ -920,7 +921,7 @@ async function runCheck(flags: Record<string, string | boolean>, env: NodeJS.Pro
   const observationCode = await runObserve({ ...flags, out: reportPath, quiet: true, "no-send": true, "skip-usage": true }, env);
   if (observationCode !== 0) return observationCode;
   const observation = JSON.parse(readFileSync(reportPath, "utf8")) as ObservationReport;
-  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env, repoPath);
+  await recordUsage("check", observation.status === "OBSERVED" ? "observed" : observation.status === "REFUSED" ? "refused" : "error", observerIdentity().version, flags, env, repoPath, observationSelection(observation.result));
   const print = (message: string): void => { if (flags.quiet !== true && flags.json !== true) console.log(message); };
   print(summarise(observation, true));
   print(`  observation report: ${reportPath}`);
@@ -1061,7 +1062,7 @@ async function runObserve(flags: Record<string, string | boolean>, env: NodeJS.P
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   // check counts itself; its inner observation is not a second run.
-  if (flags["skip-usage"] !== true) await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env, repoPath);
+  if (flags["skip-usage"] !== true) await recordUsage("observe", report.status === "OBSERVED" ? "observed" : report.status === "REFUSED" ? "refused" : "error", identity.version, flags, env, repoPath, observationSelection(report.result));
 
   const summary = summarise(report);
   if (flags.json === true) {
@@ -1609,8 +1610,9 @@ client-side. Graphs hold paths and import edges, never file contents; a cache fa
 Usage counting is on: plan, check, observe and verify send command, outcome, version, surface, CI or local,
 activity, a random local installation ID and the repository name (host/owner/repo from GITHUB_REPOSITORY,
 GitLab CI or the origin remote). diffci telemetry --mode count-only drops the name and the ID; --mode repo
-restores them. --internal-usage labels tests/internal activity. No commit, path, test, report, content or
-machine details are sent. Only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or DIFFCI_SHARE_USAGE=0 stop counting;
+restores them. --internal-usage labels tests/internal activity. Runs that choose tests also send how many:
+selective or full, tests selected, tests in the suite, and what a path-rule CI would have run. No commit,
+path, test name, report, content or machine details are sent. Only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or DIFFCI_SHARE_USAGE=0 stop counting;
 --no-send stops report uploads only.
 Interactive check and observe runs print feedback links to stderr at most weekly; they send nothing.
 CI, MCP, --json and --quiet never show them; DIFFCI_NO_FEEDBACK_PROMPT=1 hides them.

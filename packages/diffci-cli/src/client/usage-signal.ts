@@ -2,6 +2,16 @@
 export type UsageCommand = "check" | "observe" | "verify" | "plan";
 export type UsageOutcome = "observed" | "refused" | "error" | "passed" | "failed" | "blocked" | "selective" | "full";
 export type UsageSurface = "cli" | "local-mcp" | "github-action" | "gitlab-component" | "azure-devops-task";
+/**
+ * How much of the suite a run chose: counts only, never test names. `baselineTestsSelected` is what a simple
+ * path-rule CI would have run (the comparator savings are measured against), when the report carries it.
+ */
+export interface UsageSelection {
+  mode: "selective" | "full";
+  testsSelected: number;
+  testsTotal: number;
+  baselineTestsSelected?: number;
+}
 export interface UsageSignal {
   command: UsageCommand;
   outcome: UsageOutcome;
@@ -11,10 +21,43 @@ export interface UsageSignal {
   ci?: boolean;
   installationId?: string;
   repository?: string;
+  selection?: UsageSelection;
   endpoint?: string;
   fetchImpl?: typeof fetch;
 }
 export interface DeliveryResult { status: "delivered" | "accepted" | "failed" | "timed-out"; httpStatus?: number }
+const count = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1_000_000;
+
+function selectionFields(selection: UsageSelection | undefined): Record<string, unknown> {
+  if (!selection || !count(selection.testsSelected) || !count(selection.testsTotal) || selection.testsSelected > selection.testsTotal) return {};
+  return { mode: selection.mode, tests_selected: selection.testsSelected, tests_total: selection.testsTotal,
+    ...(count(selection.baselineTestsSelected) && selection.baselineTestsSelected <= selection.testsTotal ? { baseline_tests_selected: selection.baselineTestsSelected } : {}) };
+}
+
+/** From an observation result (observe, check). No result, or no tests found: nothing to count. */
+export function observationSelection(result: { mode: "SELECTIVE" | "FULL"; selectedTests: readonly string[]; totalTestCount: number; pathBaseline?: { selectedTestCount: number } } | undefined): UsageSelection | undefined {
+  if (!result || !(result.totalTestCount > 0)) return undefined;
+  return { mode: result.mode === "SELECTIVE" ? "selective" : "full",
+    testsSelected: result.mode === "SELECTIVE" ? result.selectedTests.length : result.totalTestCount,
+    testsTotal: result.totalTestCount,
+    ...(result.pathBaseline ? { baselineTestsSelected: result.pathBaseline.selectedTestCount } : {}) };
+}
+
+/** From a verification receipt. "none" with tests available means the change needed none of them. */
+export function verificationSelection(report: { selection: "none" | "selected" | "full"; tests_selected: number; tests_available: number }): UsageSelection | undefined {
+  if (!(report.tests_available > 0)) return undefined;
+  return { mode: report.selection === "full" ? "full" : "selective",
+    testsSelected: report.selection === "none" ? 0 : report.selection === "full" ? report.tests_available : report.tests_selected,
+    testsTotal: report.tests_available };
+}
+
+/** From an advisory plan (diffci plan). */
+export function planSelection(plan: { mode: string; selectedTests: readonly string[]; skippedTests: readonly string[] }): UsageSelection | undefined {
+  const total = plan.selectedTests.length + plan.skippedTests.length;
+  if (total === 0) return undefined;
+  return { mode: plan.mode === "SELECTIVE" ? "selective" : "full", testsSelected: plan.selectedTests.length, testsTotal: total };
+}
+
 export async function deliverUsageSignal(input: UsageSignal): Promise<DeliveryResult> {
   try {
     const url = new URL(input.endpoint ?? "https://app.diffci.com/v1/usage-events");
@@ -28,6 +71,7 @@ export async function deliverUsageSignal(input: UsageSignal): Promise<DeliveryRe
         ...(input.ci !== undefined ? { ci: input.ci } : {}),
         ...(input.installationId ? { installation_id: input.installationId } : {}),
         ...(input.repository ? { repository: input.repository } : {}),
+        ...selectionFields(input.selection),
       }),
       signal: AbortSignal.timeout(3000),
     });

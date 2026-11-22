@@ -20,8 +20,14 @@ server). It contains:
 | `activity` | `external` | `internal` when labelled with `--internal-usage` or `DIFFCI_USAGE_INTERNAL=1` |
 | `installation_id` | random UUID | sent only after `diffci telemetry --mode repo` creates and saves one in `~/.diffci/telemetry.json`; a default, never-configured installation sends none; not tied to a person |
 | `repository` | `github.com/acme/widgets` | host/owner/repo, from `GITHUB_REPOSITORY`, GitLab CI variables or the `origin` remote, with credentials removed |
+| `mode` | `selective` | `selective` or `full`: whether the run chose a subset of the tests; sent only when tests were found |
+| `tests_selected` | `3` | number of test files the run chose (0 when the change needed none) |
+| `tests_total` | `40` | number of test files the full test command runs |
+| `baseline_tests_selected` | `12` | `observe` and `check` only: number of test files a simple path-rule CI would have run, the comparator DiffCI's savings are measured against |
 
-It never contains source code, file paths, commit SHAs, branch names, test names, reports, IP-based
+The test fields are counts only (added in CLI 0.3.61); they let the project see whether DiffCI would have
+saved work in a repository that only runs `observe`. It never contains source code, file paths, commit SHAs,
+branch names, test names, reports, IP-based
 location, user names, email addresses or machine details. The request has a 3-second timeout, and a
 failed or blocked request never changes the outcome or exit code of a run.
 
@@ -44,5 +50,5 @@ and `installations` becomes `repo`.
 ## How the data is used
 
 Counts and repository names are stored by DiffCI to measure adoption: how many repositories use
-DiffCI, through which surface, and how often plans are selective. They are not sold or shared. To
+DiffCI, through which surface, how often plans are selective and how many tests they would skip. They are not sold or shared. To
 have a repository's records deleted, open an issue at https://github.com/DiffCI/core/issues.

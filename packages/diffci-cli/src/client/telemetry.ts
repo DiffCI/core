@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { deliverUsageSignal, type UsageCommand, type UsageOutcome, type UsageSurface } from "./usage-signal.js";
+import { deliverUsageSignal, type UsageCommand, type UsageOutcome, type UsageSelection, type UsageSurface } from "./usage-signal.js";
 
 /**
  * Usage counting is on by default. "repo" (the default) also names the repository (host/owner/repo from
  * the Git remote); "count-only" drops the name. Only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or
- * DIFFCI_SHARE_USAGE=0 stop the count. No repository content, paths, commits or machine details are sent.
+ * DIFFCI_SHARE_USAGE=0 stop the count. No repository content, paths, commits or machine details are sent;
+ * a run that chose tests also sends how many (selected, total, path-rule comparator), never which.
  */
 export type TelemetryMode = "repo" | "count-only";
 interface Preference { mode: TelemetryMode; installationId?: string; internal: boolean; noticeShown: boolean }
@@ -113,7 +114,7 @@ export function telemetryNotice(mode: TelemetryMode): string {
 }
 
 /** Best effort: never throws and never changes the exit code. `flags` are read for --internal-usage only. */
-export async function recordUsage(command: UsageCommand, outcome: UsageOutcome, version: string, flags: Flags, env: NodeJS.ProcessEnv, repoPath?: string): Promise<void> {
+export async function recordUsage(command: UsageCommand, outcome: UsageOutcome, version: string, flags: Flags, env: NodeJS.ProcessEnv, repoPath?: string, selection?: UsageSelection): Promise<void> {
   try {
     if (usageCountingDisabled(env)) return;
     const preference = readTelemetryPreference(env);
@@ -128,6 +129,7 @@ export async function recordUsage(command: UsageCommand, outcome: UsageOutcome, 
       activity: flags["internal-usage"] === true || env.DIFFCI_USAGE_INTERNAL === "1" || preference.internal ? "internal" : "external",
       ...(preference.installationId ? { installationId: preference.installationId } : {}),
       ...(repository ? { repository } : {}),
+      ...(selection ? { selection } : {}),
     });
   } catch { /* usage counting never affects a run */ }
 }
