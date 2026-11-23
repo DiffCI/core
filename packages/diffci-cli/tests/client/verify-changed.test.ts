@@ -325,18 +325,39 @@ describe("verify commit range", () => {
     }
   });
 
-  it("blocks a dirty checkout before commit-range analysis", () => {
+  it("verifies the commits of a dirty checkout in a temporary worktree, leaving its changes alone", () => {
+    const dir = fixture();
+    try {
+      const { base, head } = commitAlphaChange(dir);
+      // An uncommitted edit that would fail the tests, and an untracked file: neither is part of the range.
+      write(dir, "src/beta.js", "export const beta = () => 4;\n");
+      write(dir, "notes/draft.md", "untracked\n");
+      const run = runVerifyRange(dir);
+      assert.equal(run.status, 0, run.stdout + run.stderr);
+      const report = JSON.parse(run.stdout);
+      assert.equal(report.verification, "passed");
+      assert.equal(report.commit_range.base_sha, base);
+      assert.equal(report.commit_range.head_sha, head);
+      assert.match(report.reason, /verified in a clean temporary worktree of [0-9a-f]{12}; this checkout's uncommitted changes were not part of it/);
+      assert.equal(readFileSync(join(dir, "src/beta.js"), "utf8"), "export const beta = () => 4;\n");
+      assert.equal(readFileSync(join(dir, "notes/draft.md"), "utf8"), "untracked\n");
+      const worktrees = spawnSync("git", ["worktree", "list", "--porcelain"], { cwd: dir, encoding: "utf8" }).stdout;
+      assert.equal(worktrees.match(/^worktree /gm)?.length, 1, worktrees);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still cannot verify a dirty checkout whose lockfile differs from the head commit's", () => {
     const dir = fixture();
     try {
       commitAlphaChange(dir);
-      write(dir, "src/beta.js", "export const beta = () => 4;\n");
+      write(dir, "package-lock.json", "{\"lockfileVersion\": 3}\n");
       const run = runVerifyRange(dir);
       assert.equal(run.status, 2, run.stdout + run.stderr);
       const report = JSON.parse(run.stdout);
       assert.equal(report.verification, "blocked");
-      assert.equal(report.safe_to_continue, false);
-      assert.equal(report.analysis.status, "not_needed");
-      assert.match(report.reason, /requires a clean checkout/);
+      assert.match(report.reason, /uncommitted changes, and verifying [0-9a-f]{12} apart from them failed: package-lock\.json/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -361,17 +382,18 @@ describe("verify commit range", () => {
     }
   });
 
-  it("still blocks when a CRLF-only file comes with a real change", () => {
+  it("verifies apart from the checkout when a CRLF-only file comes with a real change", () => {
     const dir = fixture();
     try {
       commitAlphaChange(dir);
       write(dir, "src/beta.js", "export const beta = () => 2;\r\n");
       write(dir, "README.md", "not committed\n");
       const run = runVerifyRange(dir);
-      assert.equal(run.status, 2, run.stdout + run.stderr);
+      assert.equal(run.status, 0, run.stdout + run.stderr);
       const report = JSON.parse(run.stdout);
-      assert.match(report.reason, /requires a clean checkout/);
-      assert.deepEqual(report.snapshot.line_ending_only_changes, ["src/beta.js"]);
+      assert.match(report.reason, /verified in a clean temporary worktree/);
+      // The worktree is a clean checkout of the head: no line-ending differences there.
+      assert.equal(report.snapshot.line_ending_only_changes, undefined);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

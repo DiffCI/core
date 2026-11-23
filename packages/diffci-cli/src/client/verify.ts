@@ -162,6 +162,8 @@ export interface VerifyRangeOptions extends VerifyOptions {
   headOverride?: string;
   /** Opt-in enforce mode (docs/enforce-mode-01-plan.md). Absent means today's behaviour, unchanged. */
   policy?: "enforce";
+  /** Internal: this run is already inside the temporary worktree of a dirty checkout. */
+  isolated?: boolean;
 }
 
 function receiptRange(range: ObservationCommitRange | undefined): VerificationReport["commit_range"] {
@@ -736,6 +738,7 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
     return blocked(unknownSnapshot(), "commit-range", message, { status: "ERROR", stage: "context", fallback_reasons: [], error: message });
   }
   // A checkout that differs from HEAD only by CRLF line endings is clean: the snapshot leaves those files out.
+  if (before.changed && !options.isolated) return verifyRangeIsolated(options, repoPath, before);
   if (before.changed) {
     return blocked(
       before,
@@ -762,6 +765,44 @@ async function verifyCommitRange(options: VerifyRangeOptions): Promise<Verificat
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
+}
+
+/**
+ * Commit-range verification in a dirty checkout (2026-11-23).
+ *
+ * WHY. A range verifies commits, so uncommitted files cannot be part of it, yet they blocked it outright:
+ * agent sessions sharing one DentalPresence checkout leave untracked and edited files behind, and the
+ * pre-push hook's own clean check races them (a file written between its `git status` and DiffCI's
+ * snapshot), so pushes went out unverified.
+ *
+ * WHAT. The head commit is checked out in a temporary worktree (isolated-worktree.ts, as --staged and
+ * --paths do) and the range is verified there, where the checkout is clean by construction. Installed
+ * dependencies are linked in only when the head's lockfiles match this checkout's; otherwise the run says
+ * it cannot verify, as before. The uncommitted files are neither verified nor touched.
+ */
+async function verifyRangeIsolated(options: VerifyRangeOptions, repoPath: string, before: WorkingTreeSnapshot): Promise<VerificationReport> {
+  const git = makeGitRunner(repoPath);
+  const resolved = git(["rev-parse", "--verify", `${options.headOverride ?? before.baseSha}^{commit}`]);
+  const treeResult = resolved.ok ? git(["rev-parse", "--verify", `${resolved.stdout.trim()}^{tree}`]) : resolved;
+  if (!resolved.ok || !treeResult.ok) {
+    const message = !treeResult.ok ? treeResult.error : "could not resolve the head commit";
+    return blocked(before, "commit-range", `could not resolve the head commit to verify it apart from this checkout's uncommitted changes: ${message}`, { status: "ERROR", stage: "context", fallback_reasons: [], error: message });
+  }
+  const head = resolved.stdout.trim();
+  const tree = treeResult.stdout.trim();
+  const worktree = createIsolatedWorktree(repoPath, head, tree);
+  if ("error" in worktree) {
+    return blocked(before, "commit-range", `this checkout has uncommitted changes, and verifying ${head.slice(0, 12)} apart from them failed: ${worktree.error}`, { status: "not_needed", fallback_reasons: [] });
+  }
+  let inner: VerificationReport;
+  try {
+    // The worktree's HEAD is the head commit, so the range resolves there exactly as it would have here.
+    inner = await verifyCommitRange({ ...options, repoPath: worktree.path, isolated: true });
+  } finally {
+    worktree.dispose();
+  }
+  const note = `verified in a clean temporary worktree of ${head.slice(0, 12)}; this checkout's uncommitted changes were not part of it`;
+  return { ...inner, reason: inner.reason ? `${inner.reason}; ${note}` : note };
 }
 
 /**

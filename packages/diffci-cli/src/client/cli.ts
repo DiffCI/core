@@ -1570,8 +1570,9 @@ verify --staged verifies HEAD plus the index only, and --paths (or --paths-from,
 stdin) HEAD plus only those working-tree files, in a temporary worktree with node_modules linked in: other
 uncommitted files stay at their HEAD version and are listed in the receipt (scoped.excluded_dirty_paths).
 Use it before a commit when other sessions share the checkout. The pre-push hook reuses a pass of the tree.
-verify without these flags resolves the CI event range (or HEAD^..HEAD locally), requires a clean checkout,
-and exits zero only when the analyzed head is the commit that actually passed verification.
+verify without these flags resolves the CI event range (or HEAD^..HEAD locally) and exits zero only when the
+analyzed head is the commit that actually passed verification. In a checkout with uncommitted changes it
+verifies the head commit in a temporary worktree instead, leaving those changes out and untouched.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
 plan prints Core's advisory JSON plan for a clean checkout at --head; save it before the full suite runs.
 It exits 1 with a RUN_FULL_CI error when it cannot plan. It runs no tests and sends nothing.
