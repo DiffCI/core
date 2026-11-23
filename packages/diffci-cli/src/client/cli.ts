@@ -1629,7 +1629,9 @@ Usage counting is on: plan, check, observe and verify send command, outcome, ver
 activity, a random local installation ID and the repository name (host/owner/repo from GITHUB_REPOSITORY,
 GitLab CI or the origin remote). diffci telemetry --mode count-only drops the name and the ID; --mode repo
 restores them. --internal-usage labels tests/internal activity. Runs that choose tests also send how many:
-selective or full, tests selected, tests in the suite, and what a path-rule CI would have run. No commit,
+selective or full, tests selected, tests in the suite, and what a path-rule CI would have run. A local verify
+also sends how many earlier runs on the same base failed since its last pass and, on a pass after failures,
+the seconds the fix took (from the outcome log; not in CI). No commit,
 path, test name, report, content or machine details are sent. Only DO_NOT_TRACK=1, DIFFCI_NO_SEND=1 or DIFFCI_SHARE_USAGE=0 stop counting;
 --no-send stops report uploads only.
 Interactive check and observe runs print feedback links to stderr at most weekly; they send nothing.
