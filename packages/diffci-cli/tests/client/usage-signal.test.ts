@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { observationSelection, planSelection, sendUsageSignal, verificationSelection } from "../../src/client/usage-signal.js";
+import { mcpClientName, observationSelection, planSelection, sendUsageSignal, verificationSelection } from "../../src/client/usage-signal.js";
 
 test("opt-in usage sends only the documented aggregate fields", async () => {
   let body = "";
@@ -74,4 +74,22 @@ test("verify streaks send counts only, and only where they mean something", asyn
     { failed_before: 1, fix_seconds: undefined },
     { failed_before: undefined, fix_seconds: undefined },
   ]);
+});
+
+test("MCP starts send the agent client's normalised name, and only on mcp", async () => {
+  assert.equal(mcpClientName("claude-code"), "claude-code");
+  assert.equal(mcpClientName("Claude Code"), "claude code");
+  assert.equal(mcpClientName("Visual Studio Code / Copilot"), "visual studio code - copilot");
+  assert.equal(mcpClientName("  "), undefined);
+  assert.equal(mcpClientName(42), undefined);
+  assert.equal(mcpClientName("x".repeat(80))?.length, 48);
+  const bodies: Record<string, unknown>[] = [];
+  const fetchImpl = (async (_url: URL, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+  await sendUsageSignal({ command: "mcp", outcome: "started", version: "0.3.65", surface: "local-mcp", client: "cursor", fetchImpl });
+  await sendUsageSignal({ command: "plan", outcome: "full", version: "0.3.65", client: "cursor", fetchImpl });
+  assert.deepEqual(bodies[0], { schema: "diffci.usage.v1", command: "mcp", outcome: "started", version: "0.3.65", surface: "local-mcp", client: "cursor" });
+  assert.equal(bodies[1]?.client, undefined);
 });

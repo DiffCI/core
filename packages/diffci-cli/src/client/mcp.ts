@@ -4,6 +4,8 @@ import { dirname, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { agentChangedFiles, agentScopedSelection, agentSelection, selectionInstruction } from "./agent-selection.js";
 import { requireDiffciPackageIdentity } from "./package-identity.js";
+import { recordUsage } from "./telemetry.js";
+import { mcpClientName, verificationSelection } from "./usage-signal.js";
 
 type JsonRpcId = string | number | null;
 
@@ -20,6 +22,9 @@ interface ToolCallParams {
 }
 
 const SERVER_INFO = { name: "diffci-mcp", version: requireDiffciPackageIdentity().version };
+// Counted like the CLI tools this server starts (docs/telemetry.md): surface local-mcp, same opt-outs.
+const usageEnv: NodeJS.ProcessEnv = { ...process.env, DIFFCI_MCP: "1" };
+let startCounted = false;
 
 const tools = [
   ...["diffci_changed_files", "diffci_select_tests", "diffci_explain_selection", "diffci_run_affected_tests"].map((name) => ({
@@ -227,6 +232,12 @@ async function handle(request: JsonRpcRequest): Promise<void> {
         capabilities: { tools: {} },
         serverInfo: SERVER_INFO,
       });
+      // One start per server process: an agent installed DiffCI and connected, whether or not it calls a tool.
+      if (!startCounted) {
+        startCounted = true;
+        const clientInfo = (request.params as { clientInfo?: { name?: unknown } } | undefined)?.clientInfo;
+        void recordUsage("mcp", "started", SERVER_INFO.version, {}, usageEnv, process.cwd(), undefined, undefined, mcpClientName(clientInfo?.name));
+      }
       return;
     case "notifications/initialized":
       return;
@@ -277,6 +288,10 @@ async function handle(request: JsonRpcRequest): Promise<void> {
           : scope === "paths" ? await agentScopedSelection(repo, { kind: "paths", paths: paths!.map((path) => path.replace(/\\/g, "/")) })
           : await agentSelection(repo);
         success(id, { content: [{ type: "text", text: `${selectionInstruction(plan)}\n\n${JSON.stringify(plan)}` }], structuredContent: plan, isError: plan.status === "blocked" });
+        // In-process plans never start the CLI, so they are counted here (before 0.3.65 they were not counted at all).
+        const blocked = plan.status === "blocked";
+        void recordUsage("plan", blocked ? "error" : plan.selection === "full" ? "full" : "selective", SERVER_INFO.version, {}, usageEnv, repo,
+          blocked ? undefined : verificationSelection(plan));
         return;
       }
       const run = await runCli(commandForTool(params.name, args));

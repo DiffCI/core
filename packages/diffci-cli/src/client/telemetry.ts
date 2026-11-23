@@ -115,7 +115,7 @@ export function telemetryNotice(mode: TelemetryMode): string {
 }
 
 /** Best effort: never throws and never changes the exit code. `flags` are read for --internal-usage only. */
-export async function recordUsage(command: UsageCommand, outcome: UsageOutcome, version: string, flags: Flags, env: NodeJS.ProcessEnv, repoPath?: string, selection?: UsageSelection, streak?: UsageStreak): Promise<void> {
+export async function recordUsage(command: UsageCommand, outcome: UsageOutcome, version: string, flags: Flags, env: NodeJS.ProcessEnv, repoPath?: string, selection?: UsageSelection, streak?: UsageStreak, client?: string): Promise<void> {
   try {
     if (usageCountingDisabled(env)) return;
     const preference = readTelemetryPreference(env);
@@ -132,6 +132,7 @@ export async function recordUsage(command: UsageCommand, outcome: UsageOutcome, 
       ...(repository ? { repository } : {}),
       ...(selection ? { selection } : {}),
       ...(streak ? { streak } : {}),
+      ...(client ? { client } : {}),
     });
   } catch { /* usage counting never affects a run */ }
 }

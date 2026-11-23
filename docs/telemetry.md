@@ -8,12 +8,12 @@ sends nothing.
 
 One small HTTPS request to `https://app.diffci.com/v1/usage-events` after each `plan`, `check`,
 `observe` and `verify` run (including runs from the GitHub Action, the GitLab component, the Azure DevOps task and the MCP
-server). It contains:
+server), and one when an agent client starts and initializes the local MCP server (CLI 0.3.65+). It contains:
 
 | Field | Example | Notes |
 | --- | --- | --- |
-| `command` | `plan` | `plan`, `check`, `observe` or `verify` |
-| `outcome` | `selective` | for example `selective`, `full`, `passed`, `failed`, `observed`, `error` |
+| `command` | `plan` | `plan`, `check`, `observe`, `verify`, or `mcp` for an MCP server start |
+| `outcome` | `selective` | for example `selective`, `full`, `passed`, `failed`, `observed`, `error`; `started` for `mcp` |
 | `version` | `0.3.30` | CLI version |
 | `surface` | `github-action` | `cli`, `local-mcp`, `github-action`, `gitlab-component` or `azure-devops-task` |
 | `ci` | `true` | whether the run happened in CI |
@@ -25,7 +25,11 @@ server). It contains:
 | `tests_total` | `40` | number of test files the full test command runs |
 | `baseline_tests_selected` | `12` | `observe` and `check` only: number of test files a simple path-rule CI would have run, the comparator DiffCI's savings are measured against |
 | `failed_before` | `2` | local `verify` only, outside CI: how many earlier `verify` runs on the same base commit failed since it last passed (within a day), read from the outcome log in `.git/diffci/`; sent on a failed run, and on a passed run that followed failures |
+| `client` | `claude-code` | `mcp` only: the agent application's self-reported MCP client name (`clientInfo.name`), lower-cased and at most 48 characters; it names the application, not a person or machine |
 | `fix_seconds` | `420` | local `verify` only, on a pass that followed failures: seconds from the first of those failures to the pass (at most one day) |
+
+The MCP server counts its own in-process `diffci_select_tests` and `diffci_explain_selection` plans as `plan` runs (surface
+`local-mcp`, CLI 0.3.65+); its other tools start the CLI, which counts them as before.
 
 The test fields are counts only (added in CLI 0.3.61); they let the project see whether DiffCI would have
 saved work in a repository that only runs `observe`. The streak fields are counts only too (added in CLI 0.3.62): a failed

@@ -1,6 +1,7 @@
 /** Best-effort usage signal. Carries a repository name only when given one; never content, paths or machine details. */
-export type UsageCommand = "check" | "observe" | "verify" | "plan";
-export type UsageOutcome = "observed" | "refused" | "error" | "passed" | "failed" | "blocked" | "selective" | "full";
+/** "mcp": the local MCP server was initialized by an agent client (outcome "started"). */
+export type UsageCommand = "check" | "observe" | "verify" | "plan" | "mcp";
+export type UsageOutcome = "observed" | "refused" | "error" | "passed" | "failed" | "blocked" | "selective" | "full" | "started";
 export type UsageSurface = "cli" | "local-mcp" | "github-action" | "gitlab-component" | "azure-devops-task";
 /**
  * How much of the suite a run chose: counts only, never test names. `baselineTestsSelected` is what a simple
@@ -32,6 +33,8 @@ export interface UsageSignal {
   repository?: string;
   selection?: UsageSelection;
   streak?: UsageStreak;
+  /** "mcp" only: the agent client's name from MCP initialize, normalised by mcpClientName. */
+  client?: string;
   endpoint?: string;
   fetchImpl?: typeof fetch;
 }
@@ -54,6 +57,16 @@ function streakFields(command: UsageCommand, outcome: UsageOutcome, streak: Usag
   if (outcome !== "passed" || streak.failedBefore === 0) return {};
   return { failed_before: streak.failedBefore,
     ...(count(streak.fixSeconds) && streak.fixSeconds <= MAX_FIX_SECONDS ? { fix_seconds: streak.fixSeconds } : {}) };
+}
+
+/**
+ * An MCP client's self-reported clientInfo.name as a short lower-case product name ("Claude Code" -> "claude code"),
+ * or undefined. It names the agent application, never the person or machine.
+ */
+export function mcpClientName(name: unknown): string | undefined {
+  if (typeof name !== "string") return undefined;
+  const value = name.trim().toLowerCase().replace(/[^a-z0-9 ._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 48).trim();
+  return /^[a-z0-9][a-z0-9 ._-]{0,47}$/.test(value) ? value : undefined;
 }
 
 /** From an observation result (observe, check). No result, or no tests found: nothing to count. */
@@ -95,6 +108,7 @@ export async function deliverUsageSignal(input: UsageSignal): Promise<DeliveryRe
         ...(input.repository ? { repository: input.repository } : {}),
         ...selectionFields(input.selection),
         ...streakFields(input.command, input.outcome, input.streak),
+        ...(input.command === "mcp" && input.client ? { client: input.client } : {}),
       }),
       signal: AbortSignal.timeout(3000),
     });
