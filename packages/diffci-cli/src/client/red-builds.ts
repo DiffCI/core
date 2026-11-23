@@ -187,6 +187,17 @@ export interface ClassifyInput {
  * One key per pull request: its head repository and branch. GitHub links no pull request to runs from forks,
  * so the branch is the one identity every run has.
  */
+/**
+ * Who wrote a run's pull request, as far as the run shows: the fork's owner for a fork, otherwise the actor unless it
+ * is a bot. Null when the run can't say. Used only to count distinct authors; never written to the report.
+ */
+export function runAuthor(repository: string, run: RunSummary): string | null {
+  const owner = run.headRepo.split("/")[0] ?? "";
+  if (run.headRepo && run.headRepo.toLowerCase() !== repository.toLowerCase() && owner) return owner.toLowerCase();
+  if (run.actor && !/\[bot\]$/i.test(run.actor)) return run.actor.toLowerCase();
+  return null;
+}
+
 export function pullRequestKey(run: RunSummary): string {
   return `${run.headRepo}:${run.headBranch}`;
 }
@@ -368,7 +379,7 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
   const pullRequestsOf = Object.fromEntries(VERDICTS.map((v) => [v, new Set<string>()])) as Record<Verdict, Set<string>>;
   const redPullRequests = new Set<string>();
   const preventablePerPullRequest = new Map<string, number>();
-  const preventableAuthors = new Set<string>();
+  const preventableKeys = new Set<string>();
   for (const row of rows) {
     verdicts[row.verdict].runs++;
     verdicts[row.verdict].runnerMinutes += row.runnerMinutes;
@@ -378,9 +389,19 @@ export function summarise(repository: string, runs: RunSummary[], rows: RedRun[]
     redPullRequests.add(key);
     if (row.verdict === "preventable") {
       preventablePerPullRequest.set(key, (preventablePerPullRequest.get(key) ?? 0) + 1);
-      preventableAuthors.add(run?.actor || key);
+      preventableKeys.add(key);
     }
   }
+  // One author per pull request, from any of its runs: a bot pushing a fix commit (autofix-ci) or a maintainer
+  // re-running a fork's workflow becomes the run's actor, and counting per run then splits one person into two.
+  const authorOfPullRequest = new Map<string, string>();
+  for (const run of runs) {
+    const key = pullRequestKey(run);
+    if (!preventableKeys.has(key) || authorOfPullRequest.has(key)) continue;
+    const author = runAuthor(repository, run);
+    if (author) authorOfPullRequest.set(key, author);
+  }
+  const preventableAuthors = new Set([...preventableKeys].map((key) => authorOfPullRequest.get(key) ?? key));
   for (const v of VERDICTS) {
     verdicts[v].runnerMinutes = Math.round(verdicts[v].runnerMinutes);
     verdicts[v].pullRequests = pullRequestsOf[v].size;

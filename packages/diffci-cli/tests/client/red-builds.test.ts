@@ -187,6 +187,36 @@ describe("pull request counts", () => {
   });
 });
 
+describe("preventable authors", () => {
+  const lintRed = (runs: RunSummary[]) => {
+    const jobs = new Map<number, JobSummary[]>(runs.map((r) => [r.id, [job(r.id * 10, "lint")]]));
+    const annotations = new Map<number, Annotation[]>(runs.map((r) => [r.id * 10, [fail(`src/${"abcdefgh"[r.id]}file.ts`, "unused variable")]]));
+    return summarise(REPO, runs, classify({ repository: REPO, runs, jobs, annotations }), null);
+  };
+
+  it("does not count a bot that pushed to someone's fork PR as a second author (dify, 2026-11-23)", () => {
+    // autofix-ci pushed a fix commit to one fork PR; the same person has two more fork PRs.
+    const runs = [
+      run(1, { headRepo: "mika/app", headBranch: "fix-a", actor: "autofix-ci[bot]" }),
+      run(2, { headRepo: "mika/app", headBranch: "fix-a", actor: "mika" }),
+      run(3, { headRepo: "mind/app", headBranch: "t-1", actor: "mind" }),
+      run(4, { headRepo: "mind/app", headBranch: "t-2", actor: "mind" }),
+      run(5, { headRepo: "mes/app", headBranch: "scan", actor: "mes" }),
+    ];
+    const report = lintRed(runs);
+    assert.equal(report.verdicts.preventable.pullRequests, 4);
+    assert.equal(report.preventableAuthors, 3);
+  });
+
+  it("credits a fork PR to the fork owner even when a maintainer triggered the run", () => {
+    assert.equal(lintRed([run(1, { headRepo: "alice/app", actor: "maintainer" }), run(2, { headRepo: "alice/app", headBranch: "x", actor: "alice" })]).preventableAuthors, 1);
+  });
+
+  it("falls back to the pull request itself when only a bot ran a same-repository branch", () => {
+    assert.equal(lintRed([run(1, { actor: "renovate[bot]" }), run(2, { actor: "dependabot[bot]" })]).preventableAuthors, 2);
+  });
+});
+
 describe("byBranchAgent", () => {
   it("splits runs, red runs and verdicts by the agent the branch is named after", () => {
     const runs = [
