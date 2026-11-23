@@ -49,3 +49,29 @@ test("selection is derived from observation, verification and plan reports", () 
   assert.deepEqual(planSelection({ mode: "SELECTIVE", selectedTests: ["a"], skippedTests: ["b", "c"] }), { mode: "selective", testsSelected: 1, testsTotal: 3 });
   assert.equal(planSelection({ mode: "FULL", selectedTests: [], skippedTests: [] }), undefined);
 });
+
+test("verify streaks send counts only, and only where they mean something", async () => {
+  const bodies: any[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return new Response(null, { status: 202 }); };
+  const send = (outcome: "passed" | "failed" | "blocked", streak: { failedBefore: number; fixSeconds?: number }, command: "verify" | "check" = "verify") =>
+    sendUsageSignal({ command, outcome: command === "check" ? "observed" : outcome, version: "0.3.62", fetchImpl, streak });
+  await send("failed", { failedBefore: 0 });
+  await send("failed", { failedBefore: 2, fixSeconds: 60 });
+  await send("passed", { failedBefore: 3, fixSeconds: 420 });
+  await send("passed", { failedBefore: 0, fixSeconds: 5 });
+  await send("blocked", { failedBefore: 1 });
+  await send("passed", { failedBefore: 1 }, "check");
+  await send("passed", { failedBefore: 1, fixSeconds: 90_000 });
+  await send("passed", { failedBefore: 1.5 });
+  const streaks = bodies.map(({ failed_before, fix_seconds }) => ({ failed_before, fix_seconds }));
+  assert.deepEqual(streaks, [
+    { failed_before: 0, fix_seconds: undefined },
+    { failed_before: 2, fix_seconds: undefined },
+    { failed_before: 3, fix_seconds: 420 },
+    { failed_before: undefined, fix_seconds: undefined },
+    { failed_before: undefined, fix_seconds: undefined },
+    { failed_before: undefined, fix_seconds: undefined },
+    { failed_before: 1, fix_seconds: undefined },
+    { failed_before: undefined, fix_seconds: undefined },
+  ]);
+});

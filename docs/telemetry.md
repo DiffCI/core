@@ -24,9 +24,13 @@ server). It contains:
 | `tests_selected` | `3` | number of test files the run chose (0 when the change needed none) |
 | `tests_total` | `40` | number of test files the full test command runs |
 | `baseline_tests_selected` | `12` | `observe` and `check` only: number of test files a simple path-rule CI would have run, the comparator DiffCI's savings are measured against |
+| `failed_before` | `2` | local `verify` only, outside CI: how many earlier `verify` runs on the same base commit failed since it last passed (within a day), read from the outcome log in `.git/diffci/`; sent on a failed run, and on a passed run that followed failures |
+| `fix_seconds` | `420` | local `verify` only, on a pass that followed failures: seconds from the first of those failures to the pass (at most one day) |
 
 The test fields are counts only (added in CLI 0.3.61); they let the project see whether DiffCI would have
-saved work in a repository that only runs `observe`. It never contains source code, file paths, commit SHAs,
+saved work in a repository that only runs `observe`. The streak fields are counts only too (added in CLI 0.3.62): a failed
+`verify` followed by a passing one on the same base is a broken change fixed before push, and these two
+numbers let the project count those without sending the base commit or anything that identifies the change. It never contains source code, file paths, commit SHAs,
 branch names, test names, reports, IP-based
 location, user names, email addresses or machine details. The request has a 3-second timeout, and a
 failed or blocked request never changes the outcome or exit code of a run.

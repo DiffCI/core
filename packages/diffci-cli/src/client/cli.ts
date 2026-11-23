@@ -56,7 +56,7 @@ import { GraphCache } from "@diffci.com/core/cache/graph-cache";
 import { githubDeliveryWarning } from "./delivery-warning.js";
 import { formatJobSummary } from "./job-summary.js";
 import { configureTelemetry, readTelemetryPreference, recordUsage, telemetryNotice } from "./telemetry.js";
-import { observationSelection, planSelection, verificationSelection } from "./usage-signal.js";
+import { observationSelection, planSelection, verificationSelection, type UsageStreak } from "./usage-signal.js";
 import { formatFeedbackPrompt, markFeedbackPromptShown, shouldShowFeedbackPrompt } from "./feedback-prompt.js";
 import { detectSpecificationConflicts, readSpecificationFile } from "./spec-conflicts.js";
 import { formatVerificationSummary, verificationExitCode, verifyChanged, verifyRange, verifyScoped, type VerificationReport } from "./verify.js";
@@ -70,7 +70,7 @@ import { renderPilotPacket } from "./pilot-packet.js";
 import { observerIdentity } from "./package-identity.js";
 import { buildPilotWorkflow, diffciVerificationWorkflow, diffciWorkflow, verificationInstallCommands } from "./workflow-templates.js";
 import { buildMissReport, formatMissReportMarkdown, parseJunit, type MissReport } from "./enforce-misses.js";
-import { appendOutcome, formatOutcomeSummary, outcomeLogPath, readOutcomes, summarizeOutcomes } from "./outcome-log.js";
+import { appendOutcome, formatOutcomeSummary, outcomeLogPath, outcomeRecord, readOutcomes, summarizeOutcomes, verifyStreak } from "./outcome-log.js";
 import { checkPlan } from "./check-plan.js";
 import { runRedBuildsCommand } from "./red-builds.js";
 import { buildCoverageMap, formatCoverageRun } from "./coverage-map.js";
@@ -217,6 +217,21 @@ function runCheckPlanCommand(args: readonly string[]): number {
     console.error(JSON.stringify({ schemaVersion: 1, error: error instanceof Error ? error.message : "Invalid check-plan input" }));
     return 2;
   }
+}
+
+/**
+ * Failed verify runs on this run's base since its last pass, from the local outcome log (outcome-log.ts
+ * verifyStreak), read before this run is appended. Best effort: no log, no streak.
+ */
+function usageStreak(repoPath: string, report: VerificationReport): UsageStreak | undefined {
+  try {
+    const path = outcomeLogPath(repoPath);
+    if (!path) return undefined;
+    const current = outcomeRecord(report);
+    const streak = verifyStreak(readOutcomes(path), current);
+    return { failedBefore: streak.failedBefore,
+      ...(streak.sinceFirstFailureSeconds !== undefined ? { fixSeconds: streak.sinceFirstFailureSeconds } : {}) };
+  } catch { return undefined; }
 }
 
 function defaultReportPath(env: NodeJS.ProcessEnv): string {
@@ -670,7 +685,10 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
       if (refreshed) console.error(refreshed);
     } catch { /* keeping an old hook never fails verification */ }
   }
-  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath, verificationSelection(report));
+  // Before push only: a CI checkout is not where a broken change gets fixed.
+  const logging = flags["no-log"] !== true && env.DIFFCI_OUTCOME_LOG !== "0" && !(Boolean(env.CI) && env.CI !== "false");
+  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath, verificationSelection(report),
+    logging ? usageStreak(repoPath, report) : undefined);
   if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   if (reportPath) {
     mkdirSync(dirname(reportPath), { recursive: true });

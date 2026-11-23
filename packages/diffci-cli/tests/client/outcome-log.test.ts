@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { appendOutcome, outcomeLogPath, readOutcomes, reusablePass, summarizeOutcomes, type OutcomeRecord, type ReuseQuery } from "../../src/client/outcome-log.js";
+import { appendOutcome, outcomeLogPath, readOutcomes, reusablePass, summarizeOutcomes, verifyStreak, type OutcomeRecord, type ReuseQuery } from "../../src/client/outcome-log.js";
 import type { VerificationReport } from "../../src/client/verify.js";
 
 function report(fields: Partial<VerificationReport> & { tree: string; failing?: string[]; wallMs?: number }): VerificationReport {
@@ -96,4 +96,24 @@ test("outside a Git repository there is no log and nothing is written", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("verifyStreak counts failed runs on the same base since its last pass, within a day", () => {
+  const run = (base: string, verification: OutcomeRecord["verification"], at: string) =>
+    ({ base_sha: base, verification, produced_at: at }) as OutcomeRecord;
+  const now = { base_sha: "b", produced_at: "2026-11-23T12:00:00.000Z" };
+  assert.deepEqual(verifyStreak([], now), { failedBefore: 0 });
+  // An older pass ends the streak; blocked runs and other bases are passed over.
+  assert.deepEqual(verifyStreak([
+    run("b", "failed", "2026-11-23T09:00:00.000Z"),
+    run("b", "passed", "2026-11-23T10:00:00.000Z"),
+    run("b", "failed", "2026-11-23T11:00:00.000Z"),
+    run("other", "failed", "2026-11-23T11:10:00.000Z"),
+    run("b", "blocked", "2026-11-23T11:20:00.000Z"),
+    run("b", "failed", "2026-11-23T11:50:00.000Z"),
+  ], now), { failedBefore: 2, sinceFirstFailureSeconds: 3600 });
+  // Failures older than a day are not this change.
+  assert.deepEqual(verifyStreak([run("b", "failed", "2026-11-22T11:59:59.000Z")], now), { failedBefore: 0 });
+  // A pass straight after a pass is no recovery.
+  assert.deepEqual(verifyStreak([run("b", "passed", "2026-11-23T11:00:00.000Z")], now), { failedBefore: 0 });
 });

@@ -12,6 +12,15 @@ export interface UsageSelection {
   testsTotal: number;
   baselineTestsSelected?: number;
 }
+/**
+ * Local verify only (outcome-log.ts verifyStreak): failed runs on the same base since its last pass, and on a
+ * pass after failures, the seconds since the first of them. Counts only, never the base or the change.
+ */
+export interface UsageStreak {
+  failedBefore: number;
+  fixSeconds?: number;
+}
+export const MAX_FIX_SECONDS = 24 * 60 * 60;
 export interface UsageSignal {
   command: UsageCommand;
   outcome: UsageOutcome;
@@ -22,6 +31,7 @@ export interface UsageSignal {
   installationId?: string;
   repository?: string;
   selection?: UsageSelection;
+  streak?: UsageStreak;
   endpoint?: string;
   fetchImpl?: typeof fetch;
 }
@@ -32,6 +42,18 @@ function selectionFields(selection: UsageSelection | undefined): Record<string, 
   if (!selection || !count(selection.testsSelected) || !count(selection.testsTotal) || selection.testsSelected > selection.testsTotal) return {};
   return { mode: selection.mode, tests_selected: selection.testsSelected, tests_total: selection.testsTotal,
     ...(count(selection.baselineTestsSelected) && selection.baselineTestsSelected <= selection.testsTotal ? { baseline_tests_selected: selection.baselineTestsSelected } : {}) };
+}
+
+/**
+ * A failed verify says whether it starts a streak (failed_before 0) or repeats one; a pass after failures
+ * says how many and how long the fix took. Anything else, or inconsistent counts: nothing.
+ */
+function streakFields(command: UsageCommand, outcome: UsageOutcome, streak: UsageStreak | undefined): Record<string, unknown> {
+  if (!streak || command !== "verify" || !count(streak.failedBefore) || streak.failedBefore > 1000) return {};
+  if (outcome === "failed") return { failed_before: streak.failedBefore };
+  if (outcome !== "passed" || streak.failedBefore === 0) return {};
+  return { failed_before: streak.failedBefore,
+    ...(count(streak.fixSeconds) && streak.fixSeconds <= MAX_FIX_SECONDS ? { fix_seconds: streak.fixSeconds } : {}) };
 }
 
 /** From an observation result (observe, check). No result, or no tests found: nothing to count. */
@@ -72,6 +94,7 @@ export async function deliverUsageSignal(input: UsageSignal): Promise<DeliveryRe
         ...(input.installationId ? { installation_id: input.installationId } : {}),
         ...(input.repository ? { repository: input.repository } : {}),
         ...selectionFields(input.selection),
+        ...streakFields(input.command, input.outcome, input.streak),
       }),
       signal: AbortSignal.timeout(3000),
     });

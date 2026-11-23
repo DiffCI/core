@@ -165,6 +165,42 @@ export function readOutcomes(path: string): OutcomeRecord[] {
 }
 
 /**
+ * Failures caught before push (2026-11-23).
+ *
+ * WHY. A verify that fails and a later one that passes on the same base is a broken change fixed before it
+ * left the machine: the red build it would have caused never ran. Daily usage counts cannot show that, since
+ * three retries of one change look like three failures.
+ *
+ * WHAT. The failed runs on the same base since its last pass, newest first, within a day of this run; blocked
+ * runs neither count nor end the streak. Computed from the local log only, so usage counting sends just the
+ * count and the seconds from the first failure, never the base or the change.
+ */
+export interface VerifyStreak {
+  /** Failed runs on this base since its last pass. */
+  failedBefore: number;
+  /** Seconds from the first of those failures to this run. */
+  sinceFirstFailureSeconds?: number;
+}
+
+export const STREAK_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function verifyStreak(records: readonly OutcomeRecord[], current: { base_sha: string; produced_at: string }): VerifyStreak {
+  const now = Date.parse(current.produced_at);
+  let failedBefore = 0;
+  let first: number | undefined;
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const run = records[index]!;
+    const at = Date.parse(run.produced_at);
+    if (!Number.isFinite(at) || !(now - at <= STREAK_WINDOW_MS)) break;
+    if (run.base_sha !== current.base_sha) continue;
+    if (run.verification === "passed") break;
+    if (run.verification === "failed") { failedBefore += 1; first = at; }
+  }
+  return { failedBefore,
+    ...(first !== undefined && now >= first ? { sinceFirstFailureSeconds: Math.round((now - first) / 1000) } : {}) };
+}
+
+/**
  * A selected run that passed and a later full run of the same tree that failed: the selection left out
  * something that fails. Possible, not proven - a flaky test fails the same way - so it is reported as
  * a lead. Misses on CI full runs are classified by `diffci enforce-misses`.
