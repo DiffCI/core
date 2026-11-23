@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { contentNamesPath, foldJoinedLiterals, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, withoutCodeComments, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
+import { contentNamesPath, foldJoinedLiterals, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, withoutCodeComments, knownPathBases, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests, workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
 import { analyzeGitDelta, packageJsonChangeKind } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
@@ -671,5 +671,73 @@ describe("paths named only in code comments (2026-11-23)", () => {
     assert.deepEqual(result.unresolvable, []);
     assert.deepEqual(result.tests, ["tests/worker-source.test.ts"]);
     assert.deepEqual(result.code, []);
+  });
+});
+
+describe("joins on a directory the script names exactly (2026-11-23)", () => {
+  it("works out repository directories from the script's own location", () => {
+    const cjs = knownPathBases(`const path = require("node:path");\nconst root = path.resolve(__dirname, "..");\nconst api = path.join(root, "src", "app", "api");`, "scripts/test-security.js");
+    assert.equal(cjs.get("root"), "");
+    assert.equal(cjs.get("api"), "src/app/api");
+    assert.equal(cjs.get("__dirname"), "scripts");
+    const esm = knownPathBases(`import { dirname, join } from "node:path";\nimport { fileURLToPath } from "node:url";\nconst __dirname = dirname(fileURLToPath(import.meta.url));\nconst root = join(__dirname, "..", "..");`, "packages/a/build.mjs");
+    assert.equal(esm.get("__dirname"), "packages/a");
+    assert.equal(esm.get("root"), "");
+    const url = knownPathBases(`const ROOT = fileURLToPath(new URL("../", import.meta.url));`, "tests/x.test.ts");
+    assert.equal(url.get("ROOT"), "");
+  });
+
+  it("trusts nothing that could be another directory", () => {
+    const bases = knownPathBases([
+      `const cwd = process.cwd();`,
+      `const outside = path.resolve(__dirname, "../../..");`,
+      `const shadowed = path.resolve(__dirname, "..");`,
+      `function scan(shadowed) { return path.join(shadowed, "src"); }`,
+      `let moved = path.resolve(__dirname, "..");`,
+      `moved = "/tmp";`,
+      `const fromEnv = path.join(process.env.ROOT, "src");`,
+      `const absolute = path.resolve(__dirname, "/etc");`,
+    ].join("\n"), "scripts/x.js");
+    for (const name of ["cwd", "outside", "shadowed", "moved", "fromEnv", "absolute"]) assert.equal(bases.get(name), undefined, name);
+  });
+
+  const target = "ops/cloudflare/src/index.js";
+  const securityScript = [
+    `const path = require("node:path");`,
+    `const root = path.resolve(__dirname, "..");`,
+    `const apiRoot = path.join(root, "src", "app", "api");`,
+    `for (const file of [...projectFiles(path.join(root, "src")), ...projectFiles(path.join(root, "scripts"))]) check(file);`,
+  ].join("\n");
+  const names = (content: string, path: string, reader = "scripts/test-security.js") =>
+    contentNamesPath(content, reader, path, referencePattern(referenceTokens(path, { ancestors: true })), true);
+
+  it("reads path.join(root, \"src\") as the repository's src/, not every directory called src", () => {
+    assert.equal(names(securityScript, target), false);
+    assert.equal(names(securityScript, "src/lib/security/route-cache-policy.ts"), true);
+    assert.equal(names(securityScript, "src/app/api/health/route.ts"), true);
+    assert.equal(names(securityScript, "scripts/check.mjs"), true);
+  });
+
+  it("keeps the conservative reading when the base is unknown", () => {
+    assert.equal(names(`function scan(root) { return readdirSync(path.join(root, "src")); }`, target), true);
+    assert.equal(names(`const root = process.cwd();\nreaddirSync(path.join(root, "src"));`, target), true);
+  });
+
+  it("names a directory that contains the file, and a glob from the root", () => {
+    assert.equal(names(`const root = path.resolve(__dirname, "..");\nwalk(path.join(root, "ops", "cloudflare"));`, target), true);
+    assert.equal(names(`const root = path.resolve(__dirname, "..");\nglobSync(path.join(root, "ops/**/*.js"));`, target), true);
+    assert.equal(names(`const root = path.resolve(__dirname, "..");\nwalk(path.join(root, "ops", "other"));`, target), false);
+  });
+
+  it("no longer makes a script npm test runs block every change under ops/cloudflare/src", () => {
+    const files: Record<string, string> = {
+      [target]: "export default {};",
+      "package.json": JSON.stringify({ scripts: { test: "node scripts/test-security.js && node --test tests" } }),
+      "scripts/test-security.js": securityScript,
+      "tests/worker-source.test.ts": `const src = readFileSync("ops/cloudflare/src/index.js", "utf8");`,
+    };
+    const result = resolveFileReferences(target, input(files, []));
+    assert.deepEqual(result.unresolvable, []);
+    assert.deepEqual(result.tests, ["tests/worker-source.test.ts"]);
   });
 });

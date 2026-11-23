@@ -358,7 +358,7 @@ function callArguments(content: string, start: number): CallArgument[] | undefin
  * everything under it, and a single literal between variables (`join(root, "ops", name)`) is left bare,
  * so a dynamic path keeps the conservative answer.
  */
-export function foldJoinedLiterals(content: string): string {
+export function foldJoinedLiterals(content: string, bases?: ReadonlyMap<string, string>): string {
   if (!/\b(?:join|Join|resolve)\s*\(/.test(content)) return content;
   let folded = "";
   let last = 0;
@@ -367,7 +367,25 @@ export function foldJoinedLiterals(content: string): string {
     if (start < last) continue;
     const args = callArguments(content, start);
     if (!args) continue;
-    for (let i = 0; i < args.length;) {
+    let from = 0;
+    // A known directory first, then literals: one repository path, anchored at the root (`$repo/...`),
+    // which names exactly that path instead of any directory of the same name (knownPathBases).
+    const base = args[0] && args[0].literal === undefined ? bases?.get(content.slice(args[0].start, args[0].end)) : undefined;
+    if (base !== undefined && args[1]?.literal !== undefined) {
+      let j = 1;
+      while (j + 1 < args.length && args[j + 1]!.literal !== undefined) j++;
+      const literals = args.slice(1, j + 1).map((arg) => arg.literal!);
+      // resolve() restarts at an absolute literal; the result is then not below the known directory.
+      if (!(/^resolve/.test(call[0]) && literals.some((literal) => literal.startsWith("/")))) {
+        const joined = posix.normalize(posix.join(base || ".", ...literals));
+        if (!joined.startsWith("..") && !posix.isAbsolute(joined)) {
+          folded += `${content.slice(last, args[0]!.start)}"$repo/${joined}"`;
+          last = args[j]!.end;
+          from = j + 1;
+        }
+      }
+    }
+    for (let i = from; i < args.length;) {
       if (args[i]!.literal === undefined) { i++; continue; }
       let j = i;
       while (j + 1 < args.length && args[j + 1]!.literal !== undefined) j++;
@@ -487,15 +505,104 @@ export function withoutCodeComments(content: string, path: string): string {
   return out + content.slice(from);
 }
 
+/**
+ * Directories a script's path variables name, worked out from the script's own location (2026-11-23).
+ *
+ * WHY. `path.join(root, "src")` was read as a bare `"src"`, which names every directory called src: in
+ * DentalPresence, scripts/test-security.js walks the repository's src/, and because `npm test` runs it, every
+ * change under ops/cloudflare/src/ ran the full suite. Its `root` is `path.resolve(__dirname, "..")`, which
+ * says exactly which directory it is.
+ *
+ * WHAT. The values of `__dirname`, `import.meta.dirname`, and each top-level `const` whose initializer is built
+ * only from those, `fileURLToPath(new URL(literal, import.meta.url))`, `dirname(fileURLToPath(import.meta.url))`
+ * and `join`/`resolve`/`dirname` of a known directory with string literals: repository-relative, `""` for the
+ * root. A name counts only when it is the file's single binding of that name, so no parameter, inner variable
+ * or reassignment can shadow it. `process.cwd()`, environment variables and anything else stay unknown, and a
+ * join on an unknown base keeps the conservative reading.
+ */
+export function knownPathBases(content: string, readerPath: string): Map<string, string> {
+  const readerDir = posix.dirname(readerPath) === "." ? "" : posix.dirname(readerPath);
+  const known = new Map<string, string>([["import.meta.dirname", readerDir]]);
+  if (!/\b(?:__dirname|import\.meta)\b/.test(content)) return known;
+  const source =ts.createSourceFile(readerPath, content, ts.ScriptTarget.Latest, false, /\.[cm]?tsx?$/i.test(readerPath) ? ts.ScriptKind.TS : ts.ScriptKind.JS);
+  const bindings = new Map<string, number>();
+  const bind = (name: ts.BindingName | ts.Identifier | undefined) => {
+    if (!name) return;
+    if (ts.isIdentifier(name)) bindings.set(name.text, (bindings.get(name.text) ?? 0) + 1);
+    else for (const element of name.elements) if (!ts.isOmittedExpression(element)) bind(element.name);
+  };
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) bind(node.name);
+    else if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassDeclaration(node)) && node.name) bind(node.name);
+    else if (ts.isImportClause(node) || ts.isImportSpecifier(node) || ts.isNamespaceImport(node) || ts.isImportEqualsDeclaration(node)) bind(node.name);
+    else if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment && ts.isIdentifier(node.left)) {
+      bindings.set(node.left.text, 2); // reassigned: never trusted
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  // CommonJS's own __dirname, unless the file declares one (the ESM idiom), which is then judged like any const.
+  if (!bindings.has("__dirname")) known.set("__dirname", readerDir);
+
+  const literal =(node: ts.Expression) => ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? node.text : undefined;
+  const callee = (node: ts.CallExpression) => ts.isIdentifier(node.expression) ? node.expression.text : ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined;
+  const importMetaUrl = (node: ts.Expression) => ts.isPropertyAccessExpression(node) && node.name.text === "url" && ts.isMetaProperty(node.expression);
+  const inside = (path: string) => {
+    const normal = posix.normalize(path || ".");
+    if (normal.startsWith("..") || posix.isAbsolute(normal)) return undefined;
+    const trimmed = normal.replace(TRAILING_SLASHES, "");
+    return trimmed === "." || trimmed === "" ? "" : trimmed;
+  };
+  const evaluate = (node: ts.Expression): string | undefined => {
+    if (ts.isParenthesizedExpression(node)) return evaluate(node.expression);
+    if (ts.isIdentifier(node)) return known.get(node.text);
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "dirname" && ts.isMetaProperty(node.expression)) return readerDir;
+    if (!ts.isCallExpression(node)) return undefined;
+    const name = callee(node);
+    const [first, ...rest] = node.arguments;
+    if (!first) return undefined;
+    // fileURLToPath(new URL("..", import.meta.url)): resolved against this file's URL.
+    if (name === "fileURLToPath" && node.arguments.length === 1 && ts.isNewExpression(first) && ts.isIdentifier(first.expression) && first.expression.text === "URL"
+      && first.arguments?.length === 2 && importMetaUrl(first.arguments[1]!)) {
+      const relative = literal(first.arguments[0]!);
+      return relative === undefined || relative.startsWith("/") || /^[a-z]+:/i.test(relative) ? undefined : inside(posix.join(readerDir || ".", relative));
+    }
+    if (name === "dirname" && node.arguments.length === 1) {
+      // dirname(fileURLToPath(import.meta.url)) is this file's directory.
+      if (ts.isCallExpression(first) && callee(first) === "fileURLToPath" && first.arguments.length === 1 && importMetaUrl(first.arguments[0]!)) return readerDir;
+      const dir = evaluate(first);
+      return dir === undefined || dir === "" ? undefined : inside(posix.dirname(dir));
+    }
+    if (name === "join" || name === "resolve") {
+      const base = evaluate(first);
+      const parts = rest.map(literal);
+      if (base === undefined || parts.some((part) => part === undefined || part.startsWith("/"))) return undefined;
+      return inside(posix.join(base || ".", ...(parts as string[])));
+    }
+    return undefined;
+  };
+
+  for (const statement of source.statements) {
+    if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer || bindings.get(declaration.name.text) !== 1) continue;
+      const value = evaluate(declaration.initializer);
+      if (value !== undefined) known.set(declaration.name.text, value);
+    }
+  }
+  return known;
+}
+
 export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean, readGlobs = true): boolean {
   if (!pattern.test(content)) return false;
   // A script that names the path only in comments does not read it.
-  if (SCRIPT_FILE.test(readerPath)) {
+  const script = SCRIPT_FILE.test(readerPath);
+  if (script) {
     content = withoutCodeComments(content, readerPath);
     if (!pattern.test(content)) return false;
   }
   // Every path a join folds to was spelled out by its parts, so the raw test above stays a valid filter.
-  content = foldJoinedLiterals(content);
+  content = foldJoinedLiterals(content, script ? knownPathBases(content, readerPath) : undefined);
   const dirs: string[] = [];
   for (let dir = posix.dirname(target); ancestors && dir !== "." && dir !== "/"; dir = posix.dirname(dir)) dirs.push(dir);
   const names = [target, ...dirs];
@@ -506,6 +613,19 @@ export function contentNamesPath(content: string, readerPath: string, target: st
     // in a workflow comment) does not count, as the reference pattern intends (2026-11-04).
     if (!pattern.test(content.slice(Math.max(0, match.index - 1), match.index + word.length + 1))) continue;
     if (inExclusionList(content, match.index)) continue;
+    // A join on a directory the script names exactly (knownPathBases): this repository path and no other.
+    const anchored = /^\$repo\/(.*)$/.exec(word);
+    if (anchored) {
+      const rest = anchored[1]!.replace(TRAILING_SLASHES, "");
+      if (rest === "" || rest === ".") return true;
+      if (/[*?{}[\]!$]/.test(rest)) {
+        if (!readGlobs) continue;
+        if (names.some((name) => matchesGlob(name, widenCharacterClasses(rest)))) return true;
+        continue;
+      }
+      if (names.includes(posix.normalize(rest))) return true;
+      continue;
+    }
     // A leading variable is a directory the content does not name (`$GITHUB_ACTION_PATH/../../scripts/x.sh`
     // names `scripts/x.sh` somewhere, not the repository's `scripts/`), so the rest is a path relative to
     // an unknown directory (2026-11-04: a LobeHub composite action blocked every changed file under scripts/).
