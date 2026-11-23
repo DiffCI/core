@@ -63,7 +63,20 @@ const CASES: Array<{ file: string; before: string; after: string; reason: string
   { file: "mise.local.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
   { file: ".mise.local.toml", before: '[tools]\nnode = "22.5.0"\n', after: '[tools]\nnode = "24.1.0"\n', reason: "Tool configuration changed: tool versions" },
   { file: ".bun-version", before: "1.1.0\n", after: "1.2.0\n", reason: "Tool configuration changed: Bun version" },
+  // Yarn Berry's binary and plugins (2026-11-23): `.yarnrc.yml` loads them by path, and nothing imports
+  // them, so a change to only one of them used to select no tests and be marked safe.
+  { file: ".yarn/releases/yarn-4.5.0.cjs", before: "// yarn 4.5.0\n", after: "// rewritten\n", reason: "Tool configuration changed: package manager" },
+  { file: ".yarn/plugins/@yarnpkg/plugin-workspace-tools.cjs", before: "// v1\n", after: "// v2\n", reason: "Tool configuration changed: package manager" },
 ];
+
+test("a change to only a Yarn editor SDK file selects no tests", async () => {
+  // .yarn/sdks/ is for editors (TypeScript server, ESLint in VS Code); no install or test run loads it.
+  const file = ".yarn/sdks/typescript/lib/tsserver.js";
+  const plan = await planForChange(jestProject(file, "// v1\n"), file, "// v2\n");
+  assert.equal(plan.mode, "SELECTIVE");
+  assert.deepEqual(plan.selectedTests, []);
+  assert.deepEqual(plan.fallbackReasons, []);
+});
 
 for (const { file, before, after, reason } of CASES) {
   test(`a change to only ${file} runs every test and names what the file controls`, async () => {

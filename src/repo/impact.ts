@@ -65,6 +65,7 @@ function toolConfigurationSubject(filePath: string): string | undefined {
   const base = posix.basename(filePath);
   if (base === ".nvmrc" || base === ".node-version") return "Node version";
   if (base === ".npmrc") return "package manager settings";
+  if (/^\.yarn\/(?:releases|plugins)\//.test(filePath)) return "package manager";
   if (/^tsconfig\.[^/]+\.json$/.test(base) || /^jsconfig\.[^/]+\.json$/.test(base)) return "TypeScript configuration";
   if (base === ".mocharc" || base.startsWith(".mocharc.")) return "Mocha settings";
   if (base === ".tool-versions" || /^\.?mise(?:\.local)?\.toml$/.test(base)) return "tool versions";

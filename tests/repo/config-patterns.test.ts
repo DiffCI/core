@@ -53,6 +53,7 @@ const EXAMPLES = [
   ".nvmrc",
   ".node-version",
   ".npmrc",
+  ".yarn/releases/yarn-4.5.0.cjs",
   ".mocharc.json",
   ".tool-versions",
   "mise.local.toml",

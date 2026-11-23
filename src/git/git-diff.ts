@@ -248,6 +248,11 @@ export const CONFIG_PATTERNS = [
   /^\.nvmrc$/,
   /^\.node-version$/,
   /^\.npmrc$/,
+  // Yarn Berry's own code (2026-11-23). `.yarnrc.yml` loads the package manager from `yarnPath:` and
+  // its plugins from `plugins:`, so a binary or plugin is code that no file imports and that is not
+  // named like a configuration. A change to only one of them selected no tests and was marked safe.
+  // Editor SDKs under .yarn/sdks/ are not here: neither an install nor a test run loads them.
+  /^\.yarn\/(?:releases|plugins)\//,
   // Mocha's configuration (issue #142). `.mocharc.json` reads as an asset by extension and
   // `.mocharc.js` as code with no importers, so neither reached the configuration signals; both
   // decide how the suite runs.
