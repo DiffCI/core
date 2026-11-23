@@ -33,6 +33,8 @@ export interface OutcomeRecord {
   /** The verified tree; runs on the same tree verified the same content. */
   tree_sha: string;
   verification: VerificationReport["verification"];
+  /** Why a blocked run could not vouch for its result (2026-11-23): blocked runs were otherwise undiagnosable. */
+  reason?: string;
   selection: VerificationReport["selection"];
   tests_selected: number;
   tests_available: number;
@@ -65,6 +67,7 @@ export function outcomeRecord(report: VerificationReport, env: Record<string, st
     ...(report.commit_range ? { head_sha: report.commit_range.head_sha } : {}),
     tree_sha: report.snapshot.before_tree_sha,
     verification: report.verification,
+    ...(report.verification === "blocked" && report.reason ? { reason: report.reason.slice(0, 500) } : {}),
     selection: report.selection,
     tests_selected: report.tests_selected,
     tests_available: report.tests_available,

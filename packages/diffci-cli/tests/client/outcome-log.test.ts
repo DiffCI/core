@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { appendOutcome, outcomeLogPath, readOutcomes, reusablePass, summarizeOutcomes, verifyStreak, type OutcomeRecord, type ReuseQuery } from "../../src/client/outcome-log.js";
+import { appendOutcome, outcomeLogPath, outcomeRecord, readOutcomes, reusablePass, summarizeOutcomes, verifyStreak, type OutcomeRecord, type ReuseQuery } from "../../src/client/outcome-log.js";
 import type { VerificationReport } from "../../src/client/verify.js";
 
 function report(fields: Partial<VerificationReport> & { tree: string; failing?: string[]; wallMs?: number }): VerificationReport {
@@ -116,4 +116,15 @@ test("verifyStreak counts failed runs on the same base since its last pass, with
   assert.deepEqual(verifyStreak([run("b", "failed", "2026-11-22T11:59:59.000Z")], now), { failedBefore: 0 });
   // A pass straight after a pass is no recovery.
   assert.deepEqual(verifyStreak([run("b", "passed", "2026-11-23T11:00:00.000Z")], now), { failedBefore: 0 });
+});
+
+test("a blocked run records why, and other runs do not", () => {
+  const report = (verification: VerificationReport["verification"]) => ({
+    produced_at: "2026-11-23T12:00:00.000Z", scope: "commit-range", verification, reason: "HEAD moved while verification was running",
+    selection: "none", tests_selected: 0, tests_available: 0, snapshot: { base_sha: "b", before_tree_sha: "t" },
+    analysis: { status: "not_needed", fallback_reasons: [] },
+  }) as unknown as VerificationReport;
+  assert.equal(outcomeRecord(report("blocked")).reason, "HEAD moved while verification was running");
+  assert.equal(outcomeRecord(report("passed")).reason, undefined);
+  assert.equal(outcomeRecord(report("failed")).reason, undefined);
 });
