@@ -180,6 +180,7 @@ Each study is a replay on real repositories, with its method, raw data and limit
 
 | Study | Result |
 |---|---|
+| [Dogfood record](https://diffci.com/case-studies/dogfood-record) | Two months on our own two repositories in observe mode: 210 of 440 commits narrowed to 1.9–4.7% of the test files; 0 of 115 skip decisions checked against full CI missed a failing test (only 1 of those commits went red) |
 | [Agent breakage replay](https://diffci.com/case-studies/agent-breakage-replay) | Every red CI commit in two agent-built repositories: 32 of 38 introduced breakages caught before push; about 70% of red commits only inherited a broken main |
 | [LobeHub vs a Vitest planner](https://diffci.com/case-studies/lobehub) | 40 commits against the maintainers' own affected-test planner: same share of tests, no planner-picked test missed, 15 of 18 introduced failures caught before push |
 | [Paperclip red builds](https://diffci.com/case-studies/paperclip) | 74 red PR builds classified job by job: 12 failed only on the PR's own pre-push checks (11 agent-written), about 15% of red runs |
