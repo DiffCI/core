@@ -47,7 +47,7 @@ import { observe, isInsideRepository } from "./observe.js";
 import { resolveObservationAgent } from "./agent-identity.js";
 import { inferFullCommand, inferComparableSelectedCommand, inferWorkspaceComparison } from "./full-command.js";
 import { addDiffciPackageScripts, detectPackageManager, installDiffci, type SupportedPackageManager } from "./install.js";
-import { hookCommand, installPrePushHook, isGitRepository, refreshPrePushHook } from "./hook.js";
+import { clearGitLocationEnvironment, hookCommand, installPrePushHook, isGitRepository, refreshPrePushHook } from "./hook.js";
 import { AGENT_HOOK_TIMEOUT_SECONDS, ignoredWrites, MCP_CONFIG_PATHS, SKILL_PATHS, writeAgentStopHook, writeMcpConfig, writeSkill } from "./agent-setup.js";
 import { worktreeChangeSuspected, type ObservationReport, type WorkflowFinding } from "./report.js";
 import { submitObservation } from "./submit.js";
@@ -1647,6 +1647,9 @@ function maybeShowFeedbackPrompt(flags: Record<string, string | boolean>, env: N
 }
 
 async function main(): Promise<void> {
+  // Before anything runs git or a test: a hook's GIT_DIR would point every git command, the tests' own
+  // temporary repositories included, at the pushing worktree's repository (hook.ts, GIT_LOCATION_ENV).
+  clearGitLocationEnvironment(process.env);
   // This stateless command deliberately bypasses shared flag handling, telemetry and feedback.
   if (process.argv[2] === "check-plan") {
     process.exitCode = runCheckPlanCommand(process.argv.slice(3));

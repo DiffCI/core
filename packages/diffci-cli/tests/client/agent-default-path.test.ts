@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { HOOK_MARKER, hookCommand, installHint, installPrePushHook, prePushHook } from "../../src/client/hook.js";
+import { clearGitLocationEnvironment, HOOK_MARKER, hookCommand, installHint, installPrePushHook, prePushHook } from "../../src/client/hook.js";
 import { selectionInstruction, type AgentSelectionPlan } from "../../src/client/agent-selection.js";
 
 function repo(): string {
@@ -84,4 +84,55 @@ test("the MCP selection leads with the one exact command to run", () => {
   assert.match(selectionInstruction(full), /^DiffCI requires the full suite \(full verification required: Lockfile changed\)\. Run exactly:\nnpm test/);
   const blocked = { ...plan, status: "blocked", reason: "working tree changed during analysis; reanalyze" } as unknown as AgentSelectionPlan;
   assert.match(selectionInstruction(blocked), /^DiffCI could not plan this change/);
+});
+
+test("clears git's repository-location variables, and keeps CI's GIT_CONFIG_* authentication", () => {
+  const env: NodeJS.ProcessEnv = { GIT_DIR: "/r/.git/worktrees/w", GIT_INDEX_FILE: "/r/i", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraheader", PATH: "/bin" };
+  assert.deepEqual(clearGitLocationEnvironment(env), ["GIT_DIR", "GIT_INDEX_FILE"]);
+  assert.deepEqual(env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "http.extraheader", PATH: "/bin" });
+});
+
+test("a push from a linked worktree cannot reach the repository through the hook's GIT_DIR", () => {
+  const root = mkdtempSync(join(tmpdir(), "diffci-hook-worktree-"));
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.email=t@diffci.local", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" }).trim();
+  try {
+    const main = join(root, "main");
+    execFileSync("git", ["init", "--quiet", "--bare", join(root, "remote.git")]);
+    execFileSync("git", ["init", "--quiet", main]);
+    git(main, "commit", "--quiet", "--allow-empty", "-m", "base");
+    git(main, "remote", "add", "origin", join(root, "remote.git").replace(/\\/g, "/"));
+    git(main, "push", "--quiet", "origin", "HEAD:refs/heads/main");
+    // Stands in for DiffCI running a test suite whose tests create their own repositories, as DentalPresence's do.
+    const log = join(root, "seen.log");
+    const fake = join(root, "fake-diffci.mjs");
+    writeFileSync(fake, [
+      `import { execFileSync } from "node:child_process";`,
+      `import { appendFileSync, mkdtempSync } from "node:fs";`,
+      `import { tmpdir } from "node:os";`,
+      `import { join } from "node:path";`,
+      `if (process.argv[2] === "version") process.exit(0);`,
+      `appendFileSync(${JSON.stringify(log)}, (process.env.GIT_DIR ?? "-") + "\\n");`,
+      `execFileSync("git", ["init", "--quiet"], { cwd: mkdtempSync(join(tmpdir(), "diffci-hook-test-repo-")) });`,
+    ].join("\n"));
+    const hook = (content: string) => writeFileSync(join(main, ".git", "hooks", "pre-push"), content);
+    const pushFromWorktree = (name: string) => {
+      const tree = join(root, name);
+      // The branch exists on the remote first, so the worktree's push has a base and the hook verifies it.
+      git(main, "push", "--quiet", "origin", `HEAD:refs/heads/${name}`);
+      git(main, "worktree", "add", "--quiet", "-b", name, tree);
+      git(tree, "commit", "--quiet", "--allow-empty", "-m", name);
+      git(tree, "push", "--quiet", "origin", `HEAD:refs/heads/${name}`);
+      return git(main, "config", "--get", "core.bare");
+    };
+    const command = `node ${JSON.stringify(fake.replace(/\\/g, "/"))}`;
+
+    // Without the unset line (the 0.3.63 hook), the stand-in's git init marks the real repository bare.
+    hook(prePushHook(command).replace(/^unset GIT_DIR .*\n/m, ""));
+    assert.equal(pushFromWorktree("old"), "true", "the test would not catch the leak");
+    git(main, "config", "core.bare", "false");
+
+    hook(prePushHook(command));
+    assert.equal(pushFromWorktree("new"), "false");
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map((line) => line === "-" ? "-" : "set"), ["set", "-"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

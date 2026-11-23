@@ -34,12 +34,38 @@ import { dirname, isAbsolute, join, relative } from "node:path";
  */
 export const HOOK_MARKER = "# diffci:managed pre-push hook";
 
+/**
+ * Git's repository-location variables (2026-11-23), as `git rev-parse --local-env-vars` lists them, minus the
+ * GIT_CONFIG_* ones CI uses for authentication.
+ *
+ * WHY. Git runs a hook in a linked worktree with GIT_DIR set to that worktree's git directory. DiffCI then ran
+ * the test suite with it, so a test's `git init` in a temporary directory re-initialised the real repository:
+ * pushing from a DentalPresence worktree wrote `core.bare = true` into the shared .git/config, and every
+ * session's `git status` failed with "must be run in a work tree". DiffCI always finds the repository from
+ * --repo or the working directory, so it needs none of these, and neither do the commands it runs.
+ */
+export const GIT_LOCATION_ENV = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE",
+  "GIT_INTERNAL_SUPER_PREFIX",
+] as const;
+
+/** Removes git's repository-location variables from `env`; returns the ones that were set. */
+export function clearGitLocationEnvironment(env: NodeJS.ProcessEnv): string[] {
+  const cleared = GIT_LOCATION_ENV.filter((name) => env[name] !== undefined);
+  for (const name of cleared) delete env[name];
+  return cleared;
+}
+
 export function prePushHook(command: string): string {
   const install = installHint(command);
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Verifies the commits being pushed with DiffCI's affected tests. Skip once: git push --no-verify
 # Block when DiffCI cannot verify, not only when tests fail: DIFFCI_HOOK_STRICT=1
+# In a linked worktree Git sets GIT_DIR for the hook; DiffCI and the tests it runs find the repository
+# from the working directory, and a test's own git commands must not reach this repository through it.
+unset ${GIT_LOCATION_ENV.join(" ")}
 remote="$1"
 zero=0000000000000000000000000000000000000000
 head=$(git rev-parse HEAD)
