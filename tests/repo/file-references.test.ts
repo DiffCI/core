@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { contentNamesPath, foldJoinedLiterals, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
+import { contentNamesPath, foldJoinedLiterals, infrastructureRole, isImplicitlyLoadedFile, isLintConfig, referencePattern, referenceTokens, resolveFileReferences, testScriptClosure, withoutCodeComments, type ReferenceResolutionInput } from "../../src/repo/file-references.js";
 import { workflowFeedsTests, workflowMayRunTests } from "../../src/repo/workflow-test-steps.js";
 import { analyzeGitDelta, packageJsonChangeKind } from "../../src/git/git-diff.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
@@ -617,5 +617,59 @@ describe("path.join arguments read as one path (2026-11-20)", () => {
     }, []));
     assert.deepEqual(result.unresolvable, []);
     assert.deepEqual(result.tests, ["scripts/d1-staging-sync.test.mjs"]);
+  });
+});
+
+describe("paths named only in code comments (2026-11-23)", () => {
+  const target = "ops/cloudflare/src/index.js";
+  const names = (content: string, reader = "src/lib/policy.ts") =>
+    contentNamesPath(content, reader, target, referencePattern(referenceTokens(target)), false);
+
+  it("does not count a path a script names only in comments", () => {
+    assert.equal(names(`// see the 301 in ops/cloudflare/src/index.js\nexport const x = 1;`), false);
+    assert.equal(names(`/* the worker (ops/cloudflare/src/index.js) also\n * checks this */\nexport const x = 1;`), false);
+    assert.equal(names(`export const x = 1; // ops/cloudflare/src/index.js`), false);
+    assert.equal(names(`/** @see ops/cloudflare/src/index.js */\nexport function f() {}`, "src/lib/policy.mjs"), false);
+  });
+
+  it("still counts a real read, whatever the comments around it", () => {
+    assert.equal(names(`// reads the worker\nconst src = readFileSync("ops/cloudflare/src/index.js", "utf8");`), true);
+    assert.equal(names("const p = `ops/cloudflare/src/index.js`; // and a comment"), true);
+    // A `//` inside a string, a template literal or a regex starts no comment.
+    assert.equal(names(`const u = "https://example.com"; const p = "ops/cloudflare/src/index.js";`), true);
+    assert.equal(names("const u = `https://x.test/${a}`; read('ops/cloudflare/src/index.js');"), true);
+    assert.equal(names(String.raw`const r = /https?:\/\//; read("ops/cloudflare/src/index.js");`), true);
+    assert.equal(names(`const el = <a href="https://x.test">{read("ops/cloudflare/src/index.js")}</a>;`, "src/page.tsx"), true);
+  });
+
+  it("keeps triple-slash directives, which the compiler loads", () => {
+    const content = `/// <reference path="./types.d.ts" />\n// other\nexport {};`;
+    assert.match(withoutCodeComments(content, "a.ts"), /\/\/\/ <reference path="\.\/types\.d\.ts" \/>/);
+    assert.doesNotMatch(withoutCodeComments(content, "a.ts"), /other/);
+  });
+
+  it("keeps line breaks and length, so positions still line up", () => {
+    const content = `a(); // x\n/* y\n z */ b();`;
+    const blanked = withoutCodeComments(content, "a.js");
+    assert.equal(blanked.length, content.length);
+    assert.equal(blanked.split("\n").length, content.split("\n").length);
+    assert.match(blanked, /a\(\);/);
+    assert.match(blanked, /b\(\);/);
+  });
+
+  it("leaves comments in non-script readers to the existing rules", () => {
+    assert.equal(contentNamesPath(`# ops/cloudflare/src/index.js\nrun: node ops/cloudflare/src/index.js`, ".github/workflows/x.yml", target, referencePattern(referenceTokens(target)), false), true);
+  });
+
+  it("selects only the real reader's tests when the others only mention the file in comments", () => {
+    const result = resolveFileReferences(target, input({
+      [target]: "export default {};",
+      "src/lib/route-cache-policy.ts": `// It does NOT cover an empty serving pool: ops/cloudflare/src/index.js\nexport const policy = 1;`,
+      "src/lib/write-freeze.ts": `/* enforced by the worker (ops/cloudflare/src/index.js) */\nexport const freeze = 1;`,
+      "tests/worker-source.test.ts": `const src = readFileSync("ops/cloudflare/src/index.js", "utf8");`,
+    }));
+    assert.deepEqual(result.unresolvable, []);
+    assert.deepEqual(result.tests, ["tests/worker-source.test.ts"]);
+    assert.deepEqual(result.code, []);
   });
 });

@@ -33,6 +33,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
+import ts from "typescript";
 import { matchesGlob } from "./test-discovery.js";
 import { LOCKFILE_NAMES } from "./lockfiles.js";
 
@@ -444,8 +445,55 @@ function namesDirectoryOf(content: string, readerPath: string, target: string): 
  * a different file names that file, and a glob names only what it matches (2026-11-04). Bare names and
  * variables inside a path keep the conservative answer.
  */
+const SCRIPT_FILE = /\.(?:[cm]?[jt]sx?)$/i;
+
+/**
+ * JavaScript and TypeScript with every comment blanked out, length and line breaks kept (2026-11-23).
+ *
+ * WHY. A comment executes nothing, so a path named only in one is not read by the file. DentalPresence's
+ * route-cache-policy.ts and write-freeze.ts say "see ... in ops/cloudflare/src/index.js" in comments, and
+ * since much of the app imports them, every change to index.js selected about 190 tests: 3,030 test
+ * selections over 16 narrowed runs. Dockerfile and workflow comments were already ignored the same way.
+ *
+ * HOW. Comment ranges come from TypeScript's parser, so `//` inside a string, a template literal or a regular
+ * expression is never mistaken for a comment. Only trivia before or after a syntax node is blanked; a comment
+ * the walk does not reach stays, which can only keep a reader. Triple-slash directives (`/// <reference path>`)
+ * are loaded by the compiler and stay.
+ */
+export function withoutCodeComments(content: string, path: string): string {
+  const kind = /\.tsx$/i.test(path) ? ts.ScriptKind.TSX : /\.jsx$/i.test(path) ? ts.ScriptKind.JSX : /\.[cm]?ts$/i.test(path) ? ts.ScriptKind.TS : ts.ScriptKind.JS;
+  const source = ts.createSourceFile(path, content, ts.ScriptTarget.Latest, false, kind);
+  const ranges = new Map<number, number>();
+  const collect = (list: ts.CommentRange[] | undefined) => {
+    for (const range of list ?? []) {
+      if (/^\/\/\/\s*<(?:reference|amd-)/.test(content.slice(range.pos, range.end))) continue;
+      ranges.set(range.pos, range.end);
+    }
+  };
+  const visit = (node: ts.Node) => {
+    collect(ts.getLeadingCommentRanges(content, node.getFullStart()));
+    collect(ts.getTrailingCommentRanges(content, node.getEnd()));
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (ranges.size === 0) return content;
+  let out = "";
+  let from = 0;
+  for (const [pos, end] of [...ranges].sort((a, b) => a[0] - b[0])) {
+    if (pos < from) continue;
+    out += content.slice(from, pos) + content.slice(pos, end).replace(/[^\r\n]/g, " ");
+    from = end;
+  }
+  return out + content.slice(from);
+}
+
 export function contentNamesPath(content: string, readerPath: string, target: string, pattern: RegExp, ancestors: boolean, readGlobs = true): boolean {
   if (!pattern.test(content)) return false;
+  // A script that names the path only in comments does not read it.
+  if (SCRIPT_FILE.test(readerPath)) {
+    content = withoutCodeComments(content, readerPath);
+    if (!pattern.test(content)) return false;
+  }
   // Every path a join folds to was spelled out by its parts, so the raw test above stays a valid filter.
   content = foldJoinedLiterals(content);
   const dirs: string[] = [];
