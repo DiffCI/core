@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -64,6 +64,55 @@ export function dependencyDirectories(repoPath: string, maxDepth = 4): string[] 
   return found.sort();
 }
 
+/**
+ * TypeScript incremental build information (`*.tsbuildinfo`) under `root`, at most four levels deep, outside
+ * node_modules (2026-11-24).
+ *
+ * WHY. These files are gitignored, so a fresh temporary worktree had none and every `--staged` or `--paths`
+ * run type-checked from scratch: DentalPresence's typecheck took a median of 60-90 s there against 25-29 s in
+ * the checkout (60 of 142 runs). The checkout's own copy does not help (measured: 57 s and slower against
+ * 52-54 s cold), because a worktree reaches node_modules through a link that TypeScript resolves to another
+ * path, so every dependency looks changed. A previous temporary worktree's copy does: 22 s against 54 s cold.
+ * So each worktree saves its build info to a cache in the git directory when it is disposed, and the next
+ * one starts from it. TypeScript records each file's content hash and re-checks any file that differs, so a
+ * cached copy only saves work; it can never make a changed file look checked.
+ */
+export function buildInfoFiles(root: string, maxDepth = 4): string[] {
+  const found: string[] = [];
+  const walk = (relative: string, depth: number) => {
+    let entries;
+    try { entries = readdirSync(join(root, relative), { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") continue;
+      const child = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isFile() && entry.name.endsWith(".tsbuildinfo")) found.push(child);
+      else if (entry.isDirectory() && depth < maxDepth) walk(child, depth + 1);
+    }
+  };
+  walk("", 1);
+  return found.sort();
+}
+
+/** Where temporary worktrees keep their build information: inside the git directory, shared by every worktree. */
+export function buildInfoCache(repoPath: string): string | undefined {
+  const common = git(repoPath, ["rev-parse", "--git-common-dir"]);
+  return common.ok && common.stdout ? join(resolve(repoPath, common.stdout), "diffci", "tsbuildinfo") : undefined;
+}
+
+/** Copies each build information file from one tree to the other, through a temporary file and a rename. */
+function copyBuildInfo(from: string, to: string, onlyIntoExistingDirectories: boolean): void {
+  for (const relative of buildInfoFiles(from)) {
+    const target = join(to, relative);
+    try {
+      if (onlyIntoExistingDirectories) { if (!existsSync(dirname(target)) || existsSync(target)) continue; }
+      else mkdirSync(dirname(target), { recursive: true });
+      const partial = `${target}.diffci-${process.pid}`;
+      copyFileSync(join(from, relative), partial);
+      renameSync(partial, target);
+    } catch { /* without it, the type check only runs from scratch */ }
+  }
+}
+
 function removeLink(path: string): boolean {
   try {
     if (!lstatSync(path).isSymbolicLink()) return false;
@@ -92,6 +141,7 @@ export function createIsolatedWorktree(repoPathInput: string, baseSha: string, t
   }
 
   const linked: string[] = [];
+  const cache = buildInfoCache(repoPath);
   let disposed = false;
   const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
   const onSignal = (signal: NodeJS.Signals) => {
@@ -104,6 +154,8 @@ export function createIsolatedWorktree(repoPathInput: string, baseSha: string, t
     disposed = true;
     for (const signal of signals) process.removeListener(signal, onSignal);
     process.removeListener("exit", onExit);
+    // The next temporary worktree starts its type check from this one's (buildInfoFiles).
+    if (cache) copyBuildInfo(path, cache, false);
     // Links first: removing the worktree must never reach through a link into the checkout.
     const unlinked = linked.every((relative) => removeLink(join(path, relative)));
     let removed = git(repoPath, ["worktree", "remove", "--force", path]).ok;
@@ -132,5 +184,7 @@ export function createIsolatedWorktree(repoPathInput: string, baseSha: string, t
       linked.push(relative);
     } catch { /* a missing dependency link shows up as a failing or unrunnable test, never as a pass */ }
   }
+  // Copied, not linked: this worktree's type check rewrites them, and dispose saves them back.
+  if (cache) copyBuildInfo(cache, path, true);
   return { path, linked, dispose };
 }

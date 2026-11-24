@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { agentScopedSelection, selectionInstruction } from "../../src/client/agent-selection.js";
 import { installPrePushHook } from "../../src/client/hook.js";
-import { dependencyDirectories } from "../../src/client/isolated-worktree.js";
+import { buildInfoCache, buildInfoFiles, createIsolatedWorktree, dependencyDirectories } from "../../src/client/isolated-worktree.js";
 
 /**
  * Two agent sessions in one checkout (2026-11-17, DentalPresence): session A stages its own files and
@@ -225,6 +225,49 @@ describe("verify --staged and --paths in a checkout shared by two sessions", () 
       assert.equal(run.status, 2, run.stdout + run.stderr);
       assert.match(run.report.reason, /package-lock\.json/);
       assert.equal(worktreeCount(dir), 1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("hands TypeScript build info from one temporary worktree to the next, never from the checkout (2026-11-24)", () => {
+    const { root, dir } = fixture();
+    try {
+      const checkoutInfo = '{"checkout":true}\n';
+      write(dir, "tsconfig.tsbuildinfo", checkoutInfo);
+      write(dir, "node_modules/dep/tsconfig.tsbuildinfo", "{}\n");
+      write(dir, ".gitignore", "*.tsbuildinfo\nnode_modules/\n");
+      git(dir, "add", ".gitignore");
+      git(dir, "-c", "user.email=t@diffci.local", "-c", "user.name=t", "commit", "--quiet", "-m", "ignore build info");
+      assert.deepEqual(buildInfoFiles(dir), ["tsconfig.tsbuildinfo"], "node_modules is never searched");
+      const cache = buildInfoCache(dir)!;
+      const head = git(dir, "rev-parse", "HEAD");
+      const tree = git(dir, "rev-parse", "HEAD^{tree}");
+      const open = () => {
+        const worktree = createIsolatedWorktree(dir, head, tree);
+        assert.ok(!("error" in worktree), "error" in worktree ? worktree.error : "");
+        return worktree as Exclude<typeof worktree, { error: string }>;
+      };
+
+      // The first worktree starts cold: the checkout's build info resolves dependencies through other paths.
+      const first = open();
+      assert.equal(existsSync(join(first.path, "tsconfig.tsbuildinfo")), false);
+      writeFileSync(join(first.path, "tsconfig.tsbuildinfo"), '{"worktree":1}\n');
+      assert.equal(first.dispose(), true);
+      assert.equal(readFileSync(join(cache, "tsconfig.tsbuildinfo"), "utf8"), '{"worktree":1}\n');
+
+      // The next one starts from it, as a copy: its own type check may rewrite it without touching the cache.
+      const second = open();
+      try {
+        assert.equal(readFileSync(join(second.path, "tsconfig.tsbuildinfo"), "utf8"), '{"worktree":1}\n');
+        writeFileSync(join(second.path, "tsconfig.tsbuildinfo"), '{"worktree":2}\n');
+        assert.equal(readFileSync(join(cache, "tsconfig.tsbuildinfo"), "utf8"), '{"worktree":1}\n');
+      } finally {
+        assert.equal(second.dispose(), true);
+      }
+      assert.equal(readFileSync(join(cache, "tsconfig.tsbuildinfo"), "utf8"), '{"worktree":2}\n');
+      assert.equal(readFileSync(join(dir, "tsconfig.tsbuildinfo"), "utf8"), checkoutInfo, "the checkout's own is never touched");
+      assert.equal(git(dir, "status", "--porcelain"), "", "the cache lives in the git directory, not the checkout");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
