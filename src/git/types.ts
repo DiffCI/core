@@ -51,6 +51,10 @@ export interface GitDeltaAnalysis {
    * installed tree and pnpm its snapshot edges; Classic Yarn includes all roots because its lockfile omits peer relationships.
    * ImpactAnalyzer selects their importers or falls back. Absent when no narrowing happened. */
   changedDependencies?: string[];
+  /** npm only (2026-11-24): every package installed at the root node_modules whose installed tree (itself
+   * and what it loads) differs between the two package-lock.json contents. An undeclared import of a
+   * package outside this list resolves to the same files before and after. Absent when not computed. */
+  npmChangedTrees?: string[];
   /** A modeled lockfile whose raw readers must still be resolved, including for semantic no-ops.
    * Its dependency effects are covered by changedDependencies. */
   dependencyLockfile?: "yarn.lock" | "pnpm-lock.yaml";

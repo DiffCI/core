@@ -10,6 +10,7 @@ import { analyzeGitDelta } from "../../src/git/git-diff.js";
 import { repositoryFileReader } from "../../src/repo/file-references.js";
 import { buildDependencyGraph } from "../../src/repo/graph.js";
 import { ImpactAnalyzer } from "../../src/repo/impact.js";
+import { npmLockChangedTrees } from "../../src/repo/npm-lockfile.js";
 
 // npm hoists `inner`, a dependency of `left`, to node_modules/inner, so src/uses-inner.js can import it
 // without declaring it. A lockfile bump of inner is attributed to `left` only, which used to select
@@ -23,6 +24,9 @@ const lock = (inner: string) => JSON.stringify({
     "": { dependencies: { left: "^1" } },
     "node_modules/left": { version: "1.0.0", dependencies: { inner: "^1" } },
     "node_modules/inner": { version: inner },
+    // Installed at the root but declared by nothing: unrelated to inner, and one that loads inner.
+    "node_modules/steady": { version: "2.0.0" },
+    "node_modules/wraps-inner": { version: "1.0.0", dependencies: { inner: "^1" } },
   },
 }, null, 2);
 
@@ -62,4 +66,55 @@ test("an npm lockfile bump still narrows when every import is declared", async (
   const impact = await bump({});
   assert.deepEqual(impact.fallbackReasons, []);
   assert.deepEqual(impact.affectedTests.map((t) => t.path), ["src/uses-left.test.js"]);
+});
+
+const usesUndeclared = (name: string, how = `import pkg from "${name}";`) => ({
+  [`src/uses-${name}.js`]: `${how}
+export const value = 1;
+`,
+  [`src/uses-${name}.test.js`]: `import { value } from "./uses-${name}.js";
+import test from "node:test";
+test("u", () => value);
+`,
+});
+
+test("an npm lockfile bump narrows past an undeclared package whose installed tree did not move (2026-11-24)", async () => {
+  const impact = await bump(usesUndeclared("steady"));
+  assert.deepEqual(impact.fallbackReasons, []);
+  assert.deepEqual(impact.affectedTests.map((t) => t.path), ["src/uses-left.test.js"]);
+});
+
+test("an npm lockfile bump narrows past an undeclared package that is not installed at all", async () => {
+  // DentalPresence loads libphonenumber-js through createRequire from a folder outside the project.
+  const impact = await bump(usesUndeclared("phone-lib", `const lib = createRequire(folder)("phone-lib/max");`));
+  assert.deepEqual(impact.fallbackReasons, []);
+});
+
+test("an npm lockfile bump still falls back when an undeclared package loads what moved", async () => {
+  const impact = await bump(usesUndeclared("wraps-inner"));
+  assert.deepEqual(impact.fallbackReasons, ["npm lockfile changed and repository imports undeclared dependencies (wraps-inner); full validation required"]);
+});
+
+test("npmLockChangedTrees lists root packages whose installed tree changed, scoped names included", () => {
+  const lockOf = (packages: Record<string, unknown>) => JSON.stringify({ lockfileVersion: 3, packages: { "": {}, ...packages } });
+  const before = lockOf({
+    "node_modules/@img/sharp": { version: "1.0.0", dependencies: { libvips: "^1" } },
+    "node_modules/libvips": { version: "1.0.0" },
+    "node_modules/a": { version: "1.0.0" },
+    "node_modules/a/node_modules/b": { version: "1.0.0" },
+    "node_modules/gone": { version: "1.0.0" },
+  });
+  const after = lockOf({
+    "node_modules/@img/sharp": { version: "1.0.0", dependencies: { libvips: "^1" } },
+    "node_modules/libvips": { version: "1.1.0" },
+    "node_modules/a": { version: "1.0.0" },
+    "node_modules/a/node_modules/b": { version: "2.0.0" },
+    "node_modules/new": { version: "1.0.0" },
+  });
+  // a's nested b moved, so a's tree moved; b is not a root install; gone and new changed by presence.
+  assert.deepEqual(npmLockChangedTrees(before, after), ["@img/sharp", "a", "gone", "libvips", "new"]);
+  assert.deepEqual(npmLockChangedTrees(before, before), []);
+  assert.equal(npmLockChangedTrees(before, lockOf({ "packages/x": { version: "1.0.0" } })), undefined);
+  assert.equal(npmLockChangedTrees(before, lockOf({ "node_modules/x": { link: true, resolved: "x" } })), undefined);
+  assert.equal(npmLockChangedTrees("not json", after), undefined);
 });

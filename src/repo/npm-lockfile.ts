@@ -74,6 +74,45 @@ function closure(packages: Record<string, LockEntry>, root: string): Set<string>
 }
 
 /**
+ * Every package installed at the root node_modules whose installed tree (the package and everything it
+ * loads) differs between two package-lock.json contents, or undefined when the change cannot be modelled
+ * (2026-11-24). A package absent from both lockfiles is unchanged.
+ *
+ * WHY. With an npm lockfile change, any import of a package the root package.json does not declare made the
+ * whole change a full run, because attribution reaches only declared roots. DentalPresence imports sharp
+ * (installed through next) and loads libphonenumber-js from a folder outside the project, so every lockfile
+ * change, including each DiffCI version bump, ran the full suite although neither package moved.
+ */
+export function npmLockChangedTrees(oldContent: string | undefined, newContent: string | undefined): string[] | undefined {
+  const before = parse(oldContent);
+  const after = parse(newContent);
+  if (!before || !after) return undefined;
+  const changed = new Set<string>();
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (key === "") continue;
+    if (!key.startsWith("node_modules/")) return undefined;
+    if (before[key]?.link || after[key]?.link) return undefined;
+    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) changed.add(key);
+  }
+  const roots = new Set<string>();
+  for (const packages of [before, after]) {
+    for (const key of Object.keys(packages)) {
+      const name = /^node_modules\/((?:@[^/]+\/)?[^/@][^/]*)$/.exec(key)?.[1];
+      if (name) roots.add(name);
+    }
+  }
+  const trees: string[] = [];
+  for (const name of roots) {
+    const root = `node_modules/${name}`;
+    // Anything installed beneath the package's own directory is part of it, declared or bundled.
+    const touched = changed.has(root) || [...changed].some((key) => key.startsWith(`${root}/`))
+      || [before, after].some((packages) => packages[root] !== undefined && [...closure(packages, root)].some((key) => changed.has(key)));
+    if (touched) trees.push(name);
+  }
+  return trees.sort();
+}
+
+/**
  * The direct dependencies (names from the root package.json, old and new) whose installed tree
  * differs between two package-lock.json contents, or undefined when the change cannot be attributed.
  */

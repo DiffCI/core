@@ -12,7 +12,7 @@ import {
 } from "./types.js";
 import { infrastructureRole, isImplicitlyLoadedFile, testScriptClosure } from "../repo/file-references.js";
 import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
-import { npmLockAffectedDependencies } from "../repo/npm-lockfile.js";
+import { npmLockAffectedDependencies, npmLockChangedTrees } from "../repo/npm-lockfile.js";
 import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
 import { berryLockAffectedDependencies, berryNodeModulesConfig, berryRuntimeConfig } from "../repo/yarn-berry-lockfile.js";
@@ -791,13 +791,15 @@ export async function analyzeGitDelta(
           for (const name of Object.keys(record)) direct.add(name);
         }
       }
-      const affected = modelled
-        ? npmLockAffectedDependencies(readFileAtSha(baseSha, "package-lock.json", repoPath), readFileAtSha(headSha, "package-lock.json", repoPath), [...direct])
-        : undefined;
+      const baseLock = modelled ? readFileAtSha(baseSha, "package-lock.json", repoPath) : undefined;
+      const headLock = modelled ? readFileAtSha(headSha, "package-lock.json", repoPath) : undefined;
+      const affected = modelled ? npmLockAffectedDependencies(baseLock, headLock, [...direct]) : undefined;
       if (affected && (packageChange?.changedDependencies ?? []).every((name) => affected.includes(name))) {
         analysis.dependencyManifestChanged = false;
         analysis.lockfileChanged = false;
         analysis.changedDependencies = affected;
+        const trees = npmLockChangedTrees(baseLock, headLock);
+        if (trees) analysis.npmChangedTrees = trees;
         narrowed.add(changedLockfile);
         if (changedPackageJson) {
           narrowed.add(changedPackageJson);
