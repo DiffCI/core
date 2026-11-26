@@ -210,7 +210,7 @@ test("updateNotice stays silent when current, turned off, or the check fails", a
   assert.equal(await updateNotice({}, { fetchLatest }), undefined);
   assert.equal(fetched, 1, "turned off or no version: no request at all");
   assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => { throw new Error("offline"); } }), undefined);
-  assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => "0.3.66", resolveSha: async () => { throw new Error("no git"); } }).then(n => n?.uses), "DiffCI/core@v0.3.66");
+  assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => "0.3.66", resolveSha: async () => { throw new Error("no git"); } }).then((n: { uses?: string } | undefined) => n?.uses), "DiffCI/core@v0.3.66");
 });
 
 test("the notice reaches the PR comment, the job summary and an annotation", async () => {

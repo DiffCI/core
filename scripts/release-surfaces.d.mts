@@ -15,6 +15,9 @@ export const RELEASE_SURFACES: ReleaseSurface[];
 
 export function releaseTags(version: string): { release: string; cli: string; action: string };
 
+/** The floating major tag (`v0`) that `npm run release:float` moves once npm serves the release. */
+export function floatingTag(version: string): string;
+
 export function findReleaseMismatches(
   version: string,
   observed: ObservedRelease,
