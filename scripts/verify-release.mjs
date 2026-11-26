@@ -2,7 +2,7 @@
 // Verifies that npm, the GitHub Release, release tags, the MCP Registry, and the hosted MCP endpoint
 // all name the CLI version. A release may verify the first four before its cross-repository site deploy;
 // the scheduled consistency workflow verifies every surface after deployment.
-// Usage: node scripts/verify-release.mjs [--surfaces=npm,github-release,tags,mcp-registry,hosted-mcp]
+// Usage: node scripts/verify-release.mjs [--surfaces=npm,github-release,tags,floating-tag,mcp-registry,hosted-mcp]
 import { readFileSync } from "node:fs";
 import { findReleaseMismatches, floatingTag, RELEASE_SURFACES, releaseTags } from "./release-surfaces.mjs";
 
@@ -60,7 +60,7 @@ if (surfaces.includes("github-release")) {
   observed.githubLatestRelease = latest && { tag: latest.tag_name, draft: latest.draft, prerelease: latest.prerelease };
 }
 
-if (surfaces.includes("tags")) {
+if (surfaces.includes("tags") || surfaces.includes("floating-tag")) {
   observed.tagCommits = {};
   for (const tag of [...Object.values(releaseTags(version)), floatingTag(version)]) {
     const commit = await tagCommit(tag);

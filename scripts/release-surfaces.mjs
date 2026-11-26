@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 /** Every public surface that must name the same CLI release. */
-export const RELEASE_SURFACES = ["npm", "github-release", "tags", "mcp-registry", "hosted-mcp"];
+// floating-tag is its own surface: the release workflow verifies "tags" before `release:float` can run, so it
+// leaves floating-tag out; a full `release:verify` and the scheduled consistency check include it.
+export const RELEASE_SURFACES = ["npm", "github-release", "tags", "floating-tag", "mcp-registry", "hosted-mcp"];
 
 export function releaseTags(version) {
   return { release: `v${version}`, cli: `cli-release-v${version}`, action: `action-v${version}` };
@@ -48,6 +50,10 @@ export function findReleaseMismatches(version, observed, surfaces = RELEASE_SURF
     if (distinct.size > 1) {
       problems.push(`Tags ${Object.values(tags).join(", ")} must point at one commit; found ${[...distinct].join(", ")}.`);
     }
+  }
+
+  if (surfaces.includes("floating-tag")) {
+    const commits = observed.tagCommits ?? {};
     const floating = floatingTag(version);
     const release = commits[tags.release];
     if (release && commits[floating] !== release) {

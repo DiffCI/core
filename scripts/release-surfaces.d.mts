@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-export type ReleaseSurface = "npm" | "github-release" | "tags" | "mcp-registry" | "hosted-mcp";
+export type ReleaseSurface = "npm" | "github-release" | "tags" | "floating-tag" | "mcp-registry" | "hosted-mcp";
 
 export interface ObservedRelease {
   npm?: { latest?: string; versions?: string[] };

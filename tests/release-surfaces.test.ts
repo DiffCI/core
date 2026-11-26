@@ -89,9 +89,14 @@ test("the floating major tag must follow the release", () => {
   assert.equal(floatingTag("0.3.66"), "v0");
   assert.equal(floatingTag("1.2.0"), "v1");
   const lagging = { ...aligned("0.3.13"), tagCommits: { ...aligned("0.3.13").tagCommits, v0: "8c70501aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } };
-  assert.deepEqual(findReleaseMismatches("0.3.13", lagging, ["tags"]), [
+  assert.deepEqual(findReleaseMismatches("0.3.13", lagging, ["floating-tag"]), [
     `Floating tag v0 is at 8c70501, not v0.3.13 (${COMMIT.slice(0, 7)}): run npm run release:float once npm serves the tarball.`,
   ]);
   const { v0: _, ...withoutFloating } = aligned("0.3.13").tagCommits!;
-  assert.match(findReleaseMismatches("0.3.13", { ...aligned("0.3.13"), tagCommits: withoutFloating }, ["tags"])[0] ?? "", /Floating tag v0 is at nothing/);
+  assert.match(findReleaseMismatches("0.3.13", { ...aligned("0.3.13"), tagCommits: withoutFloating }, ["floating-tag"])[0] ?? "", /Floating tag v0 is at nothing/);
+});
+
+test("the release workflow's tags check does not wait for the floating tag", () => {
+  const { v0: _, ...beforeFloat } = aligned("0.3.13").tagCommits!;
+  assert.deepEqual(findReleaseMismatches("0.3.13", { ...aligned("0.3.13"), tagCommits: beforeFloat }, ["npm", "github-release", "tags"]), []);
 });
