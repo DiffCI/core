@@ -689,7 +689,6 @@ _Module resource and dependency impact contributed by [@FredApps](https://github
 | `Maven reactor contains no Java sources` | A `pom.xml` with only resources | No |
 | `Maven …: custom source roots require full validation` | Set `<sourceDirectory>`, or a `<testSourceDirectory>` that is interpolated (`${…}`), absolute, outside the module, declared more than once, inside a profile, or inherited from a parent POM | Declare a plain relative `<testSourceDirectory>` inside the module, in the module's own `<build>`; DiffCI finds tests there |
 | `Maven …: Java sources outside the standard roots require full validation` | A `.java` or `.kt` file in the module outside `src/main/{java,kotlin}`, `src/test/{java,kotlin}` and the module's `<testSourceDirectory>`, such as a `src/it/java` root added by `build-helper-maven-plugin` or a test root set by a parent POM outside the repository | Move the files under a standard root, or declare the test root as a plain relative `<testSourceDirectory>` in the module's own POM |
-| `Maven …: parent dependency inheritance requires full validation` | Inherit dependencies from an external parent POM | No |
 | `Maven …: unresolved dependency coordinates require full validation` | Use a `${property}` version DiffCI cannot resolve | No |
 
 ### Python

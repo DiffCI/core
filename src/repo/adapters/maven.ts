@@ -132,20 +132,27 @@ export function analyzeMaven(context: AdapterContext): AdapterContribution {
       (ancestor.profileTestRoot || resolveTestRoot("", ancestor.declaredTestRoots) !== DEFAULT_TEST_ROOT)) pom.testRoot = undefined;
   }
 
+  // A child inherits every local ancestor's <dependencies> (#89). Each ancestor's declarations are added
+  // to the child as its own, a superset of Maven's effective model: dependencyManagement, plugin and
+  // profile entries count too, so an edge may be extra but never missing. Coordinates are resolved in the
+  // child's context, as Maven interpolates the effective model. An external parent (spring-boot-starter-
+  // parent) can't be read and adds nothing local; a changed parent POM is a build-file change, planned
+  // in full elsewhere.
+  const inherited = new Map<Pom, Coordinates[]>();
   for (const pom of poms) {
-    if (pom.customSourceRoots || pom.testRoot === undefined) result.blockers.push(`Maven ${pom.path}: custom source roots require full validation`);
-    // This static adapter does not construct Maven's effective model. A local parent's
-    // dependency declarations cannot safely be treated as belonging only to that POM.
     const visited = new Set<Pom>([pom]);
+    const declared: Coordinates[] = [];
     let parent = pom.parent && findPom(pom.parent);
     while (parent && !visited.has(parent)) {
-      if (parent.dependencies.length) {
-        result.blockers.push(`Maven ${pom.path}: parent dependency inheritance requires full validation`);
-        break;
-      }
+      declared.push(...parent.dependencies);
       visited.add(parent);
       parent = parent.parent && findPom(parent.parent);
     }
+    inherited.set(pom, declared);
+  }
+
+  for (const pom of poms) {
+    if (pom.customSourceRoots || pom.testRoot === undefined) result.blockers.push(`Maven ${pom.path}: custom source roots require full validation`);
 
     const owned = context.files.filter(file => owningPom(poms, file) === pom);
     const sources = owned.filter(file => /\.(?:java|kt)$/.test(file) &&
@@ -183,7 +190,7 @@ export function analyzeMaven(context: AdapterContext): AdapterContribution {
         if (file !== anchor) result.edges.push({ from: anchor, to: file, kind: "asset" });
       }
     }
-    for (const dependency of pom.dependencies) {
+    for (const dependency of [...pom.dependencies, ...(inherited.get(pom) ?? [])]) {
       const groupId = dependency.groupId.replace(/\$\{project\.groupId\}/g, pom.groupId ?? "").replace(/\$\{pom\.groupId\}/g, pom.groupId ?? "");
       if (/\$\{/.test(groupId) || /\$\{/.test(dependency.artifactId)) {
         result.blockers.push(`Maven ${pom.path}: unresolved dependency coordinates require full validation`);
@@ -199,7 +206,7 @@ export function analyzeMaven(context: AdapterContext): AdapterContribution {
 }
 
 export const mavenAdapter: RepositoryAdapter = {
-  id: "maven", version: "2", kind: "language",
+  id: "maven", version: "3", kind: "language",
   detect: ({ files }) => files.includes("pom.xml") && files.some(file => file.endsWith(".java") || file.endsWith(".kt")),
   analyze: analyzeMaven,
 };

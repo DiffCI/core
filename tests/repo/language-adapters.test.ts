@@ -379,18 +379,79 @@ test("Maven unresolved interpolated dependency coordinates require full validati
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("Maven unmodeled local parent dependency inheritance requires full validation", async () => {
-  const root = fixture(mavenSafetyFixture({
+function mavenParentFixture(parentDependencies: string, childGroup = ""): Record<string, string> {
+  return mavenSafetyFixture({
     "pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>library</module><module>application-parent</module><module>application</module><module>unrelated</module></modules></project>",
-    "application-parent/pom.xml": "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>application-parent</artifactId><version>1</version><packaging>pom</packaging><dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies></project>",
-    "application/pom.xml": "<project><modelVersion>4.0.0</modelVersion><parent><groupId>example</groupId><artifactId>application-parent</artifactId><version>1</version><relativePath>../application-parent/pom.xml</relativePath></parent><artifactId>application</artifactId></project>",
-  }));
+    "application-parent/pom.xml": `<project><modelVersion>4.0.0</modelVersion><parent><groupId>example</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>application-parent</artifactId><version>1</version><packaging>pom</packaging>${parentDependencies}</project>`,
+    "application/pom.xml": `<project><modelVersion>4.0.0</modelVersion><parent><groupId>example</groupId><artifactId>application-parent</artifactId><version>1</version><relativePath>../application-parent/pom.xml</relativePath></parent>${childGroup}<artifactId>application</artifactId></project>`,
+  });
+}
+
+// #89 / xamops: a local parent's <dependencies> are inherited by its children, so they become the child's
+// edges instead of a repository-wide fallback that made every change, even frontend-only ones, run in full.
+test("Maven local parent dependencies are inherited by the child module", async () => {
+  const root = fixture(mavenParentFixture("<dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies>"));
   try {
     const graph = await buildDependencyGraph({ repoPath: root });
-    assert.ok(graph.adapterBlockers?.some(reason => /parent dependency inheritance/i.test(reason)));
+    assert.ok(!graph.adapterBlockers?.some(reason => /parent dependency inheritance/i.test(reason)));
     const plan = mavenSafetyPlan(graph, "library/src/main/java/example/Library.java");
-    assert.equal(plan.mode, "FULL");
+    assert.equal(plan.mode, "SELECTIVE");
+    assert.ok(plan.selectedTests.includes("library/src/test/java/example/LibraryTest.java"));
     assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
-    assert.deepEqual(plan.skippedTests, []);
+    assert.ok(plan.skippedTests.includes("unrelated/src/test/java/example/OtherTest.java"));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("Maven inherited dependencies reach through every local ancestor", async () => {
+  const files = mavenParentFixture("");
+  files["pom.xml"] = files["pom.xml"]!.replace("</modules>", "</modules><dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies>");
+  const root = fixture(files);
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const plan = mavenSafetyPlan(graph, "library/src/main/java/example/Library.java");
+    assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+    assert.deepEqual(plan.skippedTests.filter(path => path.startsWith("application/")), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Maven inherited dependencies resolve project.groupId in the child's context", async () => {
+  const root = fixture(mavenParentFixture("<dependencies><dependency><groupId>${project.groupId}</groupId><artifactId>library</artifactId></dependency></dependencies>", "<groupId>example</groupId>"));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(!graph.adapterBlockers?.some(reason => /unresolved dependency coordinates/i.test(reason)));
+    const plan = mavenSafetyPlan(graph, "library/src/main/java/example/Library.java");
+    assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Maven unresolved inherited dependency coordinates still require full validation", async () => {
+  const root = fixture(mavenParentFixture("<dependencies><dependency><groupId>${shared.group}</groupId><artifactId>library</artifactId></dependency></dependencies>"));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    assert.ok(graph.adapterBlockers?.some(reason => /application\/pom\.xml: unresolved dependency coordinates/i.test(reason)));
+    const plan = mavenSafetyPlan(graph, "library/src/main/java/example/Library.java");
+    assert.equal(plan.mode, "FULL");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("Maven external parent dependencies (BOMs, starters) narrow normally", async () => {
+  const root = fixture(mavenParentFixture("<dependencyManagement><dependencies><dependency><groupId>org.springframework.cloud</groupId><artifactId>spring-cloud-dependencies</artifactId><version>${spring-cloud.version}</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement><dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-jackson2</artifactId></dependency></dependencies>"));
+  try {
+    const graph = await buildDependencyGraph({ repoPath: root });
+    const plan = mavenSafetyPlan(graph, "unrelated/src/main/java/example/Other.java");
+    assert.equal(plan.mode, "SELECTIVE");
+    assert.deepEqual(plan.selectedTests, ["unrelated/src/test/java/example/OtherTest.java"]);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const changed of ["pom.xml", "application-parent/pom.xml"]) {
+  test(`Maven changed parent POM ${changed} still runs every module's tests`, async () => {
+    const root = fixture(mavenParentFixture("<dependencies><dependency><groupId>example</groupId><artifactId>library</artifactId><version>1</version></dependency></dependencies>"));
+    try {
+      const graph = await buildDependencyGraph({ repoPath: root });
+      const plan = mavenSafetyPlan(graph, changed);
+      assert.ok(plan.selectedTests.includes("application/src/test/java/example/AppTest.java"));
+      assert.ok(plan.mode === "FULL" || plan.skippedTests.length === 0, `${changed}: ${plan.mode} skipped ${plan.skippedTests.join(", ")}`);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
