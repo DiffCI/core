@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readdirSync, readSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, win32 } from "node:path";
 
 /** Absent, readable text, or an entry we could not verify. */
 function readInput(path: string): string | null | undefined {
@@ -26,11 +26,14 @@ function absent(path: string): boolean {
 }
 
 function pathIsUnambiguous(repoPath: string, env: NodeJS.ProcessEnv): boolean {
-  const path = env.PATH ?? env.Path;
-  if (path !== undefined && path.split(delimiter).some((dir) => !isAbsolute(dir))) return false;
-  if (process.platform !== "win32") return true;
-  // cmd.exe and Windows program lookup can search the current directory before PATH.
-  const extensions = (env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";");
+  if (process.platform !== "win32") return env.PATH !== undefined && env.PATH.split(":").every(isAbsolute);
+
+  // An empty Windows field can lead Python back to cwd. Require a fully qualified
+  // search path and check cwd for the shell, the session runner and its leaf tools.
+  const dirs = (env.PATH ?? env.Path ?? "").split(";").filter(Boolean);
+  if (!dirs.length || !dirs.every((dir) => win32.isAbsolute(dir) && win32.parse(dir).root.length > 1)) return false;
+  if (!env.PATHEXT || !["cmd.exe", "cmd.exe.com", "cmd.exe.exe"].every((name) => absent(join(repoPath, name)))) return false;
+  const extensions = env.PATHEXT.split(";");
   return extensions.every((extension) => /^\.[a-z\d]+$/i.test(extension))
     && ["nox", "ruff", "mypy"].every((tool) => ["", ...extensions].every((ext) => absent(join(repoPath, tool + ext))));
 }

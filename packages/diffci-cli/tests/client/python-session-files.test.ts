@@ -9,17 +9,28 @@ test("session discovery reads bounded regular files and declines runner override
   const repo = mkdtempSync(join(tmpdir(), "diffci-session-inputs-"));
   t.after(() => rmSync(repo, { recursive: true, force: true }));
   const config = join(repo, "noxfile.py");
-  const read = (env: NodeJS.ProcessEnv = {}) => readPythonSessionFile(repo, "noxfile.py", env);
+  const read = (env: NodeJS.ProcessEnv = {}) =>
+    readPythonSessionFile(repo, "noxfile.py", { PATH: repo, PATHEXT: ".EXE;.CMD", ...env });
   writeFileSync(config, "import nox\n");
   assert.equal(read({ NOX_CURRENT_SESSION: "lint" }), "import nox\n");
   assert.equal(read({ NOXSESSION: "lint" }), undefined);
   assert.equal(read({ NOX_DEFAULT_VENV_BACKEND: "none" }), undefined);
+  assert.equal(read({ PATH: undefined }), undefined);
+  assert.equal(read({ PATH: undefined, Path: repo }), process.platform === "win32" ? "import nox\n" : undefined);
   assert.equal(read({ PATH: `.${delimiter}${repo}` }), undefined);
-  assert.equal(read({ PATH: `${repo}${delimiter}` }), undefined);
+  for (const path of [`${delimiter}${repo}`, `${repo}${delimiter}${delimiter}${repo}`, `${repo}${delimiter}`]) {
+    assert.equal(read({ PATH: path }), process.platform === "win32" ? "import nox\n" : undefined, path);
+  }
   if (process.platform === "win32") {
-    writeFileSync(join(repo, "ruff.cmd"), "");
-    assert.equal(read({ PATH: repo, PATHEXT: ".CMD" }), undefined);
-    rmSync(join(repo, "ruff.cmd"));
+    for (const path of ["", ";;", `bin;;${repo}`, `C:bin;${repo}`, `\\bin;${repo}`]) {
+      assert.equal(read({ PATH: path }), undefined, path);
+    }
+    for (const ext of [undefined, "", ".EXE;;.CMD"]) assert.equal(read({ PATH: repo + ";", PATHEXT: ext }), undefined);
+    for (const name of ["cmd.exe", "cmd.exe.com", "cmd.exe.exe", "nox.exe", "ruff.cmd", "mypy"]) {
+      writeFileSync(join(repo, name), "");
+      assert.equal(read({ PATH: repo + ";" }), undefined, name);
+      rmSync(join(repo, name));
+    }
   }
   for (const key of ["RUFF_OUTPUT_FILE", "RUFF_CACHE_DIR", "MYPY_CACHE_DIR", "MYPYPATH", "MYPY_TEST_PREFIX"]) {
     assert.equal(read({ [key]: "somewhere" }), undefined);
@@ -54,7 +65,7 @@ test("tox accepts ordinary pyprojects and declines possible alternative configur
   mkdirSync(repo);
   writeFileSync(join(repo, "tox.ini"), "[tox]\n");
   writeFileSync(join(repo, "pyproject.toml"), '[project]\nname = "sample"\n');
-  const env = { HOME: parent, XDG_CONFIG_HOME: join(parent, "prefs") };
+  const env = { HOME: parent, XDG_CONFIG_HOME: join(parent, "prefs"), PATH: repo };
   assert.equal(readPythonSessionFile(repo, "tox.ini", env), "[tox]\n");
   assert.equal(readPythonSessionFile(repo, "tox.ini", { ...env, TOX_OVERRIDE: "any" }), undefined);
   writeFileSync(join(parent, "pyproject.toml"), '[tool.tox]\nlegacy_tox_ini = "[tox]"\n');

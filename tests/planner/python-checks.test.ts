@@ -214,6 +214,23 @@ describe("tox and nox workflow checks", () => {
   const run = (line: string, config: Record<string, string> = files) =>
     discoverPythonChecks(workflow("jobs:\n  checks:\n    steps:\n      - run: " + line), reader(config));
 
+  it("leaves sessions to CI when their workflow sets up Python and installs tools", () => {
+    for (const [command, install] of [
+      ["tox -e lint,type", "pip install tox tox-uv"],
+      ["nox -s lint", "python -m pip install --upgrade pip\n          pip install black nox"],
+    ]) {
+      const checkout = "jobs:\n  checks:\n    steps:\n      - uses: actions/checkout@v4";
+      const setup = "      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'";
+      const installStep = "      - run: |\n          " + install;
+      const session = "      - run: " + command;
+      for (const steps of [[setup], [installStep], [setup, installStep]]) {
+        const text = [checkout, ...steps, session].join("\n");
+        assert.deepEqual(discoverPythonChecks(workflow(text), reader(files)), []);
+      }
+      assert.deepEqual(discoverPythonChecks(workflow(checkout + "\n" + session), reader(files)).map((c) => c.command), [command]);
+    }
+  });
+
   it("keeps the regular workflow's session when a linked workflow declares the same command", () => {
     for (const command of ["tox -e lint,type", "nox -s lint"]) {
       const text = `jobs:\n  checks:\n    steps:\n      - run: ${command}\n      - run: uv run mypy src`;
