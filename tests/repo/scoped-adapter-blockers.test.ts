@@ -148,9 +148,49 @@ describe("framework blockers confined to nested package directories", () => {
       assert.ok(!(graph.adapterBlockers ?? []).includes(reason), JSON.stringify(graph.adapterBlockers));
       assert.deepEqual(graph.scopedAdapterBlockers?.find((b) => b.reason === reason)?.directories, [".agents"]);
       assert.equal(plan.mode, "SELECTIVE");
+      // Any top-level directory outside every nested package is confined the same way (2026-11-26).
       write(root, "scripts/run.py", "print('root tooling')\n");
       const again = await planFor(root, "packages/utils/src/bedrock.ts");
-      assert.ok((again.graph.adapterBlockers ?? []).includes(reason), JSON.stringify(again.graph.adapterBlockers));
+      assert.ok(!(again.graph.adapterBlockers ?? []).includes(reason), JSON.stringify(again.graph.adapterBlockers));
+      assert.deepEqual(again.graph.scopedAdapterBlockers?.find((b) => b.reason === reason)?.directories, [".agents", "scripts"]);
+      assert.equal(again.plan.mode, "SELECTIVE");
+      // Changing the script itself still falls back.
+      assert.equal((await planFor(root, "scripts/run.py")).plan.mode, "FULL");
+      // .github/ and root-level files stay global.
+      for (const global of [".github/scripts/check.py", "tool.py"]) {
+        write(root, global, "print('global')\n");
+        const blocked = await planFor(root, "packages/utils/src/bedrock.ts");
+        assert.ok((blocked.graph.adapterBlockers ?? []).includes(reason), `${global}: ${JSON.stringify(blocked.graph.adapterBlockers)}`);
+        assert.equal(blocked.plan.mode, "FULL");
+        rmSync(join(root, global));
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // xamops (2026-11-26): a Maven reactor with a root package.json, a frontend, and Python services and
+  // tooling in their own top-level directories. A Java change in one module must not reach the scripts.
+  it("confines unmodeled-language files in plain top-level directories beside a Maven reactor", async () => {
+    const root = mkdtempSync(join(tmpdir(), "diffci-maven-unmodeled-"));
+    try {
+      write(root, "package.json", JSON.stringify({ name: "platform", private: true }));
+      write(root, "pom.xml", "<project><modelVersion>4.0.0</modelVersion><groupId>example</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>billops</module><module>xamops-service</module></modules></project>");
+      for (const module of ["billops", "xamops-service"]) {
+        write(root, `${module}/pom.xml`, `<project><modelVersion>4.0.0</modelVersion><parent><groupId>example</groupId><artifactId>parent</artifactId><version>1</version></parent><artifactId>${module}</artifactId></project>`);
+        write(root, `${module}/src/main/java/example/${module === "billops" ? "Bill" : "Ops"}.java`, "package example; public class X {}");
+        write(root, `${module}/src/test/java/example/${module === "billops" ? "Bill" : "Ops"}Test.java`, "package example; public class XTest {}");
+      }
+      write(root, "xamops-service/scripts/migrate.py", "print('migrate')\n");
+      write(root, "forecast-service/app.py", "print('forecast')\n");
+      const reason = "Unmodeled languages alongside an adapter require full validation";
+      const { graph, plan } = await planFor(root, "billops/src/main/java/example/Bill.java");
+      assert.ok(!(graph.adapterBlockers ?? []).includes(reason), JSON.stringify(graph.adapterBlockers));
+      assert.deepEqual(graph.scopedAdapterBlockers?.find((b) => b.reason === reason)?.directories, ["forecast-service", "xamops-service"]);
+      assert.equal(plan.mode, "SELECTIVE", JSON.stringify(plan));
+      assert.deepEqual(plan.selectedTests, ["billops/src/test/java/example/BillTest.java"]);
+      // A module that shares a directory with a script, and the scripts themselves, keep the full suite.
+      for (const changed of ["xamops-service/src/main/java/example/Ops.java", "xamops-service/scripts/migrate.py", "forecast-service/app.py"]) {
+        assert.equal((await planFor(root, changed)).plan.mode, "FULL", changed);
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

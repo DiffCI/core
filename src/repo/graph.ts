@@ -1107,9 +1107,14 @@ export async function buildDependencyGraph(
   if (unmodeledLanguageFiles.length) {
     const reason = "Unmodeled languages alongside an adapter require full validation";
     adapterBlockers.push(reason);
-    // Files in a top-level dot-directory outside every package (agent skills, editor tooling) are confined
-    // to that directory: no package's sources or tests can load them.
-    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (/^\.[^/]+\//.test(file) && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : "") || rustScope(file));
+    // A file outside every nested package is confined to its top-level directory (2026-11-26, decided with the
+    // maintainer). A change to the file itself, or one reaching that directory through the graph, still falls
+    // back, so a modeled test that runs the script stays covered. Accepted gap: unmodeled code that reads a
+    // modeled file in another directory (a Python test opening a fixture elsewhere) no longer forces the full
+    // suite when that file changes. Before this, one root package.json made every script in the repository
+    // global (an outside Maven/TypeScript/Python adopter planned in full on every run). Root-level files and
+    // .github/ (CI can run them against anything) stay global.
+    for (const file of unmodeledLanguageFiles) addScope(reason, packageScope(file) || (file.includes("/") && !file.startsWith(".github/") ? file.slice(0, file.indexOf("/")) : "") || rustScope(file));
   }
   profile.adapters = contributions.map(({ id, version, blockers }) => ({ id, version, blockers }));
   // Rust test targets are not Go packages; other adapters keep their existing routing here.
