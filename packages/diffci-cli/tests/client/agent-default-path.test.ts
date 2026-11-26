@@ -114,7 +114,8 @@ test("a push from a linked worktree cannot reach the repository through the hook
       `appendFileSync(${JSON.stringify(log)}, (process.env.GIT_DIR ?? "-") + "\\n");`,
       `execFileSync("git", ["init", "--quiet"], { cwd: mkdtempSync(join(tmpdir(), "diffci-hook-test-repo-")) });`,
     ].join("\n"));
-    const hook = (content: string) => writeFileSync(join(main, ".git", "hooks", "pre-push"), content);
+    // Git skips a hook without the execute bit on Linux and macOS (Windows has none), so set it.
+    const hook = (content: string) => writeFileSync(join(main, ".git", "hooks", "pre-push"), content, { mode: 0o755 });
     const pushFromWorktree = (name: string) => {
       const tree = join(root, name);
       // The branch exists on the remote first, so the worktree's push has a base and the hook verifies it.
@@ -126,13 +127,15 @@ test("a push from a linked worktree cannot reach the repository through the hook
     };
     const command = `node ${JSON.stringify(fake.replace(/\\/g, "/"))}`;
 
-    // Without the unset line (the 0.3.63 hook), the stand-in's git init marks the real repository bare.
+    // Without the unset line (the 0.3.63 hook), GIT_DIR reaches the stand-in. Whether its git init then marks
+    // the real repository bare depends on the Git build: Git for Windows does, Git 2.56 on Linux does not.
+    // The log of what the stand-in saw is the check that holds everywhere.
     hook(prePushHook(command).replace(/^unset GIT_DIR .*\n/m, ""));
-    assert.equal(pushFromWorktree("old"), "true", "the test would not catch the leak");
-    git(main, "config", "core.bare", "false");
+    if (pushFromWorktree("old") === "true") git(main, "config", "core.bare", "false");
 
     hook(prePushHook(command));
     assert.equal(pushFromWorktree("new"), "false");
-    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map((line) => line === "-" ? "-" : "set"), ["set", "-"]);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n").map((line) => line === "-" ? "-" : "set"), ["set", "-"],
+      "the old hook must leak GIT_DIR to the stand-in, or the test would not catch the leak; the current hook must not");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

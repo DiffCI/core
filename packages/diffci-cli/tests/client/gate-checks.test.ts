@@ -138,7 +138,13 @@ test("a Python repository gets the checks its CI workflow runs, narrowed to the 
     assert.deepEqual(plannedChecks(dir, { baseSha: web, headSha: api }, { extraRoots: [] }), []);
 
     assert.equal(onPath("make", { PATH: bin }, "linux"), process.platform !== "win32");
-    assert.equal(onPath("make", { PATH: bin, PATHEXT: ".EXE;.CMD" }, "win32"), process.platform === "win32");
+    // The Windows lookup gets its own directory holding only make.CMD: on Linux and macOS, `bin` holds an
+    // extensionless `make`, which the bare-name probe would find, so the assertion meant something else there.
+    // The extension matches PATHEXT's case because Linux file names are case-sensitive; Windows ignores case.
+    mkdirSync(join(bin, "win"));
+    writeFileSync(join(bin, "win", "make.CMD"), "");
+    assert.equal(onPath("make", { PATH: join(bin, "win"), PATHEXT: ".EXE;.CMD" }, "win32"), true);
+    assert.equal(onPath("make", { PATH: join(bin, "win"), PATHEXT: ".EXE" }, "win32"), false);
     assert.equal(onPath("make", { PATH: "" }, "linux"), false);
     assert.equal(onPath("./make", { PATH: bin }, "linux"), false);
   } finally {
