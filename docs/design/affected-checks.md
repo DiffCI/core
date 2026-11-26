@@ -116,3 +116,26 @@ Anything not read with certainty adds nothing. A Python-only check (a direct cal
 recipe only calls Python tools, directly or through a repository script) is skipped when no Python file,
 Python configuration, the Makefile or one of its scripts, or a workflow changed. Every other check runs
 as written. The CLI skips a check whose program is not installed and says so: CI still runs it.
+
+### Named tox environments and nox sessions
+
+A single root-level Actions command such as `tox -e lint,type` or `nox -s lint types` can contribute
+one check. Discovery reads the root `tox.ini` or `noxfile.py` as text. Verification runs the original
+command when every selected name resolves and every command in its body is understood.
+
+- Tox environments must skip installing the project and explicitly allow the external check tools.
+  A named section can inherit commands from `[testenv]`.
+- Nox sessions use `@nox.session(python=False)` or `@nox.session(venv_backend="none")`. The complete
+  module must consist of `import nox` and literal session definitions using only `session.run(...)`.
+- Supported commands are `ruff format --check`, `ruff check --no-fix --no-fix-only` and
+  `mypy --config-file= src` with literal paths. The empty mypy config disables config-driven plugins
+  and report writers. Ruff accepts `--isolated`. Without it, Ruff can check extra file extensions, so
+  its session runs on any change. Even isolated checks run on ignore-file changes and when Git cannot
+  rule out symlinked inputs.
+
+An ordinary `actions/checkout` step or another supported session may precede the command. Earlier
+setup scripts or custom actions could change the runner environment or generate a different configuration.
+Those cases, conditional steps, changed working directories, environment overrides, dependencies, hooks and
+dynamic declarations leave the session to CI. The CLI also leaves tox to CI on Windows, where it
+cannot establish which user configuration the runner will load. Existing test selection and full-suite
+fallback apply independently of these checks.

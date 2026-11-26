@@ -38,6 +38,24 @@ function verify(repo: string, base: string, head: string, baselineOnFailure: boo
   return verifyRange({ repoPath: repo, env: {}, version: "test", timeoutMs: 60_000, tailBytes: 4_000, baseOverride: base, headOverride: head, baselineOnFailure });
 }
 
+test("a session the exported base does not declare has no baseline execution", () => {
+  const { repo, base, head } = fixture("false", 4);
+  try {
+    let inspected = false;
+    const result = checkAtBaseline({ repoPath: repo, baseSha: base, headSha: head, command: "nox -s lint", timeoutMs: 60_000,
+      canRunSession(directory, command) {
+        assert.notEqual(directory, repo);
+        assert.equal(command, "nox -s lint");
+        inspected = existsSync(join(directory, "package.json"));
+        return false;
+      },
+    });
+    assert.equal(inspected, true);
+    assert.equal(result.status, "unknown");
+    assert.equal(result.base_execution, undefined);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+});
+
 test("a check already failing at the base does not hide a test the change broke", async () => {
   const { repo, base, head } = fixture("true", 2);
   try {

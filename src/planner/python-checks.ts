@@ -16,7 +16,10 @@
  *   - a direct `mypy`, `pyright`, `basedpyright`, `pyrefly check`, `ruff check` or `ruff format --check`
  *     call, optionally behind `uv run`, `poetry run`, `pdm run`, `hatch run`, `pipenv run` or `python -m`,
  *     whose every argument is a plain word and none rewrites files or writes output. Before `uv run`,
- *     --directory and --project take repository-relative paths; --offline and --no-progress take no value.
+ *     --directory and --project take repository-relative paths; --offline and --no-progress take no value;
+ *   - a root-level `tox -e lint,type` or `nox -s lint types` selecting literal environments or sessions.
+ *     Read the configuration as text. Keep the original runner command only if every selected command
+ *     is a supported read-only check. Unknown options, setup, hooks or execution contexts add nothing.
  *
  * FAILING CLOSED. Here that means adding nothing: anything not read with certainty is left out, which
  * is the behaviour before this module. Steps in disabled jobs, steps with expressions in their working
@@ -34,7 +37,9 @@
 import { posix } from "node:path";
 import { parse } from "yaml";
 import type { ChangedPath } from "./check-narrowing.js";
+import { noxCheckCommands } from "./nox-sessions.js";
 import type { GateCheck } from "./pipeline-steps.js";
+import { toxCheckCommands } from "./tox-environments.js";
 
 export interface PythonCheck extends GateCheck {
   /** True when the check only runs Python tools, so a change without Python files cannot fail it. */
@@ -72,9 +77,9 @@ function workingDirectory(...levels: unknown[]): string | undefined {
   for (const level of levels) {
     const dir = (level as { "working-directory"?: unknown } | undefined)?.["working-directory"];
     if (dir === undefined) continue;
-    return typeof dir === "string" ? normalizeDir(dir) : undefined;
+    return typeof dir === "string" ? dir : undefined;
   }
-  return "";
+  return ".";
 }
 
 function disabled(condition: unknown): boolean {
@@ -193,30 +198,100 @@ function makeKind(target: string, recipe: readonly string[]): GateCheck["kind"] 
   return "script";
 }
 
-/**
- * The Python checks CI workflows run, in workflow order. Reads the workflows and, through `read`, the
- * Makefiles and scripts they name. Every check starts as RUN.
- */
-export function discoverPythonChecks(workflows: readonly WorkflowFile[], read: (path: string) => string | undefined): PythonCheck[] {
+// These workflow forms select named declarations in order. A bare runner selects defaults and
+// additional arguments can select different sessions, override configuration or invoke another tool.
+const NAMED_ENV = /^[a-z][a-z0-9_-]*$/;
+const PYTHON_TARGET = /^(?:\.|(?:\.\/)?(?:[\w][\w-]*\/)*[\w][\w-]*(?:\.(?:py|pyi|ipynb))?)$/;
+
+// Ruff's fix and fix-only settings are independent. Mypy configuration can load plugins
+// and request output files. Require the workflow's own arguments to rule out those effects.
+const SESSION_TOOLS = [
+  { prefix: "ruff check ", required: ["--no-fix", "--no-fix-only"], ruff: true },
+  { prefix: "ruff format ", required: ["--check"], ruff: true },
+  { prefix: "mypy ", required: ["--config-file="], ruff: false },
+];
+
+function sessionCheck(line: string, workflowPath: string, read: (path: string) => string | undefined): PythonCheck | undefined {
+  const command = line.replace(/[ \t]+/g, " ");
+  const tox = command.startsWith("tox -e ");
+  if (!tox && !command.startsWith("nox -s ")) return undefined;
+  const names = command.slice(7).split(tox ? "," : " ");
+  if (names.some((name) => !NAMED_ENV.test(name)) || new Set(names).size !== names.length) return undefined;
+  const config = tox ? "tox.ini" : "noxfile.py";
+  const source = read(config);
+  if (!source || source.length > 64 * 1024) return undefined;
+  if (tox && (read("toxfile.py") !== undefined || read("☣.py") !== undefined)) return undefined;
+  const commands = tox ? toxCheckCommands(source, names) : noxCheckCommands(source, names);
+  if (!commands?.length) return undefined;
+  const kinds = new Set<GateCheck["kind"]>();
+  const triggers = new Set([config]);
+  let pythonOnly = true;
+  for (const leaf of commands) {
+    const call = directToolCall(leaf);
+    if (!call) return undefined;
+    const tool = SESSION_TOOLS.find(({ prefix }) => call.command.startsWith(prefix));
+    if (!tool) return undefined;
+    const args = call.command.slice(tool.prefix.length).split(" ");
+    if (!tool.required.every((flag) => args.includes(flag))) return undefined;
+    // Ruff configuration may select extra file extensions or extend another arbitrary config.
+    // Its check-only forms are still safe to run there, but only an isolated call can narrow.
+    if (tool.ruff && !args.includes("--isolated")) pythonOnly = false;
+    const paths = args.filter((word) => !tool.required.includes(word) && !(tool.ruff && word === "--isolated"));
+    if ((!tool.ruff && !paths.length) || !paths.every((path) => PYTHON_TARGET.test(path))) return undefined;
+    for (const path of paths) triggers.add(posix.normalize(path));
+    kinds.add(call.kind);
+  }
+  const kind = kinds.size === 1 ? [...kinds][0]! : "script";
+  return { id: command, command, kind, script: workflowPath, runsScript: false, pythonOnly,
+    triggers: [...triggers], decision: "RUN", reason: `run by CI workflow ${workflowPath}` };
+}
+
+type ReadText = (path: string) => string | undefined;
+
+/** Discover checks in workflow order. The CLI supplies a separate reader for session configuration
+ * so its file and environment checks do not change how Makefiles and their scripts are read. */
+export function discoverPythonChecks(workflows: readonly WorkflowFile[], read: ReadText, readSession: ReadText = read): PythonCheck[] {
   const checks: PythonCheck[] = [];
   const seen = new Set<string>();
   for (const workflow of workflows) {
-    let doc: { jobs?: unknown; defaults?: { run?: unknown } } | null;
+    let doc: { jobs?: unknown; env?: unknown; defaults?: { run?: { shell?: unknown } } } | null;
     try { doc = parse(workflow.text) as typeof doc; } catch { continue; }
     if (!doc?.jobs || typeof doc.jobs !== "object") continue;
     for (const job of Object.values(doc.jobs as Record<string, unknown>)) {
       if (!job || typeof job !== "object") continue;
-      const { steps, if: condition, defaults } = job as { steps?: unknown; if?: unknown; defaults?: { run?: unknown } };
+      const { steps, if: condition, defaults } = job as { steps?: unknown; if?: unknown; defaults?: { run?: { shell?: unknown } } };
       if (disabled(condition) || !Array.isArray(steps)) continue;
+      const plainSessionJob = condition === undefined && doc.env === undefined && !("env" in job)
+        && !("container" in job) && !("services" in job) && !("strategy" in job) && !("continue-on-error" in job)
+        && defaults?.run?.shell === undefined && doc.defaults?.run?.shell === undefined;
+      let unknownSessionContext = false;
       for (const step of steps) {
-        const { run, if: stepCondition } = (step ?? {}) as { run?: unknown; if?: unknown };
-        if (typeof run !== "string" || disabled(stepCondition)) continue;
-        const dir = workingDirectory(step, defaults?.run, doc.defaults?.run);
+        const { run, if: stepCondition, env, shell, uses, with: inputs, "continue-on-error": optional } = (step ?? {}) as {
+          run?: unknown; if?: unknown; env?: unknown; shell?: unknown; uses?: unknown; with?: unknown; "continue-on-error"?: unknown;
+        };
+        if (disabled(stepCondition)) continue;
+        // An action can change the checkout, runner defaults or environment for later steps.
+        if (uses !== undefined && !(typeof uses === "string" && /^actions\/checkout@(?:v\d+|[a-f0-9]{40})$/.test(uses)
+          && inputs === undefined && env === undefined && stepCondition === undefined && optional === undefined)) unknownSessionContext = true;
+        if (typeof run !== "string") continue;
+        const canReadSession = !unknownSessionContext && plainSessionJob && stepCondition === undefined
+          && uses === undefined && env === undefined && shell === undefined && optional === undefined;
+        // A preceding script could have generated configuration or updated the runner environment.
+        // Only a session whose complete command list we can read preserves this context.
+        unknownSessionContext = true;
+        const rawDir = workingDirectory(step, defaults?.run, doc.defaults?.run);
+        const dir = rawDir === undefined ? undefined : normalizeDir(rawDir);
         if (dir === undefined) continue;
-        const lines = run.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+        const block = run.replace(/\r\n/g, "\n");
+        const lines = block.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
         if (lines.some((line) => CONTEXT_CHANGE.test(line) || line.includes("${{"))) continue;
         for (const line of lines) {
-          const check = makeCheck(line, dir, workflow.path, read) ?? (dir === "" ? toolCheck(line, workflow.path) : undefined);
+          let check = makeCheck(line, dir, workflow.path, read) ?? (dir === "" ? toolCheck(line, workflow.path) : undefined);
+          if (!check && canReadSession && /^(?:tox|nox)\s/.test(line) && (rawDir === "." || rawDir === "./")
+            && lines.length === 1 && !block.includes("${{") && !/[^\t\n\x20-\x7e]/.test(block)) {
+            check = sessionCheck(line, workflow.path, readSession);
+            if (check) unknownSessionContext = false;
+          }
           if (!check || seen.has(check.command)) continue;
           seen.add(check.command);
           checks.push(check);
@@ -264,13 +339,17 @@ function pythonRelevant(path: string): boolean {
   return PY_FILE.test(path) || PY_CONFIG.test(posix.basename(path)) || path.startsWith(".github/workflows/");
 }
 
-/** Skips Python-only checks for a change with no Python file, Python configuration or trigger in it. */
-export function narrowPythonChecks(checks: readonly PythonCheck[], changes: readonly ChangedPath[]): PythonCheck[] {
+/** Skip unrelated changes. A session can read the target of a Python symlink under another
+ * extension, so it can skip only when the caller has ruled out links in both Git trees. */
+export function narrowPythonChecks(checks: readonly PythonCheck[], changes: readonly ChangedPath[], sessionInputsAreRegular?: () => boolean): PythonCheck[] {
   return checks.map((check) => {
     if (!check.pythonOnly) return { ...check, reason: `${check.reason}; not read as Python-only, runs as written` };
-    const hit = changes.find((change) => pythonRelevant(change.path) || check.triggers.includes(change.path));
-    return hit
-      ? { ...check, reason: `${check.reason}; ${hit.path} changed` }
-      : { ...check, decision: "SKIP", reason: `${check.reason}; no changed Python file or Python configuration` };
+    // Even isolated Ruff consults nested ignore files when selecting inputs from a directory.
+    const session = /^(?:tox -e |nox -s )/.test(check.command);
+    const hit = changes.find(({ path }) => pythonRelevant(path) || check.triggers.includes(path)
+      || (session && /(?:^|\/)\.(?:gitignore|ignore)$/.test(path)));
+    if (hit) return { ...check, reason: `${check.reason}; ${hit.path} changed` };
+    if (session && !sessionInputsAreRegular?.()) return { ...check, decision: "RUN", reason: `${check.reason}; cannot rule out symlinked Python inputs` };
+    return { ...check, decision: "SKIP", reason: `${check.reason}; no changed Python file or Python configuration` };
   });
 }

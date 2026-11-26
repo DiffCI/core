@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { observe } from "./observe.js";
 import { plannedChecks } from "./gate-checks.js";
+import { canHandOffNox } from "./python-session-files.js";
 import { hookCommand } from "./hook.js";
 import { detectPackageManager } from "./install.js";
 import { createIsolatedWorktree } from "./isolated-worktree.js";
@@ -62,6 +63,12 @@ export async function agentSelection(repoInput: string) {
   }
   const ready = unchanged && (!before.changed || Boolean(command));
   const planned = ready && before.changed ? plannedChecks(repoPath, { baseSha: before.baseSha, headSha: before.commitSha }) : [];
+  for (const check of planned) {
+    if (check.decision !== "SKIP" && check.command.startsWith("nox -s ") && !canHandOffNox(repoPath)) {
+      check.decision = "SKIP";
+      check.reason = "a bare Nox invocation could load cached bytecode; diffci verify isolates its Python cache";
+    }
+  }
   const checks = planned.filter((check) => check.decision !== "SKIP");
   return {
     schema: "diffci.agent-selection.v1", scope: "working-tree",

@@ -11,7 +11,7 @@ import { coverageAdditions, readCoverageMap } from "./coverage-map.js";
 import { checkAtBaseline, compareWithBaseline, type CheckBaseline, type FailureBaseline } from "./failure-baseline.js";
 import { collectEnforcementContext, evaluateEnforcement, type EnforcementDecision } from "./enforce-policy.js";
 import { inferFullCommand, inferPlannedCommands, inferSelectedCommand, inferSelectedCommands } from "./full-command.js";
-import { plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
+import { canRunPythonSession, plannedChecks, runChecks, type CheckResult, type PlannedCheck } from "./gate-checks.js";
 import { makeGitRunner, observe, separateProjectReason } from "./observe.js";
 import { redactPath, type ObservationCommitRange, type ObservationReport, type SelectionReason } from "./report.js";
 import { createIsolatedWorktree } from "./isolated-worktree.js";
@@ -414,7 +414,8 @@ async function executeWithPolicy(
     // With no time left the base rerun would get a 0ms limit, which means none: report it as unknown instead.
     ? (check: { command: string }, remainingMs: number): CheckBaseline => remainingMs <= 0
       ? { status: "unknown", base_sha: checkBase, reason: "the time limit ran out before the base run" }
-      : checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command, timeoutMs: remainingMs })
+      : checkAtBaseline({ repoPath: options.repoPath, baseSha: checkBase, headSha: checkHead, command: check.command,
+        timeoutMs: remainingMs, canRunSession: canRunPythonSession })
     : undefined;
   const checkRun = options.skipChecks ? undefined : runChecks(planned, { cwd: options.repoPath, timeoutMs: options.timeoutMs, tailBytes: options.tailBytes, baseline: checkBaseline });
   const checks = checkRun?.results.length ? checkRun.results : undefined;
