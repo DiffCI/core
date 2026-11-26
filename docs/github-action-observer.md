@@ -44,6 +44,55 @@ a repository secret, never as a literal.
 The wrapper installs the pinned CLI in `RUNNER_TEMP`, not the observed
 checkout, so it does not modify the checkout's lockfile or `node_modules`.
 
+## Keeping DiffCI up to date
+
+Each run checks whether a newer DiffCI release exists. If one does, the job
+summary, a notice annotation and the pull request comment (with `comment:
+"true"`) say so, with the exact step line to paste:
+
+```yaml
+- uses: DiffCI/core@<full commit SHA> # v<new version>
+```
+
+The check is one anonymous request to the public npm registry and one
+`git ls-remote` of DiffCI/core; nothing about your repository is sent. It
+gives up silently after five seconds and never fails the step. Set
+`update-notice: "false"` on the step to turn it off.
+
+### Get updates as pull requests (recommended)
+
+Pin the Action to a full commit SHA with the version as a comment **on the
+same line**, and let Dependabot (or Renovate) open a pull request for each
+release. The pin stays immutable, and every upgrade is a change you review:
+
+```yaml
+- uses: DiffCI/core@34a71469c0fcfa25aeb40e2d7c93645574fe6484 # v0.3.66
+```
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+```
+
+A release tag (`uses: DiffCI/core@v0.3.66`) is updated the same way. A
+version comment on the line above the `uses:` line is not read by Dependabot,
+so keep it on the same line.
+
+### Always run the latest release (optional)
+
+`uses: DiffCI/core@v0` follows every 0.x release with no pin to bump. The tag
+moves only after the release's CLI is installable from npm. The trade-off:
+the code your workflow runs changes without a review in your repository, a
+bad release reaches you at once, and tools such as the OpenSSF Scorecard flag
+actions that are not pinned to a SHA. Prefer it for observe-only jobs that
+can't block a merge, and pin a SHA wherever DiffCI gates anything (`verify`,
+`check-run`).
+
 ## Pull request comment
 
 The job summary is only visible to people who open the run. Set

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { findReleaseMismatches, releaseTags, type ObservedRelease } from "../scripts/release-surfaces.mjs";
+import { findReleaseMismatches, floatingTag, releaseTags, type ObservedRelease } from "../scripts/release-surfaces.mjs";
 
 const COMMIT = "1f9b6b3a9872a0e52fe4e94790e96da330ffb390";
 
@@ -11,7 +11,7 @@ function aligned(version: string): ObservedRelease {
   return {
     npm: { latest: version, versions: ["0.3.12", version] },
     githubLatestRelease: { tag: tags.release, draft: false, prerelease: false },
-    tagCommits: { [tags.release]: COMMIT, [tags.cli]: COMMIT, [tags.action]: COMMIT },
+    tagCommits: { [tags.release]: COMMIT, [tags.cli]: COMMIT, [tags.action]: COMMIT, [floatingTag(version)]: COMMIT },
     registryLatest: { version, packageVersion: version },
     hostedMcp: { initializeVersion: version, serverCardVersion: version },
   };
@@ -53,10 +53,10 @@ test("the latest GitHub Release must be the published version", () => {
 });
 
 test("release, CLI and Action tags must all exist on one commit", () => {
-  const missingAction = { ...aligned("0.3.13"), tagCommits: { "v0.3.13": COMMIT, "cli-release-v0.3.13": COMMIT } };
+  const missingAction = { ...aligned("0.3.13"), tagCommits: { "v0.3.13": COMMIT, "cli-release-v0.3.13": COMMIT, v0: COMMIT } };
   assert.deepEqual(findReleaseMismatches("0.3.13", missingAction), ["Tag action-v0.3.13 is missing."]);
 
-  const split = { ...aligned("0.3.13"), tagCommits: { "v0.3.13": COMMIT, "cli-release-v0.3.13": COMMIT, "action-v0.3.13": "8c70501" } };
+  const split = { ...aligned("0.3.13"), tagCommits: { "v0.3.13": COMMIT, "cli-release-v0.3.13": COMMIT, "action-v0.3.13": "8c70501", v0: COMMIT } };
   assert.deepEqual(findReleaseMismatches("0.3.13", split), [
     `Tags v0.3.13, cli-release-v0.3.13, action-v0.3.13 must point at one commit; found ${COMMIT}, 8c70501.`,
   ]);
@@ -83,4 +83,15 @@ test("the hosted MCP initialize response and server card must match the release"
 test("surfaces can be checked selectively before the registry is published", () => {
   const beforeRegistry = { ...aligned("0.3.13"), registryLatest: { version: "0.3.12", packageVersion: "0.3.12" } };
   assert.deepEqual(findReleaseMismatches("0.3.13", beforeRegistry, ["npm", "github-release", "tags"]), []);
+});
+
+test("the floating major tag must follow the release", () => {
+  assert.equal(floatingTag("0.3.66"), "v0");
+  assert.equal(floatingTag("1.2.0"), "v1");
+  const lagging = { ...aligned("0.3.13"), tagCommits: { ...aligned("0.3.13").tagCommits, v0: "8c70501aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } };
+  assert.deepEqual(findReleaseMismatches("0.3.13", lagging, ["tags"]), [
+    `Floating tag v0 is at 8c70501, not v0.3.13 (${COMMIT.slice(0, 7)}): run npm run release:float once npm serves the tarball.`,
+  ]);
+  const { v0: _, ...withoutFloating } = aligned("0.3.13").tagCommits!;
+  assert.match(findReleaseMismatches("0.3.13", { ...aligned("0.3.13"), tagCommits: withoutFloating }, ["tags"])[0] ?? "", /Floating tag v0 is at nothing/);
 });

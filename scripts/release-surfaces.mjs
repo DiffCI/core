@@ -8,6 +8,15 @@ export function releaseTags(version) {
 }
 
 /**
+ * The floating major tag (`v0`) for users who choose `uses: DiffCI/core@v0` and want every release without a
+ * pin bump. `npm run release:float` moves it only once npm serves the release tarball, so `@v0` never points at
+ * an Action whose CLI version can't be installed yet (a staged npm publish 404s until approved).
+ */
+export function floatingTag(version) {
+  return `v${String(version).split(".")[0]}`;
+}
+
+/**
  * Compares observed public release state with the CLI package version.
  * Returns one human-readable problem per mismatch; an empty list means every surface agrees.
  */
@@ -38,6 +47,11 @@ export function findReleaseMismatches(version, observed, surfaces = RELEASE_SURF
     const distinct = new Set(Object.values(tags).map((tag) => commits[tag]).filter(Boolean));
     if (distinct.size > 1) {
       problems.push(`Tags ${Object.values(tags).join(", ")} must point at one commit; found ${[...distinct].join(", ")}.`);
+    }
+    const floating = floatingTag(version);
+    const release = commits[tags.release];
+    if (release && commits[floating] !== release) {
+      problems.push(`Floating tag ${floating} is at ${commits[floating]?.slice(0, 7) ?? "nothing"}, not ${tags.release} (${release.slice(0, 7)}): run npm run release:float once npm serves the tarball.`);
     }
   }
 

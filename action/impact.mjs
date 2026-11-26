@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Runs inside the DiffCI change impact Action after `diffci observe`. It reads the written report and
 //   1. sets step outputs a workflow can act on (affected-tests, full-suite-required, ...), and
-//   2. when asked (`comment: true`), keeps one PR comment up to date with the same answer.
+//   2. when asked (`comment: true`), keeps one PR comment up to date with the same answer, and
+//   3. unless `update-notice: false`, says when a newer DiffCI release exists, with the line to pin it.
 // No dependencies: it runs on the Node the Action already set up, outside the observed checkout, and
 // never fails the step - outputs and the comment are conveniences; the report artifact is the record.
+import { execFile } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+
+const REGISTRY_LATEST = "https://registry.npmjs.org/@diffci.com/diffci/latest";
+const CORE_REPOSITORY = "https://github.com/DiffCI/core";
+/** The update check is a nicety: it gives up quickly rather than slow the job down. */
+const UPDATE_CHECK_TIMEOUT_MS = 5000;
 
 /** Tests listed by name in the comment before the rest collapse into a count. */
 const MAX_LISTED_TESTS = 10;
@@ -86,8 +93,86 @@ function worktreeChangeSuspected(evidence) {
   return [evidence.headShaBefore, evidence.headShaAfter, evidence.worktreeDigestBefore, evidence.worktreeDigestAfter].some((value) => value !== undefined);
 }
 
+function semver(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version ?? "").trim());
+  return match ? match.slice(1).map(Number) : undefined;
+}
+
+/** True when `latest` is a plain release newer than `current`. Prereleases and anything unparsable never notify. */
+export function isNewer(latest, current) {
+  const a = semver(latest);
+  const b = semver(current);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+
+async function fetchLatestVersion() {
+  // One anonymous GET of public npm metadata; nothing about the repository is sent.
+  const response = await fetch(REGISTRY_LATEST, { signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS), headers: { accept: "application/json" } });
+  if (!response.ok) return undefined;
+  return (await response.json())?.version;
+}
+
+function resolveTagSha(version) {
+  // `git ls-remote` reads the public tag without the GitHub API, so it needs no token and no rate limit.
+  return new Promise((resolve) => {
+    execFile("git", ["ls-remote", CORE_REPOSITORY, `refs/tags/v${version}`, `refs/tags/v${version}^{}`], { timeout: UPDATE_CHECK_TIMEOUT_MS }, (error, stdout) => {
+      if (error) return resolve(undefined);
+      const lines = String(stdout).trim().split("\n").map((line) => line.split(/\s+/));
+      const peeled = lines.find(([, ref]) => ref?.endsWith("^{}")) ?? lines[0];
+      resolve(/^[0-9a-f]{40}$/.test(peeled?.[0] ?? "") ? peeled[0] : undefined);
+    });
+  });
+}
+
+/**
+ * The newer release, if there is one: { current, latest, sha?, uses, releaseUrl }. `uses` is the step line to
+ * paste, an immutable SHA with the version comment Dependabot and Renovate update, or the tag when the SHA
+ * can't be read. Any failure (offline runner, registry down, timeout) returns undefined: no notice, no warning.
+ */
+export async function updateNotice(env, { fetchLatest = fetchLatestVersion, resolveSha = resolveTagSha } = {}) {
+  if (env.DIFFCI_UPDATE_NOTICE === "false") return undefined;
+  const current = env.DIFFCI_CLI_VERSION;
+  if (!semver(current)) return undefined;
+  try {
+    const latest = await fetchLatest();
+    if (!isNewer(latest, current)) return undefined;
+    const sha = await resolveSha(latest).catch(() => undefined);
+    return {
+      current, latest, sha,
+      uses: sha ? `DiffCI/core@${sha} # v${latest}` : `DiffCI/core@v${latest}`,
+      releaseUrl: `${CORE_REPOSITORY}/releases/tag/v${latest}`,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** One line for the PR comment. */
+export function formatUpdateLine(notice) {
+  return `> [!NOTE]\n> DiffCI ${notice.latest} is available; this run used ${notice.current}. [What changed](${notice.releaseUrl}) · update the step to \`uses: ${notice.uses}\``;
+}
+
+/** The job summary block, with the step to paste and how to get these updates as pull requests. */
+export function formatUpdateSummary(notice) {
+  return [
+    "",
+    `### DiffCI ${notice.latest} is available`,
+    "",
+    `This run used ${notice.current}. [What changed](${notice.releaseUrl}). To update, change the DiffCI step to:`,
+    "",
+    "```yaml",
+    `- uses: ${notice.uses}`,
+    "```",
+    "",
+    "Dependabot can open this update as a pull request on every release: see [keeping DiffCI up to date](https://github.com/DiffCI/core/blob/main/docs/github-action-observer.md#keeping-diffci-up-to-date). Set `update-notice: false` on the step to hide this.",
+    "",
+  ].join("\n");
+}
+
 /** A short PR comment: the headline and why, with the full detail one click away in the job summary. */
-export function formatComment(report, { marker, runUrl }) {
+export function formatComment(report, { marker, runUrl, notice }) {
   const lines = [marker, "### DiffCI: what this change affects", ""];
   const result = report.status === "OBSERVED" ? report.result : undefined;
   if (!result) {
@@ -125,6 +210,7 @@ export function formatComment(report, { marker, runUrl }) {
   if (worktreeChangeSuspected(report.nonInterference)) {
     lines.push("", "> [!WARNING]", "> The working tree changed while DiffCI observed it. Please report this at https://github.com/DiffCI/core/issues.");
   }
+  if (notice) lines.push("", formatUpdateLine(notice));
   lines.push(
     "",
     `<sub>${runUrl ? `[Details in the job summary](${runUrl}) · ` : ""}Observation only: DiffCI skipped and changed nothing. Via [DiffCI](https://github.com/DiffCI/core), open source (MIT).</sub>`,
@@ -162,7 +248,7 @@ async function github(env, method, path, body) {
 }
 
 /** Creates or updates this job's single DiffCI comment on the pull request. Returns what it did. */
-export async function upsertComment(env, report) {
+export async function upsertComment(env, report, notice) {
   if (!env.DIFFCI_GITHUB_TOKEN) return "skipped: no github-token";
   let event;
   try {
@@ -178,7 +264,7 @@ export async function upsertComment(env, report) {
   const runUrl = env.GITHUB_SERVER_URL && env.GITHUB_RUN_ID
     ? `${env.GITHUB_SERVER_URL}/${repo}/actions/runs/${env.GITHUB_RUN_ID}`
     : undefined;
-  const body = formatComment(report, { marker, runUrl });
+  const body = formatComment(report, { marker, runUrl, notice });
 
   let existing;
   for (let page = 1; page <= MAX_COMMENT_PAGES && !existing; page++) {
@@ -195,7 +281,21 @@ export async function upsertComment(env, report) {
   return "created";
 }
 
-export async function main(env = process.env) {
+export async function main(env = process.env, { checkUpdate = updateNotice } = {}) {
+  let notice;
+  try {
+    notice = await checkUpdate(env);
+  } catch {
+    notice = undefined;
+  }
+  if (notice) {
+    console.log(`::notice title=DiffCI ${notice.latest} is available::This run used ${notice.current}. Update the step to: uses: ${notice.uses}`);
+    try {
+      if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, formatUpdateSummary(notice));
+    } catch {
+      // The summary is a convenience too.
+    }
+  }
   let report;
   if (env.DIFFCI_REPORT) {
     try {
@@ -211,7 +311,7 @@ export async function main(env = process.env) {
   }
   if (env.DIFFCI_COMMENT !== "true" || !report) return;
   try {
-    const outcome = await upsertComment(env, report);
+    const outcome = await upsertComment(env, report, notice);
     console.log(`DiffCI PR comment: ${outcome}`);
   } catch (error) {
     const status = error?.status;

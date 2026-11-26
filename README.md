@@ -35,7 +35,7 @@ Add `with: comment: "true"` (and `pull-requests: write` on the job) and the same
 
 <img src="docs/pr-comment.png" alt="DiffCI pull request comment: 18 of 624 test files are affected by 1 changed file, with a table of each test and why it was selected" width="640">
 
-[Full workflow](examples/github-actions-observer.yml) · [GitLab CI/CD component](integrations/gitlab/README.md)
+[Full workflow](examples/github-actions-observer.yml) · [GitLab CI/CD component](integrations/gitlab/README.md) · [Keeping it up to date](docs/github-action-observer.md#keeping-diffci-up-to-date)
 
 ### It's just your CI
 

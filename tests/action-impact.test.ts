@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 // @ts-expect-error - plain ESM shipped with the Action, deliberately untyped and dependency-free.
-import { commentMarker, formatComment, impactOutputs, main, upsertComment } from "../action/impact.mjs";
+import { commentMarker, formatComment, formatUpdateSummary, impactOutputs, isNewer, main, updateNotice, upsertComment } from "../action/impact.mjs";
 
 function report(overrides: Record<string, unknown> = {}, result: Record<string, unknown> = {}) {
   return {
@@ -174,4 +174,63 @@ test("a refusal with no checkout to compare does not warn that the working tree 
   assert.match(formatComment(moved, { marker: commentMarker("w/j") }), /working tree changed/);
   const lost = report({ nonInterference: { headShaBefore: "a".repeat(40), worktreeDigestBefore: "d", worktreeUnchanged: false, workflowFindings: [] } });
   assert.match(formatComment(lost, { marker: commentMarker("w/j") }), /working tree changed/);
+});
+
+// Update notice (2026-11-26): an outside adopter ran 0.3.60 for a week while 0.3.66 fixed what made every plan
+// FULL for them, and nothing in their runs said so.
+test("isNewer compares plain releases only", () => {
+  assert.equal(isNewer("0.3.66", "0.3.60"), true);
+  assert.equal(isNewer("0.4.0", "0.3.99"), true);
+  assert.equal(isNewer("0.3.10", "0.3.9"), true);
+  assert.equal(isNewer("0.3.60", "0.3.60"), false);
+  assert.equal(isNewer("0.3.59", "0.3.60"), false);
+  assert.equal(isNewer("0.4.0-rc.1", "0.3.60"), false);
+  assert.equal(isNewer(undefined, "0.3.60"), false);
+  assert.equal(isNewer("0.3.66", "0.3.60-beta.1"), false);
+});
+
+const SHA = "34a71469c0fcfa25aeb40e2d7c93645574fe6484";
+
+test("updateNotice names the newer release with a Dependabot-readable SHA pin", async () => {
+  const notice = await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => "0.3.66", resolveSha: async () => SHA });
+  assert.deepEqual(notice, {
+    current: "0.3.60", latest: "0.3.66", sha: SHA,
+    uses: `DiffCI/core@${SHA} # v0.3.66`,
+    releaseUrl: "https://github.com/DiffCI/core/releases/tag/v0.3.66",
+  });
+  const tagOnly = await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => "0.3.66", resolveSha: async () => undefined });
+  assert.equal(tagOnly?.uses, "DiffCI/core@v0.3.66");
+});
+
+test("updateNotice stays silent when current, turned off, or the check fails", async () => {
+  let fetched = 0;
+  const fetchLatest = async () => { fetched++; return "0.3.66"; };
+  assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.66" }, { fetchLatest }), undefined);
+  assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60", DIFFCI_UPDATE_NOTICE: "false" }, { fetchLatest }), undefined);
+  assert.equal(await updateNotice({}, { fetchLatest }), undefined);
+  assert.equal(fetched, 1, "turned off or no version: no request at all");
+  assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => { throw new Error("offline"); } }), undefined);
+  assert.equal(await updateNotice({ DIFFCI_CLI_VERSION: "0.3.60" }, { fetchLatest: async () => "0.3.66", resolveSha: async () => { throw new Error("no git"); } }).then(n => n?.uses), "DiffCI/core@v0.3.66");
+});
+
+test("the notice reaches the PR comment, the job summary and an annotation", async () => {
+  const notice = { current: "0.3.60", latest: "0.3.66", sha: SHA, uses: `DiffCI/core@${SHA} # v0.3.66`, releaseUrl: "https://github.com/DiffCI/core/releases/tag/v0.3.66" };
+  const comment = formatComment(report(), { marker: commentMarker("w/j"), notice });
+  assert.match(comment, /DiffCI 0\.3\.66 is available; this run used 0\.3\.60/);
+  assert.ok(comment.includes(`uses: DiffCI/core@${SHA} # v0.3.66`));
+  assert.doesNotMatch(formatComment(report(), { marker: commentMarker("w/j") }), /is available/);
+  assert.ok(formatUpdateSummary(notice).includes(`- uses: DiffCI/core@${SHA} # v0.3.66`));
+
+  const dir = mkdtempSync(join(tmpdir(), "diffci-update-notice-"));
+  const summary = join(dir, "summary.md");
+  writeFileSync(summary, "");
+  const logged: string[] = [];
+  const original = console.log;
+  console.log = (line: string) => { logged.push(String(line)); };
+  try {
+    await main({ GITHUB_STEP_SUMMARY: summary }, { checkUpdate: async () => notice });
+    await main({ GITHUB_STEP_SUMMARY: summary }, { checkUpdate: async () => { throw new Error("boom"); } });
+  } finally { console.log = original; }
+  assert.match(readFileSync(summary, "utf8"), /### DiffCI 0\.3\.66 is available/);
+  assert.equal(logged.filter(line => line.startsWith("::notice title=DiffCI 0.3.66 is available::")).length, 1);
 });

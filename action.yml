@@ -70,6 +70,14 @@ inputs:
       so they get a warning instead of a comment. Never fails the step.
     required: false
     default: "false"
+  update-notice:
+    description: >-
+      When a newer DiffCI release exists, say so in the job summary, as a notice annotation, and in the pull
+      request comment, with the step line to pin it. One anonymous request to the public npm registry and one
+      git ls-remote of DiffCI/core; nothing about the repository is sent. Never fails the step. Set "false" to
+      turn it off.
+    required: false
+    default: "true"
   github-token:
     description: Token used only to post the pull request comment (comment) and the merge gate check run (check-run).
     required: false
@@ -217,6 +225,8 @@ runs:
         DIFFCI_REPORT: ${{ steps.observe.outputs.report-path }}
         DIFFCI_COMMENT: ${{ inputs.comment }}
         DIFFCI_GITHUB_TOKEN: ${{ inputs.github-token }}
+        DIFFCI_CLI_VERSION: ${{ inputs.cli-version }}
+        DIFFCI_UPDATE_NOTICE: ${{ inputs.update-notice }}
       run: node "$GITHUB_ACTION_PATH/action/impact.mjs"
 
     # Opt-in fast check. It runs only what the observation narrowed to, so it never runs the whole suite

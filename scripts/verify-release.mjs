@@ -4,7 +4,7 @@
 // the scheduled consistency workflow verifies every surface after deployment.
 // Usage: node scripts/verify-release.mjs [--surfaces=npm,github-release,tags,mcp-registry,hosted-mcp]
 import { readFileSync } from "node:fs";
-import { findReleaseMismatches, RELEASE_SURFACES, releaseTags } from "./release-surfaces.mjs";
+import { findReleaseMismatches, floatingTag, RELEASE_SURFACES, releaseTags } from "./release-surfaces.mjs";
 
 const cli = JSON.parse(readFileSync(new URL("../packages/diffci-cli/package.json", import.meta.url), "utf8"));
 const server = JSON.parse(readFileSync(new URL("../server.json", import.meta.url), "utf8"));
@@ -62,7 +62,7 @@ if (surfaces.includes("github-release")) {
 
 if (surfaces.includes("tags")) {
   observed.tagCommits = {};
-  for (const tag of Object.values(releaseTags(version))) {
+  for (const tag of [...Object.values(releaseTags(version)), floatingTag(version)]) {
     const commit = await tagCommit(tag);
     if (commit) observed.tagCommits[tag] = commit;
   }

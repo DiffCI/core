@@ -62,6 +62,7 @@ test("public observer Action preserves the reviewed observer contract", async ()
     "api-token",
     "fail-on-error",
     "comment",
+    "update-notice",
     "github-token",
     "verify",
     "verify-checks",
