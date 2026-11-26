@@ -1,6 +1,6 @@
 {
   "name": "@diffci.com/diffci",
-  "version": "0.3.65",
+  "version": "0.3.66",
   "description": "Verification for AI coding agents: runs the tests and checks a change affects, with full fallback and a receipt",
   "keywords": [
     "ci",
@@ -76,7 +76,7 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#e22323333adf89a959fe4e47297b8b3f365bbe95",
+    "@diffci.com/core": "git+https://github.com/DiffCI/core.git#31259384dcb80af1b703e938c99953999a26145d",
     "saxes": "6.0.0",
     "yaml": "^2.9.0"
   },
