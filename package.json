@@ -46,7 +46,7 @@
     "prepare": "npm run build"
   },
   "dependencies": {
-    "@vue/compiler-sfc": "3.5.44",
+    "@vue/compiler-sfc": "3.5.45",
     "typescript": "^5.8.3",
     "yaml": "^2.9.0"
   },
