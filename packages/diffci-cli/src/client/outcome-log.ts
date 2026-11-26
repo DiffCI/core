@@ -39,6 +39,8 @@ export interface OutcomeRecord {
   tests_selected: number;
   tests_available: number;
   selected_tests?: string[];
+  /** Affected tests outside the full suite that the run also ran (2026-11-26), so reuse can tell it covered them. */
+  outside_suite_tests?: string[];
   selection_reasons?: Record<string, SelectionReason>;
   fallback_reasons: string[];
   analysis_ms?: number;
@@ -72,6 +74,7 @@ export function outcomeRecord(report: VerificationReport, env: Record<string, st
     tests_selected: report.tests_selected,
     tests_available: report.tests_available,
     ...(report.selected_tests ? { selected_tests: report.selected_tests } : {}),
+    ...(report.outside_suite_tests?.length ? { outside_suite_tests: report.outside_suite_tests } : {}),
     ...(report.selection_reasons ? { selection_reasons: report.selection_reasons } : {}),
     fallback_reasons: report.analysis.fallback_reasons,
     ...(report.analysis.duration_ms !== undefined ? { analysis_ms: report.analysis.duration_ms } : {}),
@@ -97,6 +100,8 @@ export interface ReuseQuery {
   full_command?: string;
   /** The gate checks this run would execute (decision RUN or NARROWED), with their exact commands. */
   checks: ReadonlyArray<{ id: string; command: string }>;
+  /** Affected tests outside the full suite this run would also run; only a pass that ran each covers it. */
+  outside_tests?: readonly string[];
 }
 
 /**
@@ -109,7 +114,8 @@ export interface ReuseQuery {
  * WHAT. The newest earlier run that passed on the same tree, under the same DiffCI and Node versions, and
  * that covers what this run would execute: a full run of the same full command, or a selected run whose
  * tests include every test selected now. Every gate check this run would execute must have passed in it
- * with the identical command, so a check narrowed to other files does not count. Only passes are reused;
+ * with the identical command, so a check narrowed to other files does not count. Affected tests outside the
+ * full suite must each have run in it too (no full command runs them). Only passes are reused;
  * a reused run is never itself a source. The tree covers the lockfile but not node_modules, so a changed
  * install with an unchanged lockfile is the one thing reuse cannot see; `--no-reuse` runs everything.
  */
@@ -123,6 +129,7 @@ export function reusablePass(records: readonly OutcomeRecord[], query: ReuseQuer
       : run.selection === "selected" && query.selection === "selected" && run.selected_tests !== undefined
         && query.selected_tests.every((test) => run.selected_tests!.includes(test));
     if (!tests) continue;
+    if (!(query.outside_tests ?? []).every((test) => run.outside_suite_tests?.includes(test))) continue;
     const passedChecks = new Set((run.checks ?? []).filter((check) => check.status === "passed" && check.command).map((check) => `${check.id}\n${check.command}`));
     if (query.checks.every((check) => passedChecks.has(`${check.id}\n${check.command}`))) return run;
   }

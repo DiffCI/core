@@ -162,6 +162,31 @@ describe("verify --changed", () => {
     }
   });
 
+  it("reuses a pass that also ran an affected test outside the full suite (2026-11-26)", () => {
+    const dir = fixture();
+    try {
+      // `npm test` runs only test/, so tools/x.test.js is affected but outside the full suite.
+      write(dir, "package.json", JSON.stringify({ name: "fixture", type: "module", scripts: { test: "node --test test/" } }));
+      write(dir, "tsconfig.json", JSON.stringify({ compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", allowJs: true }, include: ["src", "test", "tools"] }));
+      write(dir, "tools/x.test.js", "import test from 'node:test'; import assert from 'node:assert/strict'; import {alpha} from '../src/alpha.js'; test('x', () => assert.equal(typeof alpha(), 'number'));\n");
+      git(dir, "add", "-A");
+      git(dir, "commit", "--quiet", "-m", "outside-suite test");
+      write(dir, "src/alpha.js", "export const alpha = () => 1; // touched\n");
+
+      const first = JSON.parse(runVerify(dir).stdout);
+      assert.equal(first.verification, "passed", first.reason);
+      assert.deepEqual(first.outside_suite_tests, ["tools/x.test.js"]);
+      const record = JSON.parse(readFileSync(join(dir, ".git", "diffci", "outcomes.jsonl"), "utf8").trim());
+      assert.deepEqual(record.outside_suite_tests, ["tools/x.test.js"]);
+
+      const reused = JSON.parse(runVerify(dir).stdout);
+      assert.equal(reused.reused_from?.produced_at, first.produced_at, reused.reason);
+      assert.equal(reused.execution, undefined, "nothing ran");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runs a test that failed before first, and --fail-fast stops after it", () => {
     const dir = fixture();
     try {

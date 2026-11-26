@@ -86,6 +86,13 @@ test("reuses only a covering pass of the same tree under the same versions", () 
   assert.equal(reusablePass([run({ checks: [{ id: "lint", decision: "NARROWED", status: "passed", command: "eslint src/b.js" }] })], withChecks), undefined, "narrowed to other files");
   assert.ok(reusablePass([run({ checks: [{ id: "lint", decision: "NARROWED", status: "passed", command: "eslint src/a.js" }] })], withChecks));
   assert.equal(reusablePass([run({}), run({ produced_at: "2026-11-06T01:00:00.000Z" })], query)?.produced_at, "2026-11-06T01:00:00.000Z", "the newest pass");
+
+  // 2026-11-26: a selection with an affected test outside the full suite was never reused, so the pre-push
+  // hook reran a whole selection the agent had passed on the same tree a few minutes earlier.
+  const withOutside = { ...query, outside_tests: ["tools/x.test.ts"] };
+  assert.ok(reusablePass([run({ ...selected(["a.test.js"]), outside_suite_tests: ["tools/x.test.ts"] })], withOutside), "a selected pass that also ran the outside-suite test");
+  assert.equal(reusablePass([selected(["a.test.js"])], withOutside), undefined, "a pass that did not run it");
+  assert.equal(reusablePass([run({})], withOutside), undefined, "a full run never runs tests outside the full suite");
 });
 
 test("outside a Git repository there is no log and nothing is written", () => {

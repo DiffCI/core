@@ -120,6 +120,8 @@ export interface VerificationReport {
   first_pass?: { tests: number; commands: string[]; stopped_full_suite: boolean };
   /** Tests the coverage map added to the selection (coverage-map.ts), when it added any. */
   coverage_added?: string[];
+  /** Affected tests outside the full suite that this run ran after the selection (executableSelection). */
+  outside_suite_tests?: string[];
   /** Present for `--staged` and `--paths`: the verified files and the excluded dirty ones. */
   scoped?: ScopedVerification;
 }
@@ -331,7 +333,7 @@ async function executeWithPolicy(
   const executable = enforcedFull || !result
     ? fullSelection(options.repoPath, `enforce fallback (${enforcement?.fired_fallback}): ${enforcement?.detail}`)
     : executableSelection(options.repoPath, result, rankedOrdering(options, result), shard && shardTests ? { tests: new Set(shardTests), first: shard.index === 1 } : undefined);
-  const { selection, command, commands, outsideSuite } = executable;
+  const { selection, command, commands, outsideSuite, outsideTests } = executable;
   // A full run first runs the tests the graph did find, and stops if one fails (2026-11-06 LobeHub catch
   // study: both test-only failures were lost when the full suite reached the time limit first).
   const firstPass = selection === "full" && !enforcedFull && !shard && !options.redactPaths && result ? firstPassParts(options.repoPath, result) : undefined;
@@ -382,10 +384,11 @@ async function executeWithPolicy(
   const checkHead = scope === "commit-range" ? range?.headSha : before.commitSha;
   const planned = options.skipChecks ? [] : plannedChecks(options.repoPath, checkBase && checkHead ? { baseSha: checkBase, headSha: checkHead } : undefined);
   // An earlier pass of this exact tree that covers these tests and checks ends the run here (2026-11-06).
-  // Never under enforce, whose receipt must show the decision it applied, nor for tests outside the full
-  // suite, which a full run does not cover.
-  const reusable = options.reuse !== false && !enforcement && !outsideSuite
-    ? findReusablePass(options, before.treeSha, selection, result?.selectedTests ?? [], commands.join(" && "), planned)
+  // Never under enforce, whose receipt must show the decision it applied. Tests outside the full suite are
+  // covered only by a pass that ran them too (2026-11-26: refusing reuse for any of them made the pre-push
+  // hook rerun a whole selection the agent had just passed on the same tree).
+  const reusable = options.reuse !== false && !enforcement
+    ? findReusablePass(options, before.treeSha, selection, result?.selectedTests ?? [], commands.join(" && "), planned, outsideTests)
     : undefined;
   if (reusable) {
     const reused_from = { produced_at: reusable.produced_at, selection: reusable.selection as "selected" | "full", ...(reusable.command ? { command: reusable.command } : {}) };
@@ -405,6 +408,7 @@ async function executeWithPolicy(
       snapshot: { ...baseReport(before, scope, boundRange).snapshot, after_base_sha: before.baseSha, after_tree_sha: before.treeSha, unchanged: true },
       analysis,
       required_actions: [],
+      ...(outsideTests.length ? { outside_suite_tests: outsideTests } : {}),
       reused_from,
       ...shardField,
       ...coverageField,
@@ -533,6 +537,7 @@ async function executeWithPolicy(
     tests_available: counts.testsAvailable,
     tests_selected: selection === "full" ? counts.testsAvailable : counts.testsSelected,
     ...(outsideSuite ? { tests_outside_full_suite: outsideSuite } : {}),
+    ...(outsideTests.length ? { outside_suite_tests: outsideTests } : {}),
     selection,
     ...(selection === "selected" && result ? { selected_tests: result.selectedTests } : {}),
     ...(selection === "selected" && result?.selectionReasons ? { selection_reasons: result.selectionReasons } : {}),
@@ -837,6 +842,7 @@ function redactReceipt(report: VerificationReport, result: ObservationReport["re
     reason: scrub(report.reason),
     required_actions: report.required_actions.map(scrub),
     ...(report.selected_tests ? { selected_tests: report.selected_tests.map(digest) } : {}),
+    ...(report.outside_suite_tests ? { outside_suite_tests: report.outside_suite_tests.map(digest) } : {}),
     ...(report.selection_reasons ? {
       selection_reasons: Object.fromEntries(Object.entries(report.selection_reasons).map(([test, why]) => [digest(test), { ...why, changed_file: digest(why.changed_file) }])),
     } : {}),
@@ -949,7 +955,7 @@ export function formatVerificationSummary(report: VerificationReport): string {
 
 function fullSelection(repoPath: string, reason: string) {
   const command = inferFullCommand(repoPath).command;
-  return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0 };
+  return { selection: "full" as const, command, commands: command ? [command] : [], reason, outsideSuite: 0, outsideTests: [] as string[] };
 }
 
 /**
@@ -989,7 +995,7 @@ function rankedOrdering(options: VerifyOptions, result: NonNullable<ObservationR
 }
 
 /** The earlier pass in this repository's outcome log that covers this run, if any (reusablePass). */
-function findReusablePass(options: VerifyOptions, treeSha: string, selection: "selected" | "full", selectedTests: readonly string[], command: string, planned: readonly PlannedCheck[]) {
+function findReusablePass(options: VerifyOptions, treeSha: string, selection: "selected" | "full", selectedTests: readonly string[], command: string, planned: readonly PlannedCheck[], outsideTests: readonly string[]) {
   const path = outcomeLogPath(options.repoPath);
   if (!path) return undefined;
   return reusablePass(readOutcomes(path), {
@@ -1001,6 +1007,7 @@ function findReusablePass(options: VerifyOptions, treeSha: string, selection: "s
     command,
     full_command: selection === "full" ? command : fullSelection(options.repoPath, "").command,
     checks: planned.filter((check) => check.decision !== "SKIP").map(({ id, command: checkCommand }) => ({ id, command: checkCommand })),
+    outside_tests: outsideTests,
   });
 }
 
@@ -1099,7 +1106,9 @@ export function executableSelection(repoPath: string, result: NonNullable<Observ
     ...(primaryParts ?? shardParts?.flatMap((part) => batchCommand(part, result.selectedTests)) ?? selectedParts ?? batchCommand(primary ?? command, selection === "selected" ? result.selectedTests : [])),
     ...extras,
   ] : [];
-  return { selection, command: commands.length ? commands.join(" && ") : shard ? undefined : command, commands, reason, outsideSuite, unshardable };
+  // The outside-suite tests this run executes: in shard 1 only, like the rest of the extras.
+  const outsideTests = auxiliaryCommand && extras.length ? outside : [];
+  return { selection, command: commands.length ? commands.join(" && ") : shard ? undefined : command, commands, reason, outsideSuite, outsideTests, unshardable };
 }
 
 /** A test-script phase as a standalone command. `npm test` puts `node_modules/.bin` on PATH; outside
