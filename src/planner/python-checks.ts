@@ -52,6 +52,8 @@ export interface WorkflowFile {
   /** Repository-relative path, such as `.github/workflows/style.yml`. */
   path: string;
   text: string;
+  /** False when the CLI cannot establish that this workflow is a regular file under regular directories. */
+  canDeclareSessions?: boolean;
 }
 
 const MAKE_LINE = /^make(?:\s+-C\s+([\w./-]+))?\s+([\w.-]+)$/;
@@ -261,7 +263,7 @@ export function discoverPythonChecks(workflows: readonly WorkflowFile[], read: R
       if (!job || typeof job !== "object") continue;
       const { steps, if: condition, defaults } = job as { steps?: unknown; if?: unknown; defaults?: { run?: { shell?: unknown } } };
       if (disabled(condition) || !Array.isArray(steps)) continue;
-      const plainSessionJob = condition === undefined && doc.env === undefined && !("env" in job)
+      const plainSessionJob = workflow.canDeclareSessions !== false && condition === undefined && doc.env === undefined && !("env" in job)
         && !("container" in job) && !("services" in job) && !("strategy" in job) && !("continue-on-error" in job)
         && defaults?.run?.shell === undefined && doc.defaults?.run?.shell === undefined;
       let unknownSessionContext = false;

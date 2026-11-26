@@ -86,6 +86,14 @@ function readRepositoryFile(repoPath: string, path: string): string | undefined 
   try { return readFileSync(join(repoPath, path), "utf8"); } catch { return undefined; }
 }
 
+function regularWorkflow(repoPath: string, path: string): boolean {
+  try {
+    return lstatSync(join(repoPath, ".github")).isDirectory()
+      && lstatSync(join(repoPath, ".github/workflows")).isDirectory()
+      && lstatSync(join(repoPath, path)).isFile();
+  } catch { return false; }
+}
+
 function treesHaveNoLinks(repoPath: string, change: CheckChange): boolean {
   // Symlinks can redirect an input and gitlinks hide the submodule's files.
   try {
@@ -147,17 +155,9 @@ function pythonChecks(repoPath: string, change: CheckChange | undefined): Planne
   const read = (file: string) => readRepositoryFile(repoPath, file);
   // The package's previous Core pin uses only the Makefile reader and discovers no sessions.
   const discover: (files: WorkflowFile[], readFile: typeof read, readSession: typeof read) => ReturnType<typeof discoverPythonChecks> = discoverPythonChecks;
-  let checks = discover(workflowFiles(repoPath), read, (file) => readPythonSessionFile(repoPath, file));
-  // GitHub workflows are files in the repository. A link, including a linked
-  // parent directory, cannot establish that the workflow declares this session.
-  checks = checks.filter((check) => {
-    if (!isPythonSession(check.command)) return true;
-    try {
-      return lstatSync(join(repoPath, ".github")).isDirectory()
-        && lstatSync(join(repoPath, ".github/workflows")).isDirectory()
-        && lstatSync(join(repoPath, check.script)).isFile();
-    } catch { return false; }
-  });
+  // Exclude linked session declarations before Core keeps the first occurrence of each command.
+  const files = workflowFiles(repoPath).map((file) => ({ ...file, canDeclareSessions: regularWorkflow(repoPath, file.path) }));
+  let checks = discover(files, read, (file) => readPythonSessionFile(repoPath, file));
   if (checks.length === 0) return [];
   if (change) {
     // Older Core releases accept only the first two arguments and discover no sessions.

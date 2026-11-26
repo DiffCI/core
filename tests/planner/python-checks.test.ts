@@ -214,6 +214,21 @@ describe("tox and nox workflow checks", () => {
   const run = (line: string, config: Record<string, string> = files) =>
     discoverPythonChecks(workflow("jobs:\n  checks:\n    steps:\n      - run: " + line), reader(config));
 
+  it("keeps the regular workflow's session when a linked workflow declares the same command", () => {
+    for (const command of ["tox -e lint,type", "nox -s lint"]) {
+      const text = `jobs:\n  checks:\n    steps:\n      - run: ${command}\n      - run: uv run mypy src`;
+      const linked = { path: ".github/workflows/alias.yml", text, canDeclareSessions: false };
+      const regular = { path: ".github/workflows/checks.yml", text };
+      for (const workflows of [[linked, regular], [regular, linked]]) {
+        const checks = discoverPythonChecks(workflows, reader(files));
+        assert.deepEqual(checks.filter((c) => c.command === command).map((c) => c.script), [regular.path]);
+        assert.deepEqual(checks.filter((c) => c.command === "uv run mypy src").map((c) => c.script), [workflows[0]!.path]);
+      }
+      const linkedOnly = discoverPythonChecks([linked], reader(files), () => assert.fail("linked workflow requested a session config"));
+      assert.deepEqual(linkedOnly.map((c) => c.command), ["uv run mypy src"]);
+    }
+  });
+
   it("preserves each explicit selector and classifies the commands it actually selects", () => {
     for (const [command, kind] of [
       ["tox -e lint", "lint"], ["tox -e type", "typecheck"], ["tox -e type,lint", "script"],
