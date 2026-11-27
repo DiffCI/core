@@ -127,6 +127,33 @@ test("records each node --test file's result and duration", () => {
   }
 });
 
+// DiffCI.com outcome log (2026-11-27): a test that ran the DiffCI CLI as a child process, expecting it to
+// fail, logged node_modules/.../cli.js as a failed test file in a passing run.
+test("records only the test files, not node programs a test file starts", () => {
+  const dir = mkdtempSync(join(tmpdir(), "diffci-node-test-child-test-"));
+  try {
+    mkdirSync(join(dir, "src"), { recursive: true });
+    writeFileSync(join(dir, "src/tool.js"), "process.exit(3);\n");
+    writeFileSync(join(dir, "src/spawns.test.js"), [
+      `const { spawnSync } = require("node:child_process");`,
+      `require("node:test")("tool fails", () => {`,
+      `  if (spawnSync(process.execPath, [require("node:path").join(__dirname, "tool.js")]).status !== 3) throw new Error("tool");`,
+      `});`,
+    ].join("\n"));
+    const trace = traceNodeTestFiles(dir, "--no-warnings");
+    try {
+      const run = measureCommand("node --test src/spawns.test.js", { cwd: dir, timeoutMs: 60_000, tailBytes: 4096, env: trace.env });
+      assert.equal(run.exitCode, 0, run.stderrTail);
+      assert.deepEqual(trace.results().map(({ file, status }) => ({ file, status })), [{ file: "src/spawns.test.js", status: "passed" }]);
+      assert.deepEqual(trace.read(), ["src/spawns.test.js"]);
+    } finally {
+      trace.dispose();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("compares started files case-insensitively only on Windows", () => {
   assert.deepEqual(unstartedNodeTests(["src/A.test.ts"], ["src/a.test.ts"], true), []);
   assert.deepEqual(unstartedNodeTests(["src/A.test.ts"], ["src/a.test.ts"], false), ["src/A.test.ts"]);

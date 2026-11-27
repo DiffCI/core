@@ -100,10 +100,15 @@ export function selectedNodeTests(command: string, selectedTests: readonly strin
  * Under `--test-isolation=none` no child starts and the trace stays empty, which proves nothing.
  * Since 2026-11-06 the process also records, on exit, its file, its duration and its exit code: the
  * per-file results test-results.ts cannot read from node:test's output. */
+// A node program that a test file starts inherits NODE_TEST_CONTEXT and NODE_OPTIONS, so it would be
+// recorded as a test file with its own exit code (DiffCI.com 2026-11-27: a test expecting the DiffCI CLI to
+// fail logged cli.js as a failed test). The test file's process marks its environment, which every
+// process it starts inherits, and a marked process records nothing.
 const PROBE = `"use strict";
-if (process.env.NODE_TEST_CONTEXT && process.argv[1] && process.env.DIFFCI_NODE_TEST_TRACE) {
+if (process.env.NODE_TEST_CONTEXT && process.argv[1] && process.env.DIFFCI_NODE_TEST_TRACE && !process.env.DIFFCI_NODE_TEST_FILE) {
   const fs = require("node:fs");
   const file = process.argv[1];
+  process.env.DIFFCI_NODE_TEST_FILE = "1";
   const started = Date.now();
   try { fs.appendFileSync(process.env.DIFFCI_NODE_TEST_TRACE, file + "\\n"); } catch {}
   if (process.env.DIFFCI_NODE_TEST_RESULTS) {
