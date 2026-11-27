@@ -146,6 +146,16 @@ test("records only the test files, not node programs a test file starts", () => 
       assert.equal(run.exitCode, 0, run.stderrTail);
       assert.deepEqual(trace.results().map(({ file, status }) => ({ file, status })), [{ file: "src/spawns.test.js", status: "passed" }]);
       assert.deepEqual(trace.read(), ["src/spawns.test.js"]);
+      // Inside an outer traced test file (DiffCI verifying its own tests), the outer marker is inherited; a
+      // nested trace still records its own test files (2026-11-27, Core c7ecfce made these tests fail there).
+      const inner = traceNodeTestFiles(dir, "--no-warnings");
+      try {
+        const nested = measureCommand("node --test src/spawns.test.js", { cwd: dir, timeoutMs: 60_000, tailBytes: 4096, env: { ...inner.env, DIFFCI_NODE_TEST_FILE: join(dir, "outer-trace.txt") } });
+        assert.equal(nested.exitCode, 0, nested.stderrTail);
+        assert.deepEqual(inner.results().map(({ file, status }) => ({ file, status })), [{ file: "src/spawns.test.js", status: "passed" }]);
+      } finally {
+        inner.dispose();
+      }
     } finally {
       trace.dispose();
     }

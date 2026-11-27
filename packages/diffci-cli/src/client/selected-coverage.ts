@@ -102,13 +102,14 @@ export function selectedNodeTests(command: string, selectedTests: readonly strin
  * per-file results test-results.ts cannot read from node:test's output. */
 // A node program that a test file starts inherits NODE_TEST_CONTEXT and NODE_OPTIONS, so it would be
 // recorded as a test file with its own exit code (DiffCI.com 2026-11-27: a test expecting the DiffCI CLI to
-// fail logged cli.js as a failed test). The test file's process marks its environment, which every
-// process it starts inherits, and a marked process records nothing.
+// fail logged cli.js as a failed test). The test file's process marks its environment with its trace's log,
+// which every process it starts inherits, and a process marked for the same trace records nothing. A nested
+// trace (a test that runs its own traced node --test, as DiffCI's own tests do) has another log and records.
 const PROBE = `"use strict";
-if (process.env.NODE_TEST_CONTEXT && process.argv[1] && process.env.DIFFCI_NODE_TEST_TRACE && !process.env.DIFFCI_NODE_TEST_FILE) {
+if (process.env.NODE_TEST_CONTEXT && process.argv[1] && process.env.DIFFCI_NODE_TEST_TRACE && process.env.DIFFCI_NODE_TEST_FILE !== process.env.DIFFCI_NODE_TEST_TRACE) {
   const fs = require("node:fs");
   const file = process.argv[1];
-  process.env.DIFFCI_NODE_TEST_FILE = "1";
+  process.env.DIFFCI_NODE_TEST_FILE = process.env.DIFFCI_NODE_TEST_TRACE;
   const started = Date.now();
   try { fs.appendFileSync(process.env.DIFFCI_NODE_TEST_TRACE, file + "\\n"); } catch {}
   if (process.env.DIFFCI_NODE_TEST_RESULTS) {
