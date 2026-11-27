@@ -125,7 +125,7 @@ export function reusablePass(records: readonly OutcomeRecord[], query: ReuseQuer
     if (run.reused_from || run.verification !== "passed" || run.tree_sha !== query.tree_sha) continue;
     if (run.diffci_version !== query.diffci_version || run.node_version !== query.node_version) continue;
     const tests = run.selection === "full"
-      ? run.command !== undefined && run.command === (query.selection === "full" ? query.command : query.full_command)
+      ? run.command !== undefined && ranCommand(run.command, query.selection === "full" ? query.command : query.full_command)
       : run.selection === "selected" && query.selection === "selected" && run.selected_tests !== undefined
         && query.selected_tests.every((test) => run.selected_tests!.includes(test));
     if (!tests) continue;
@@ -134,6 +134,16 @@ export function reusablePass(records: readonly OutcomeRecord[], query: ReuseQuer
     if (query.checks.every((check) => passedChecks.has(`${check.id}\n${check.command}`))) return run;
   }
   return undefined;
+}
+
+/**
+ * Whether a passing run whose `&&`-chained command was `recorded` ran `command` in full. A full run records
+ * its first pass too (the tests the graph found, run before the suite: `<first pass> && npm test`) while
+ * the next run asks about `npm test` alone, so an exact match never reused a full pass (2026-11-27). A
+ * passing chain ran every part, so the command as a contiguous run of its parts is enough.
+ */
+function ranCommand(recorded: string, command: string | undefined): boolean {
+  return command !== undefined && command !== "" && ` && ${recorded} && `.includes(` && ${command} && `);
 }
 
 /** `<git common dir>/diffci/outcomes.jsonl`, or undefined outside a Git repository. */

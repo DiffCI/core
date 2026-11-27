@@ -93,6 +93,13 @@ test("reuses only a covering pass of the same tree under the same versions", () 
   assert.ok(reusablePass([run({ ...selected(["a.test.js"]), outside_suite_tests: ["tools/x.test.ts"] })], withOutside), "a selected pass that also ran the outside-suite test");
   assert.equal(reusablePass([selected(["a.test.js"])], withOutside), undefined, "a pass that did not run it");
   assert.equal(reusablePass([run({})], withOutside), undefined, "a full run never runs tests outside the full suite");
+
+  // 2026-11-27: a full run records its first pass before the suite; the next run asks about the suite alone.
+  const firstPass = run({ command: "node --test a.test.js && npm test" });
+  assert.ok(reusablePass([firstPass], { ...query, selection: "full", command: "npm test" }), "a full pass that ran a first pass first");
+  assert.ok(reusablePass([firstPass], query), "covers a selection through the full command it ran");
+  assert.equal(reusablePass([run({ command: "npm test:all" })], { ...query, selection: "full", command: "npm test" }), undefined, "a longer command is not the same command");
+  assert.equal(reusablePass([run({ command: "npm test && npm run e2e" })], { ...query, selection: "full", command: "npm run e2e && npm test" }), undefined, "parts in another order");
 });
 
 test("outside a Git repository there is no log and nothing is written", () => {
