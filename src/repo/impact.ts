@@ -1009,9 +1009,15 @@ export class ImpactAnalyzer {
     if (delta.analysis.dependencyLockfile === "pnpm-lock.yaml") {
       // pnpm is strict by default, but `public-hoist-pattern` and a hoisted node-linker expose
       // transitive packages at the root. An undeclared import of one is not attributed to a root.
-      const declared = new Set([...profile.packageJson.dependencies, ...profile.packageJson.devDependencies]);
-      const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package")
-        .map((ref) => packageRoot(ref.specifier)).filter((name) => !declared.has(name)))].sort();
+      // In a workspace (2026-11-27) a file resolves the packages its own workspace package or an enclosing
+      // one declares, the root included, so each import is checked against those importers.
+      const rootDeclared = new Set([...profile.packageJson.dependencies, ...profile.packageJson.devDependencies]);
+      const importers = delta.analysis.dependencyImporters;
+      const declaredFor = (file: string) => importers
+        ? new Set(Object.entries(importers).filter(([dir]) => dir === "." || file.startsWith(`${dir}/`)).flatMap(([, names]) => names))
+        : rootDeclared;
+      const undeclared = [...new Set(graphResult.references.filter((ref) => ref.resolution === "external-package" && !declaredFor(ref.importer).has(packageRoot(ref.specifier)))
+        .map((ref) => packageRoot(ref.specifier)))].sort();
       if (undeclared.length) fail(`pnpm lockfile changed and repository imports undeclared dependencies (${undeclared.join(", ")}); full validation required`);
     }
     if (!delta.analysis.dependencyLockfile && delta.files.some((file) => file.path === "package-lock.json")) {
@@ -1027,6 +1033,19 @@ export class ImpactAnalyzer {
     }
     const scripts = profile.packageJson.scripts;
     const closureBodies = [...testScriptClosure(scripts)].map((name) => scripts[name] ?? "");
+    // The root's test command can run a workspace package's scripts by any name (`turbo test`,
+    // `pnpm -r test`), so every script of every workspace importer counts (2026-11-27).
+    const workspaceScripts: string[] = [];
+    for (const dir of Object.keys(delta.analysis.dependencyImporters ?? {}).filter((dir) => dir !== ".")) {
+      let manifest: unknown;
+      try { manifest = JSON.parse(this.readRepositoryFile(`${dir}/package.json`) ?? ""); } catch { manifest = undefined; }
+      const workspaceScriptRecord = manifest && typeof manifest === "object" ? (manifest as { scripts?: unknown }).scripts : undefined;
+      if (!manifest || typeof manifest !== "object" || (workspaceScriptRecord !== undefined && (!workspaceScriptRecord || typeof workspaceScriptRecord !== "object"))) {
+        fail(`Dependency change (${packages.join(", ")}) and ${dir}/package.json cannot be read; full validation required`);
+        return;
+      }
+      for (const body of Object.values(workspaceScriptRecord ?? {})) if (typeof body === "string") workspaceScripts.push(body);
+    }
     for (const name of packages) {
       const importers = [...new Set(graphResult.references
         .filter((ref) => ref.resolution === "external-package" && packageRoot(ref.specifier) === name)
@@ -1043,6 +1062,10 @@ export class ImpactAnalyzer {
       const bare = new RegExp(`(?:^|[\\s"'=])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[\\s"'/@])`);
       if (closureBodies.some((body) => bare.test(body))) {
         fail(`${dependencyChange(name)} and the test script runs it; full validation required`);
+        continue;
+      }
+      if (workspaceScripts.some((body) => bare.test(body))) {
+        fail(`${dependencyChange(name)} and a workspace package script runs it; full validation required`);
         continue;
       }
       const toolingReader = this.sortedRepositoryFiles.find((path) => isImplicitlyLoadedFile(path) && !isLockfile(path) && compilerConfigNames(path, this.readRepositoryFile!(path) ?? "", quoted));

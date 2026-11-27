@@ -13,7 +13,7 @@ import {
 import { infrastructureRole, isImplicitlyLoadedFile, testScriptClosure } from "../repo/file-references.js";
 import { workflowMayRunTests } from "../repo/workflow-test-steps.js";
 import { npmLockAffectedDependencies, npmLockChangedTrees } from "../repo/npm-lockfile.js";
-import { pnpmLockAffectedDependencies } from "../repo/pnpm-lockfile.js";
+import { pnpmLockAffectedDependencies, pnpmLockImporters, pnpmWorkspaceLockImpact } from "../repo/pnpm-lockfile.js";
 import { yarnLockAffectedDependencies } from "../repo/yarn-lockfile.js";
 import { berryLockAffectedDependencies, berryNodeModulesConfig, berryRuntimeConfig } from "../repo/yarn-berry-lockfile.js";
 import { LOCKFILE, LOCKFILE_NAMES } from "../repo/lockfiles.js";
@@ -892,6 +892,81 @@ export async function analyzeGitDelta(
           if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
           if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
           if (packageChange!.specifiersOnly) analysis.packageJsonSpecifiersOnly = true;
+        }
+      }
+    }
+    // 2026-11-27: a pnpm workspace records one importer per workspace package, so every dependency bump
+    // in a pnpm monorepo (pnpm-lock.yaml plus the workspace package.json files that asked for it) ran the
+    // full suite. Each importer is attributed like the root (pnpmWorkspaceLockImpact). A changed
+    // workspace manifest narrows only when its edit is limited to registry requests and data fields,
+    // its scripts are unchanged, and no local (`workspace:`, `link:`, `file:`) request changed.
+    if (dependencyEdit && changedPnpmLock && !narrowed.has(changedPnpmLock) && (!analysis.dependencyManifestChanged || changedPackageJson)) {
+      const oldLock = readFileAtSha(baseSha, "pnpm-lock.yaml", repoPath);
+      const newLock = readFileAtSha(headSha, "pnpm-lock.yaml", repoPath);
+      const dirs = pnpmLockImporters(newLock);
+      if (dirs && dirs.length > 1 && JSON.stringify(pnpmLockImporters(oldLock)) === JSON.stringify(dirs)) {
+        const manifestPath = (dir: string) => dir === "." ? "package.json" : `${dir}/package.json`;
+        const importerManifests = new Set(dirs.map(manifestPath));
+        const otherConfiguration = allPaths.some((path) => !importerManifests.has(path) && path !== "pnpm-lock.yaml" && (
+          LOCKFILE.test(posix.basename(path))
+          || /^(?:\.npmrc|pnpm-workspace\.yaml|\.pnpmfile\.cjs)$/.test(posix.basename(path))
+          || CONFIG_PATTERNS.some((pattern) => pattern.test(path) || pattern.test(posix.basename(path)))
+          || isImplicitlyLoadedFile(path)));
+        const unsupportedLayout = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "bun.lock", "bun.lockb"]
+          .some((path) => [baseSha, headSha].some((sha) => readFileAtSha(sha, path, repoPath) !== undefined));
+        const direct: Record<string, string[]> = {};
+        const changedNames = new Set(packageChange?.changedDependencies ?? []);
+        const nested: { file: ChangedFile; kind: PackageJsonChange["kind"]; specifiersOnly: boolean }[] = [];
+        let modelled = !otherConfiguration && !unsupportedLayout;
+        for (const dir of modelled ? dirs : []) {
+          const path = manifestPath(dir);
+          const contents = [readFileAtSha(baseSha, path, repoPath), readFileAtSha(headSha, path, repoPath)];
+          const manifests = contents.map((content) => { try { const json: unknown = JSON.parse(content ?? ""); return json && typeof json === "object" && !Array.isArray(json) ? json as Record<string, unknown> : undefined; } catch { return undefined; } });
+          if (manifests.some((manifest) => !manifest)) { modelled = false; break; }
+          if (dir === "." && !manifests.every((manifest) => manifest!.workspaces === undefined
+            && (manifest!.packageManager === undefined || (typeof manifest!.packageManager === "string" && manifest!.packageManager.startsWith("pnpm@"))))) { modelled = false; break; }
+          const names = new Set<string>();
+          for (const manifest of manifests) {
+            for (const field of DEPENDENCY_FIELDS) {
+              const record = scriptRecord(manifest![field]);
+              if (!record) modelled = false;
+              for (const name of Object.keys(record ?? {})) names.add(name);
+            }
+          }
+          direct[dir] = [...names].sort();
+          const file = dir === "." ? undefined : filesWithBinary.find((f) => f.path === path || f.oldPath === path);
+          if (!modelled || !file) continue;
+          const change = file.changeType === "modified" ? packageJsonChange(contents[0], contents[1]) : undefined;
+          const localChanged = change?.changedDependencies.some((name) => manifests.some((manifest) =>
+            [...DEPENDENCY_FIELDS].some((field) => /^(?:workspace|link|file|portal):/.test(scriptRecord(manifest![field])?.[name] ?? ""))));
+          if (!change || change.kind === "behavioral" || localChanged
+            || JSON.stringify(parsePackageScripts(contents[0])) !== JSON.stringify(parsePackageScripts(contents[1]))) { modelled = false; break; }
+          for (const name of change.changedDependencies) changedNames.add(name);
+          nested.push({ file, kind: change.kind, specifiersOnly: change.kind === "dependencies" && change.specifiersOnly === true });
+        }
+        const impact = modelled ? pnpmWorkspaceLockImpact(oldLock, newLock, direct) : undefined;
+        if (impact && [...changedNames].every((name) => impact.dependencies.includes(name))) {
+          analysis.dependencyManifestChanged = false;
+          analysis.lockfileChanged = false;
+          analysis.changedDependencies = impact.dependencies;
+          analysis.dependencyLockfile = "pnpm-lock.yaml";
+          analysis.dependencyImporters = impact.declared;
+          narrowed.add(changedPnpmLock);
+          if (changedPackageJson) {
+            narrowed.add(changedPackageJson);
+            if (packageChange!.kind !== "metadata" && !referenceResolvedPaths.includes("package.json")) referenceResolvedPaths.push("package.json");
+            if (packageChange!.testScriptAddedPaths.length > 0) analysis.testScriptAddedPaths = packageChange!.testScriptAddedPaths;
+            if (packageChange!.specifiersOnly) analysis.packageJsonSpecifiersOnly = true;
+          }
+          // Whoever reads a workspace manifest is still selected, as for the root's. An edit limited to
+          // requests the lockfile change accounts for needs no reader (specifiersOnlyManifests).
+          const specifiersOnly = new Set(analysis.specifiersOnlyManifests ?? []);
+          for (const { file, kind, specifiersOnly: requestsOnly } of nested) {
+            narrowed.add(file);
+            if (kind !== "metadata" && !referenceResolvedPaths.includes(file.path)) referenceResolvedPaths.push(file.path);
+            if (requestsOnly) specifiersOnly.add(file.path);
+          }
+          if (specifiersOnly.size > 0) analysis.specifiersOnlyManifests = [...specifiersOnly].sort();
         }
       }
     }

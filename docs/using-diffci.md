@@ -623,9 +623,11 @@ _The named `Tool configuration changed` reasons, including the Mocha fallback, w
 | `… (…) cannot be traced without repository contents; full validation required` | Bump a dependency when DiffCI is run without access to the checkout's files | No |
 | `Yarn lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `yarn.lock` while `src/a.js` imports a package not listed in `package.json` | No |
 | `npm lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `package-lock.json` while `src/a.js` imports a hoisted package not listed in `package.json` | No |
-| `pnpm lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `pnpm-lock.yaml` while `src/a.js` imports a hoisted package not listed in `package.json` | No |
+| `pnpm lockfile changed and repository imports undeclared dependencies (…); full validation required` | Bump `pnpm-lock.yaml` while `src/a.js` imports a hoisted package not listed in `package.json`, or, in a workspace, while `packages/web/src/a.js` imports a package only `packages/lib` declares | No |
 | `… and no repository source imports it; full validation required` | Bump a devDependency such as `eslint` that only tools load | No |
 | `… and the test script runs it; full validation required` | Bump `vitest` when the `test` script runs `vitest` | No |
+| `… and a workspace package script runs it; full validation required` | In a pnpm workspace, bump `vitest` when any script in `packages/lib/package.json` runs `vitest` | No |
+| `Dependency change (…) and …/package.json cannot be read; full validation required` | Bump a pnpm workspace dependency while a workspace package's `package.json` is unparseable | No |
 | `… and … loads it; full validation required` | Bump a Babel plugin that `babel.config.js` loads | No |
 | `… and …, which loads it, is outside the dependency graph; full validation required` | Bump a package that a config file outside the graph loads | No |
 | `package.json test script now lists …, which does not exist; full validation required` | Add `tests/missing.test.js` to the `test` script without creating it | No |

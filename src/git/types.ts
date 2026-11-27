@@ -58,6 +58,10 @@ export interface GitDeltaAnalysis {
   /** A modeled lockfile whose raw readers must still be resolved, including for semantic no-ops.
    * Its dependency effects are covered by changedDependencies. */
   dependencyLockfile?: "yarn.lock" | "pnpm-lock.yaml";
+  /** pnpm workspaces only (2026-11-27): each lockfile importer directory ("." for the root) and every
+   * name its package.json declares, workspace links included. ImpactAnalyzer accepts an import of a
+   * package only when the importing file's own workspace package or an enclosing one declares it. */
+  dependencyImporters?: Record<string, string[]>;
   /** The root package.json edit only changed dependency requests that a modeled lockfile change
    * accounts for (2026-11-02). Its dependency effect is in changedDependencies, so ImpactAnalyzer
    * accepts no readers of the file itself. */
