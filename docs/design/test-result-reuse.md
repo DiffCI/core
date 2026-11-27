@@ -1,6 +1,35 @@
 # Design: reusing test results across trees
 
-Status: proposal (2026-11-27). Nothing below is implemented.
+Status: stopped (2026-11-27). The offline replay below found no saving on real runs. Nothing is implemented.
+
+## Replay result (2026-11-27)
+
+DiffCI.com's local outcome log, 29 runs since 2026-11-18 that executed tests (1,647s of test wall time),
+replayed with the CLI 0.3.65 planner: for each run, the change since the newest passing run within 24 hours
+on the same Node version, planned at the later tree.
+
+| Outcome | Runs |
+|---|---|
+| No passing run in the previous 24 hours (first run of the day, or a full run after a failure) | 10 |
+| The change between the two runs falls back to the full suite | 13 |
+| Replayed | 6 |
+| Tests reusable in the replayed runs | 0 of 92 test files |
+
+Saving: **0%** of test time, against the 29% ceiling.
+
+- **Fallbacks.** 11 of the 13 are `Unknown changed file: package.json`. Between the two runs the agent
+  pulled `main`, whose `package.json` had changed (CLI pin bumps), so the change between runs is larger
+  than either run's own change.
+- **Replayed runs.** Every test that passed in the earlier run was affected again by the edit between
+  the runs: an agent's next edit is in the same area as its last one. In the 2026-11-24 05:00 run, 18 of
+  its 28 test files had passed at 04:17, and all 18 were affected by the 5 files changed in between.
+- Core's log has only three runs since 2026-11-18, too few to replay.
+
+Per the bar below (under about 10%), the feature is not built. Same-tree reuse (`reusablePass`) stays as
+it is. Reconsider only if the logs show agents verifying unrelated areas back to back.
+
+The replay also showed passing runs whose `test_results` hold a `failed` entry for
+`node_modules/@diffci.com/diffci/dist-client/src/client/cli.js`, which is not a test file.
 
 ## Why
 
