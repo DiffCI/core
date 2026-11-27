@@ -116,3 +116,38 @@ Anything not read with certainty adds nothing. A Python-only check (a direct cal
 recipe only calls Python tools, directly or through a repository script) is skipped when no Python file,
 Python configuration, the Makefile or one of its scripts, or a workflow changed. Every other check runs
 as written. The CLI skips a check whose program is not installed and says so: CI still runs it.
+
+### Named tox environments and nox sessions
+
+A single root-level Actions command such as `tox -e lint,type` or `nox -s lint types` can contribute
+one check. Discovery reads the root `tox.ini` or `noxfile.py` as text. Verification runs the original
+command when every selected name resolves and every command in its body is understood.
+
+- Tox environments must skip installing the project and explicitly allow the external check tools.
+  A named section can inherit commands from `[testenv]`.
+- Nox sessions use `@nox.session(python=False)` or `@nox.session(venv_backend="none")`. The complete
+  module must consist of `import nox` and literal session definitions using only `session.run(...)`.
+- Supported commands are `ruff format --check`, `ruff check --no-fix --no-fix-only` and
+  `mypy --config-file= src` with literal paths. The empty mypy config disables config-driven plugins
+  and report writers. Ruff accepts `--isolated`. Without it, Ruff can check extra file extensions, so
+  its session runs on any change. Even isolated checks run on ignore-file changes and when Git cannot
+  rule out symlinked inputs.
+
+An `actions/checkout` step with a major tag or full commit SHA and no inputs, or another supported
+session, may precede the command. Setup actions and install steps can change the runner environment
+or generate a different configuration. Even checkout with `fetch-depth` or a tag such as `v4.2.2`
+currently leaves the session to CI.
+
+The synthetic fixtures model the named invocations in two public workflows. Both real jobs stay in CI.
+
+- mykrok's `misc` job sets up Python and installs `tox tox-uv` before `tox -e lint,type`.
+  Its selected environments also install the project's `.[devel]` dependencies.
+  [Workflow](https://github.com/mykrok/mykrok/blob/dbf46845f0dca094f060a094dccee6eea33ce03f/.github/workflows/ci.yml#L45-L59) · [tox.ini](https://github.com/mykrok/mykrok/blob/dbf46845f0dca094f060a094dccee6eea33ce03f/tox.ini#L17-L25)
+- google-ads-mcp's `lint` job sets up Python, upgrades pip and installs `black nox` before
+  `nox -s lint`. Its session calls a Python helper that builds the Black command at runtime.
+  [Workflow](https://github.com/googleads/google-ads-mcp/blob/44ca7770519362c8f334875477e1ceb499f8d2dd/.github/workflows/ci.yml#L13-L26) · [noxfile.py](https://github.com/googleads/google-ads-mcp/blob/44ca7770519362c8f334875477e1ceb499f8d2dd/noxfile.py#L42-L71)
+
+Conditional steps, changed working directories, environment overrides, dependencies, hooks and
+dynamic declarations leave the session to CI. The CLI also leaves tox to CI on Windows, where it
+cannot establish which user configuration the runner will load. Existing test selection and full-suite
+fallback apply independently of these checks.

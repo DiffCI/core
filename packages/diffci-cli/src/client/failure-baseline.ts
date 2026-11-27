@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 
 import { measureCommands } from "./command-batches.js";
+import { isPythonSession, readPythonSessionFile, withSessionEnvironment } from "./python-session-files.js";
 
 /**
  * Did this change introduce the failures, or were they already there? (2026-10-21.)
@@ -127,10 +128,22 @@ export interface CheckBaseline {
   base_execution?: { exit_code: number | null; wall_ms: number; timed_out: boolean };
 }
 
-export function checkAtBaseline(input: { repoPath: string; baseSha: string; headSha: string; command: string; timeoutMs: number }): CheckBaseline {
+export function checkAtBaseline(input: {
+  repoPath: string; baseSha: string; headSha: string; command: string; timeoutMs: number;
+  canRunSession?: (directory: string, command: string) => boolean;
+}): CheckBaseline {
   const report = (status: CheckBaseline["status"], reason: string, extra: Partial<CheckBaseline> = {}): CheckBaseline => ({ status, base_sha: input.baseSha, reason, ...extra });
   const run = withBaseTree(input, (directory): CheckBaseline => {
-    const execution = measureCommands([input.command], { cwd: directory, timeoutMs: input.timeoutMs, tailBytes: 0 });
+    if (isPythonSession(input.command)) {
+      if (!input.canRunSession?.(directory, input.command)) return report("unknown", "the workflow session could not be confirmed at the base commit");
+      const file = input.command.startsWith("tox ") ? "tox.ini" : "noxfile.py";
+      const baseFile = readPythonSessionFile(directory, file);
+      if (!baseFile || readPythonSessionFile(input.repoPath, file) !== baseFile) {
+        return report("unknown", "the workflow session configuration differs between the base and head");
+      }
+    }
+    const execution = withSessionEnvironment(input.command, (env) => measureCommands([input.command], { cwd: directory, timeoutMs: input.timeoutMs, tailBytes: 0, env }));
+    if (!execution) return report("unknown", "a private Python bytecode cache could not be prepared for the base run");
     const baseExecution = { exit_code: execution.exitCode, wall_ms: execution.wallMs, timed_out: execution.timedOut };
     if (execution.timedOut) return report("unknown", "the base run timed out", { base_execution: baseExecution });
     const killed = killedReason(execution);

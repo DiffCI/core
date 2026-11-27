@@ -195,3 +195,144 @@ describe("narrowPythonChecks", () => {
     }
   });
 });
+
+describe("tox and nox workflow checks", () => {
+  // mykrok/mykrok's CI selects lint,type in tox.ini. googleads/google-ads-mcp's CI calls
+  // nox -s lint with venv_backend="none". The fixtures use preinstalled, read-only tools.
+  const tox = [
+    "[tox]", "envlist = lint,type", "[testenv]", "skip_install = true",
+    "allowlist_externals =", "    ruff", "    mypy",
+    "[testenv:lint]", "commands = ruff check --no-fix --no-fix-only --isolated .",
+    "[testenv:type]", "commands = mypy --config-file= src",
+  ].join("\n");
+  const nox = [
+    "import nox", '@nox.session(venv_backend="none")', "def lint(session: nox.Session) -> None:",
+    '    session.run("ruff", "format", "--check", "--isolated", ".")',
+    "@nox.session(python=False)", "def types(session):", "    session.run('mypy', '--config-file=', 'src')",
+  ].join("\n");
+  const files = { "tox.ini": tox, "noxfile.py": nox };
+  const run = (line: string, config: Record<string, string> = files) =>
+    discoverPythonChecks(workflow("jobs:\n  checks:\n    steps:\n      - run: " + line), reader(config));
+
+  it("leaves sessions to CI when their workflow sets up Python and installs tools", () => {
+    for (const [command, install] of [
+      ["tox -e lint,type", "pip install tox tox-uv"],
+      ["nox -s lint", "python -m pip install --upgrade pip\n          pip install black nox"],
+    ]) {
+      const checkout = "jobs:\n  checks:\n    steps:\n      - uses: actions/checkout@v4";
+      const setup = "      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'";
+      const installStep = "      - run: |\n          " + install;
+      const session = "      - run: " + command;
+      for (const steps of [[setup], [installStep], [setup, installStep]]) {
+        const text = [checkout, ...steps, session].join("\n");
+        assert.deepEqual(discoverPythonChecks(workflow(text), reader(files)), []);
+      }
+      assert.deepEqual(discoverPythonChecks(workflow(checkout + "\n" + session), reader(files)).map((c) => c.command), [command]);
+    }
+  });
+
+  it("keeps the regular workflow's session when a linked workflow declares the same command", () => {
+    for (const command of ["tox -e lint,type", "nox -s lint"]) {
+      const text = `jobs:\n  checks:\n    steps:\n      - run: ${command}\n      - run: uv run mypy src`;
+      const linked = { path: ".github/workflows/alias.yml", text, canDeclareSessions: false };
+      const regular = { path: ".github/workflows/checks.yml", text };
+      for (const workflows of [[linked, regular], [regular, linked]]) {
+        const checks = discoverPythonChecks(workflows, reader(files));
+        assert.deepEqual(checks.filter((c) => c.command === command).map((c) => c.script), [regular.path]);
+        assert.deepEqual(checks.filter((c) => c.command === "uv run mypy src").map((c) => c.script), [workflows[0]!.path]);
+      }
+      const linkedOnly = discoverPythonChecks([linked], reader(files), () => assert.fail("linked workflow requested a session config"));
+      assert.deepEqual(linkedOnly.map((c) => c.command), ["uv run mypy src"]);
+    }
+  });
+
+  it("preserves each explicit selector and classifies the commands it actually selects", () => {
+    for (const [command, kind] of [
+      ["tox -e lint", "lint"], ["tox -e type", "typecheck"], ["tox -e type,lint", "script"],
+      ["nox -s lint", "format"], ["nox -s types", "typecheck"], ["nox -s types lint", "script"],
+    ] as const) {
+      const checks = run(command);
+      assert.deepEqual(checks.map((c) => [c.command, c.kind, c.pythonOnly]), [[command, kind, true]]);
+      for (const [path, decision] of [
+        ["src/app.py", "RUN"], ["uv.toml", "RUN"], [command.startsWith("tox") ? "tox.ini" : "noxfile.py", "RUN"],
+        ["src/.gitignore", "RUN"], [".github/workflows/check.yml", "RUN"], ["README.md", "SKIP"],
+      ] as const) {
+        assert.equal(narrowPythonChecks(checks, [{ path, status: "modified" }], () => true)[0]?.decision, decision, path);
+      }
+    }
+  });
+
+  it("accounts for runner configuration when narrowing", () => {
+    const [check] = run("nox -s lint", { "noxfile.py": nox.replace('"--isolated", ', "") });
+    assert.equal(check?.pythonOnly, false);
+    assert.equal(narrowPythonChecks([check!], [{ path: "docs/guide.txt", status: "modified" }])[0]?.decision, "RUN");
+    assert.deepEqual(run("tox -e type", { "tox.ini": tox.replace("mypy --config-file= src", "mypy src") }), []);
+    assert.deepEqual(run("tox -e lint", { "tox.ini": tox.replace(" --no-fix-only", "") }), []);
+    const isolated = run("tox -e lint");
+    const changes = [{ path: "input.txt", status: "modified" as const }];
+    assert.equal(narrowPythonChecks(isolated, changes)[0]?.decision, "RUN");
+    assert.equal(narrowPythonChecks(isolated, changes, () => false)[0]?.decision, "RUN");
+  });
+
+  it("requires the entire selection, explicit names and the root execution context", () => {
+    for (const line of ["tox", "tox -e lint,missing", "tox -e lint,lint", "tox -e lint -- --fix",
+      "nox", "nox -s missing lint", "nox -s lint lint", "nox -s lint --extra", "nox -s ${{ matrix.session }}"]) {
+      assert.deepEqual(run(line), [], line);
+    }
+    for (const field of ["working-directory: subdir", "shell: custom", "if: github.ref", "env: {MODE: alternate}", "continue-on-error: true"]) {
+      assert.deepEqual(discoverPythonChecks(workflow("jobs:\n  a:\n    steps:\n      - " + field + "\n        run: tox -e type"), reader(files)), []);
+    }
+    for (const text of [
+      "env: {MODE: alternate}\njobs:\n  a:\n    steps:\n      - run: nox -s lint",
+      "jobs:\n  a:\n    defaults:\n      run:\n        shell: custom\n    steps:\n      - run: nox -s lint",
+      "jobs:\n  a:\n    env: {MODE: local}\n    steps:\n      - run: tox -e lint",
+      "jobs:\n  a:\n    steps:\n      - run: |\n          prepare\n          tox -e lint",
+      "jobs:\n  a:\n    steps:\n      - run: \"\u00a0nox -s lint\"",
+      "jobs:\n  a:\n    steps:\n      - run: echo MODE=local >> $GITHUB_ENV\n      - run: tox -e lint",
+      "jobs:\n  a:\n    steps:\n      - run: prepare_config\n      - run: nox -s lint",
+      "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n        with: {path: alternate}\n      - run: tox -e lint",
+      "jobs:\n  a:\n    steps:\n      - run: |\n          # ${{ inputs.detail }}\n          nox -s lint",
+    ]) assert.deepEqual(discoverPythonChecks(workflow(text), reader(files)), []);
+    const checkout = "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n      - run: tox -e type\n      - run: nox -s lint";
+    assert.deepEqual(discoverPythonChecks(workflow(checkout), reader(files)).map((c) => c.command), ["tox -e type", "nox -s lint"]);
+    for (const dir of [".", "./", ".\\", "\\.", "", "sub/.."]) {
+      const text = `defaults:\n  run:\n    working-directory: '${dir}'\njobs:\n  a:\n    steps:\n      - run: nox -s lint`;
+      assert.equal(discoverPythonChecks(workflow(text), reader(files)).length, dir === "." || dir === "./" ? 1 : 0, dir);
+    }
+  });
+
+  it("declines ambiguous tox configurations, hooks and mixed commands", () => {
+    for (const config of [
+      tox.replace("skip_install = true", "skip_install = false"), tox.replace("skip_install = true", "deps = mypy"),
+      tox.replace("[testenv:type]", "[testenv:type]\ncommands_pre = prepare"),
+      tox.replace("[testenv:type]", "[testenv:type]\ncommands_post = finish"),
+      tox.replace("[testenv:type]", "[testenv:type]\nchangedir = src"),
+      tox.replace("[testenv:type]", "[testenv:type]\nsetenv = MODE=local"),
+      tox.replace("envlist =", "requires = plugin\nenvlist ="), tox.replace("mypy --config-file= src", "mypy {posargs:src}"),
+      tox.replace("    mypy", "    *"), tox + "\n[testenv:lint]\ncommands = ruff format .",
+      tox + "\n    ruff format .", tox.replace("src", "../other"), tox.replace("src", "result.txt"),
+    ]) assert.deepEqual(run("tox -e lint,type", { "tox.ini": config }), [], config);
+    for (const plugin of ["toxfile.py", "☣.py"]) assert.deepEqual(run("tox -e type", { ...files, [plugin]: "" }), []);
+    assert.deepEqual(run("tox -e type", {}), []);
+  });
+
+  it("keeps Make script reads independent of session configuration checks", () => {
+    const text = "jobs:\n  a:\n    steps:\n      - run: tox -e type\n      - run: make check";
+    const repo = { ...files, Makefile: "check:\n\t./toxfile.py\n", "toxfile.py": "#!/usr/bin/env python3\nimport mypy\n" };
+    const checks = discoverPythonChecks(workflow(text), reader(repo), reader({ ...files, "toxfile.py": "" }));
+    assert.deepEqual(checks.map((c) => [c.command, c.pythonOnly, c.triggers]), [["make check", true, ["Makefile", "toxfile.py"]]]);
+    assert.equal(narrowPythonChecks(checks, [{ path: "README.md", status: "modified" }])[0]?.decision, "SKIP");
+  });
+
+  it("reads only literal Nox declarations and calls, including the rest of the module", () => {
+    const call = '    session.run("ruff", "format", "--check", "--isolated", ".")';
+    for (const config of [
+      nox.replace('venv_backend="none"', ""), nox.replace(call, call + '\n    session.run("ruff", "format", ".")'),
+      nox.replace(call, '    session.install("ruff")\n' + call), nox.replace(call, '    session.chdir("src")\n' + call),
+      nox.replace(call, '    session.notify("types")\n' + call), nox.replace(call, '    session.run("ruff", "format --check")'),
+      nox.replace(call, '    session.run("ruff", *session.posargs)'), nox.replace("def types(session):", "def lint(session):"),
+      nox + "\nconfigure_sessions()", "# coding: latin-1\n" + nox, "# /// script\n# dependencies = ['ruff']\n# ///\n" + nox,
+    ]) assert.deepEqual(run("nox -s lint", { "noxfile.py": config }), [], config);
+    assert.deepEqual(run("nox -s lint", {}), []);
+  });
+});

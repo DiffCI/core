@@ -79,6 +79,15 @@ test("checks stop at the first failure", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("verify declines a previously planned session when its workflow is gone", (t) => {
+  const dir = repo({});
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = runChecks([{ id: "lint", command: "nox -s lint", kind: "lint", decision: "RUN", reason: "planned" }],
+    { cwd: dir, timeoutMs: 60_000, tailBytes: 0 });
+  assert.equal(run.results[0].status, "skipped");
+  assert.match(run.results[0].reason, /could not be confirmed/);
+});
+
 test("the MCP instruction puts the gate checks before the tests", () => {
   const plan = {
     status: "planned", selection: "selected", tests_selected: 3, tests_available: 580,

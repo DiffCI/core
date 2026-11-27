@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { narrowGateChecks, type ChangedPath } from "@diffci.com/core/planner/check-narrowing";
 import { discoverGateChecks, workflowGateScripts, type GateCheckKind } from "@diffci.com/core/planner/pipeline-steps";
 import { discoverPythonChecks, narrowPythonChecks, type WorkflowFile } from "@diffci.com/core/planner/python-checks";
 import type { CheckBaseline } from "./failure-baseline.js";
+import { isPythonSession, readPythonSessionFile, withSessionEnvironment } from "./python-session-files.js";
 import { measureCommand } from "./verify-savings.js";
 
 /** One leaf of the repository's gate (`npm run check`), as an agent or verify runs it. */
@@ -85,6 +86,21 @@ function readRepositoryFile(repoPath: string, path: string): string | undefined 
   try { return readFileSync(join(repoPath, path), "utf8"); } catch { return undefined; }
 }
 
+function regularWorkflow(repoPath: string, path: string): boolean {
+  try {
+    return lstatSync(join(repoPath, ".github")).isDirectory()
+      && lstatSync(join(repoPath, ".github/workflows")).isDirectory()
+      && lstatSync(join(repoPath, path)).isFile();
+  } catch { return false; }
+}
+
+function treesHaveNoLinks(repoPath: string, change: CheckChange): boolean {
+  // Symlinks can redirect an input and gitlinks hide the submodule's files.
+  try {
+    return [change.baseSha, change.headSha].every((ref) => !/(?:^|\0)(?:120000|160000) /.test(git(repoPath, ["ls-tree", "-r", "-z", ref])));
+  } catch { return false; }
+}
+
 /**
  * The checks the repository's gate runs besides its tests (2026-10-29, docs/design/pipeline-impact.md).
  * Agents ran the tests DiffCI selected and then failed `npm run check` after push; these are the rest of
@@ -136,10 +152,18 @@ function packageChecks(repoPath: string, change: CheckChange | undefined, option
  * program is not installed here is skipped with that reason rather than failed: CI still runs it.
  */
 function pythonChecks(repoPath: string, change: CheckChange | undefined): PlannedCheck[] {
-  let checks = discoverPythonChecks(workflowFiles(repoPath), (file) => readRepositoryFile(repoPath, file));
+  const read = (file: string) => readRepositoryFile(repoPath, file);
+  // The package's previous Core pin uses only the Makefile reader and discovers no sessions.
+  const discover: (files: WorkflowFile[], readFile: typeof read, readSession: typeof read) => ReturnType<typeof discoverPythonChecks> = discoverPythonChecks;
+  // Exclude linked session declarations before Core keeps the first occurrence of each command.
+  const files = workflowFiles(repoPath).map((file) => ({ ...file, canDeclareSessions: regularWorkflow(repoPath, file.path) }));
+  let checks = discover(files, read, (file) => readPythonSessionFile(repoPath, file));
   if (checks.length === 0) return [];
   if (change) {
-    try { checks = narrowPythonChecks(checks, changedPaths(repoPath, change)); }
+    // Older Core releases accept only the first two arguments and discover no sessions.
+    const narrow: (found: typeof checks, changes: ChangedPath[], regular: () => boolean) => typeof checks = narrowPythonChecks;
+    let regular: boolean | undefined;
+    try { checks = narrow(checks, changedPaths(repoPath, change), () => regular ??= treesHaveNoLinks(repoPath, change)); }
     catch { /* The change could not be read: every check runs as discovered. */ }
   }
   return checks.map((check) => {
@@ -153,6 +177,14 @@ function pythonChecks(repoPath: string, change: CheckChange | undefined): Planne
       reason: missing ? `${check.reason}; \`${program}\` is not installed here, so CI runs it` : check.reason,
     };
   });
+}
+
+/** An earlier gate check, or a different commit in a baseline export, can
+ * change what a session name runs. Read its actual workflow and config again. */
+export function canRunPythonSession(repoPath: string, command: string): boolean {
+  if (!isPythonSession(command)) return true;
+  try { return pythonChecks(repoPath, undefined).some((check) => check.command === command && check.decision === "RUN"); }
+  catch { return false; }
 }
 
 /** Runs checks in order and stops at the first failure, as the gate's `&&` chain would. SKIP checks
@@ -177,7 +209,15 @@ export function runChecks(
       results.push({ ...check, status: "not_run" });
       continue;
     }
-    const measurement = measureCommand(check.command, { ...options, timeoutMs: remaining });
+    if (!canRunPythonSession(options.cwd, check.command)) {
+      results.push({ ...check, decision: "SKIP", status: "skipped", reason: "the workflow session could not be confirmed before execution; CI runs it" });
+      continue;
+    }
+    const measurement = withSessionEnvironment(check.command, (env) => measureCommand(check.command, { ...options, env, timeoutMs: remaining }));
+    if (!measurement) {
+      results.push({ ...check, decision: "SKIP", status: "skipped", reason: "a private Python bytecode cache could not be prepared; CI runs this session" });
+      continue;
+    }
     const status = measurement.timedOut ? "timed_out" : measurement.exitCode === 0 && measurement.signal === null ? "passed" : "failed";
     const result: CheckResult = { ...check, status, exit_code: measurement.exitCode, wall_ms: measurement.wallMs };
     results.push(result);
