@@ -392,6 +392,7 @@
     "docs/design/config-narrowing.md",
     "docs/design/gitlab-component.md",
     "docs/design/pipeline-impact.md",
+    "docs/design/test-result-reuse.md",
     "docs/research/2026-10-28-seeded-regression-plan.md",
     "docs/research/2026-10-28-fallback-replay.md",
     "packages/diffci-cli/tests/client/selected-coverage.test.ts",
