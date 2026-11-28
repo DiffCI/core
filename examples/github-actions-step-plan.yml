@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-26.04
     env:
       # Pinned like the DiffCI GitHub Action. Bump it after reviewing a new CLI release.
-      DIFFCI_CLI_VERSION: "0.3.72"
+      DIFFCI_CLI_VERSION: "0.3.73"
     outputs:
       lint: ${{ steps.plan.outputs.lint_should_run }}
       lint_step_4: ${{ steps.plan.outputs.lint_step_4 }}
