@@ -315,6 +315,7 @@
     "tests/repo/rust-execution.test.ts",
     "tests/repo/rust-integration.test.ts",
     "tests/repo/scoped-adapter-blockers.test.ts",
+    "tests/repo/source-text-readers.test.ts",
     "tests/repo/subdirectory-config-change.test.ts",
     "src/repo/runner-setup-files.ts",
     "tests/repo/runner-setup-change.test.ts",

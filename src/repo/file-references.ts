@@ -682,6 +682,32 @@ export function directoryWalkers(filePath: string, tests: readonly string[], rea
   });
 }
 
+/** Calls that read a file's bytes, in the languages Core analyses. A helper that wraps one
+ * (`const source = (p) => readFile(p, "utf8")`) still puts the call in the test's content. */
+const FILE_READ = /\b(?:readFile(?:Sync)?|createReadStream|read_text|read_bytes|ReadFile|readString|readAllLines|readAllBytes)\s*\(/;
+
+/** Whether `content` calls a file-reading API; callers pre-filter tests with it once per analysis. */
+export function readsFiles(content: string | undefined): boolean {
+  return content !== undefined && FILE_READ.test(content);
+}
+
+/**
+ * Tests that read `filePath`, a code file, as text (2026-11-28). The dogfood record's first miss: a
+ * DentalPresence commit changed `src/lib/index/public-profiles.ts`, and a guard test that does
+ * `readFile("src/lib/index/public-profiles.ts")` and matches the source against a pattern failed. It never
+ * imports the file, so the graph had no edge, and code files are not resolved by reference the way data
+ * files are. A test that calls a file-reading API and names the file's own path now counts as reading it.
+ * Only the path and basename count, not ancestor directories: reading a directory's files means listing it,
+ * which directoryWalkers covers. Additive only: it never narrows a selection.
+ */
+export function sourceTextReaders(filePath: string, tests: readonly string[], read: (path: string) => string | undefined): string[] {
+  const pattern = referencePattern(referenceTokens(filePath, { ancestors: false }));
+  return tests.filter((test) => {
+    const content = read(test);
+    return readsFiles(content) && contentNamesPath(content!, test, filePath, pattern, false);
+  });
+}
+
 /** Configs that tooling loads by their default name and that can run a repository file - a Worker
  * entry point, a container command, a test setup file, a bundler plugin - without a test naming
  * either. `tsconfig.json`, `.gitignore` and lint or style configs list paths but run nothing; a

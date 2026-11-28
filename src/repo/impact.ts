@@ -8,7 +8,7 @@ import { refineConfidenceForDelta, relevantScopedAdapterBlockers } from "./graph
 import { repositoryLayout, UNKNOWN_REPOSITORY_LAYOUT, type RepositoryLayout } from "./layout.js";
 import { DEFAULT_TEST_FILE_MATCHER, matchesGlob as matchesTestGlob, testDiscoveryErrors, testFileMatcherForProfile } from "./test-discovery.js";
 import { resolveTestFixtureOwners } from "./test-fixture-ownership.js";
-import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure, testScriptPrograms } from "./file-references.js";
+import { compilerConfigNames, contentNamesPath, directoryWalkers, DIRECTING_EXTENSIONS, infrastructureRole, isAgentConfigurationPath, listsDirectories, loadsWithoutNaming, isImplicitlyLoadedFile, isWorkerConfig, readsFiles, sourceTextReaders, referencePattern, referenceTokens, resolveFileReferences, suiteMayRunWorkers, testScriptClosure, testScriptPrograms } from "./file-references.js";
 import { workflowFeedsTests } from "./workflow-test-steps.js";
 import { modelTestScriptUniverse, type ScriptUniverse } from "./script-universe.js";
 import { compiledProjects, type CompiledProject } from "./compiled-projects.js";
@@ -332,6 +332,7 @@ export class ImpactAnalyzer {
   /** Changed files whose readers were not searched because the full suite was already required. */
   private readersNotSearched = new Set<string>();
   private walkerTests: string[] | undefined;
+  private textReaderTests: string[] | undefined;
   private knownTests: string[] | undefined;
   private declaredCovered = new Set<string>();
   /** Go test files grouped by their package's directory value (`profile.goTestPackages` keys are test
@@ -636,6 +637,7 @@ export class ImpactAnalyzer {
     this.testPhases = new Set();
     this.workersOutsideSuite = undefined;
     this.walkerTests = undefined;
+    this.textReaderTests = undefined;
     this.knownTests = undefined;
     this.declaredCovered = new Set();
     this.runtimeTestSelection = graphResult.runtimeTestSelection === true;
@@ -1224,6 +1226,13 @@ export class ImpactAnalyzer {
       for (const test of directoryWalkers(changedPath, this.walkerTests, this.readRepositoryFile)) {
         if (test === changedPath) continue;
         evidence.push(makeEvidence("FILE_REFERENCE", changedPath, `${test} lists a directory containing ${changedPath}`, test));
+        this.addAffectedTest(changedPath, test, graph, affectedTests, "FILE_REFERENCE", evidence);
+      }
+      // A test can also read a code file's source as text without importing it (file-references.ts, sourceTextReaders).
+      this.textReaderTests ??= this.sortedRepositoryFiles.filter((path) => this.isTestFile(path) && readsFiles(read(path)));
+      for (const test of sourceTextReaders(changedPath, this.textReaderTests, this.readRepositoryFile)) {
+        if (test === changedPath) continue;
+        evidence.push(makeEvidence("FILE_REFERENCE", changedPath, `${test} reads ${changedPath} as text`, test));
         this.addAffectedTest(changedPath, test, graph, affectedTests, "FILE_REFERENCE", evidence);
       }
     }
