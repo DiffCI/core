@@ -150,6 +150,12 @@ Where: the GitHub Action (`action.yml`) and a CLI command for other CI systems.
 - `diffci plan --steps --format github-output` writes one output per job or step
   (`lint=narrowed`, `build=skip`, `e2e=run`) plus the narrowed commands. Workflows use them in
   `if:` and `run:`. `diffci verify-workflow` generates the wiring.
+  **Planning implemented 2026-11-28** (`packages/diffci-cli/src/client/plan-steps.ts`, #349): job decisions
+  from gate checks and the test selection, observe and enforce modes, and `examples/github-actions-step-plan.yml`.
+  The mapping lives in the CLI rather than `src/ci-inference/jobs.ts`, because the gate checks it maps to are
+  planned there. Not built yet: generated wiring in `verify-workflow`, and recording whether a job DiffCI would
+  have skipped then failed. On DentalPresence's 17 jobs it plans every job to run today: the gate's typecheck and
+  `lint:wordpress` do not narrow, `test:d1` is not narrowed, and the deploy jobs run scripts DiffCI does not plan.
 - `diffci gate` runs the selected steps in one command, for builders that run a script instead of
   workflow jobs (the Cloudflare Sandbox runs `npm run check` and the full test suite on every build).
   **Observe mode implemented 2026-10-30** (`packages/diffci-cli/src/client/gate.ts`): it runs every gate

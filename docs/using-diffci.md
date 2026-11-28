@@ -88,6 +88,19 @@ jobs:
 
 Without `--timings`, files are split by count. With it, they are split by time: `diffci outcomes --timings > .diffci/timings.json` writes each test file's typical duration from your local outcome log, and every job must read the same copy, for example a committed file. The jobs' own outcome logs are never used for the split, because they differ between jobs. When the change needs the full suite, or the selected command cannot be split, shard 1 runs everything and the other shards pass without running anything. Test-script phases and affected tests outside the full suite also run in shard 1.
 
+## Skip or narrow whole CI jobs
+
+`diffci plan --steps` decides, for each GitHub Actions job, whether DiffCI would run it, narrow it, or skip it for the change. It matches each step to a decision DiffCI already makes: a gate check such as `npm run lint` (run, narrowed to the changed files, or skipped) or the test command (the selected test files, or the full suite). A job is `skip` when every step that does work is one DiffCI would skip, and `narrowed` when nothing in it runs in full. Anything else runs:
+
+- a step DiffCI does not recognise, such as `npm run build`, an action it does not know, or a script with line continuations, `${{ }}` expressions or control flow;
+- a security job (CodeQL, Scorecard, dependency review and similar);
+- a job that another running job `needs`, because GitHub skips every job that needs a skipped one;
+- every job, when the change cannot be analysed.
+
+`--format github-output` writes `<job>=run|narrowed|skip` and `<job>_should_run` to `$GITHUB_OUTPUT`. Job ids become output names with every character other than letters, digits and `_` replaced by `_`. `--mode observe`, the default, keeps every `_should_run` output `true`, so the workflow still runs everything while the plan step's log records what would have been skipped. `--mode enforce` sets it to `false` for skipped jobs and also writes `<job>_step_<n>`, the narrowed command for step `n` of that job. `--workflow` limits the plan to one workflow file, and inside Actions it defaults to the running workflow. The command never fails the build: an error prints the reason and plans every job as run.
+
+[`examples/github-actions-step-plan.yml`](../examples/github-actions-step-plan.yml) shows the wiring. Jobs run unless their output is exactly `'false'`, so a failed plan runs everything. A narrowable step keeps its original `run:` line and is followed by one that runs DiffCI's narrowed command. Measure in observe mode before turning on enforce.
+
 ## Recover a missing base in a shallow checkout
 
 From v0.3.37, `diffci observe`, `verify` and `check` do this themselves in GitHub Actions and GitLab CI: when the range cannot be resolved and the clone is shallow, they run `git fetch --no-tags --unshallow origin` once, which adds commits and moves no ref, HEAD or file. They never fetch into a local clone. If that fetch fails (for example, a checkout with `persist-credentials: false` on a private repository), the refusal says why and still names `fetch-depth: 0` or `GIT_DEPTH: "0"`. The steps below are for the Core `plan` command and older CLI versions.

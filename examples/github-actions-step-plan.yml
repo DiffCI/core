@@ -1,0 +1,91 @@
+# Skip or narrow whole jobs with `diffci plan --steps` (DiffCI/core#349).
+#
+# Start in observe mode (the default): every job still runs, and the `diffci` job's log says which jobs DiffCI
+# would have skipped or narrowed. Compare that with how the jobs ended before switching to `--mode enforce`.
+#
+# How the wiring works:
+# - Every job `needs: diffci` and runs unless DiffCI's output for it is exactly 'false', so a failed or missing
+#   plan runs everything (`always()` keeps a failed plan job from skipping the rest).
+# - A narrowable step keeps its original `run:` line, used when DiffCI gives no narrowed command, and is
+#   followed by a step that runs `${{ needs.diffci.outputs.<job>_step_<n> }}`, where n is the original
+#   step's position in its job. Keep the original line as written: it is what DiffCI recognises.
+# - A step DiffCI does not recognise, a security job, and a job another running job needs always run.
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  diffci:
+    runs-on: ubuntu-26.04
+    env:
+      # Pinned like the DiffCI GitHub Action. Bump it after reviewing a new CLI release.
+      DIFFCI_CLI_VERSION: "0.3.72"
+    outputs:
+      lint: ${{ steps.plan.outputs.lint_should_run }}
+      lint_step_4: ${{ steps.plan.outputs.lint_step_4 }}
+      test: ${{ steps.plan.outputs.test_should_run }}
+      test_step_4: ${{ steps.plan.outputs.test_step_4 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: Plan jobs
+        id: plan
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npx --yes "@diffci.com/diffci@$DIFFCI_CLI_VERSION" plan --steps --format github-output --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  lint:
+    needs: diffci
+    if: ${{ always() && needs.diffci.outputs.lint != 'false' }}
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - if: ${{ needs.diffci.outputs.lint_step_4 == '' }}
+        run: npm run lint
+      - if: ${{ needs.diffci.outputs.lint_step_4 != '' }}
+        run: ${{ needs.diffci.outputs.lint_step_4 }}
+
+  test:
+    needs: diffci
+    if: ${{ always() && needs.diffci.outputs.test != 'false' }}
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - if: ${{ needs.diffci.outputs.test_step_4 == '' }}
+        run: npm test
+      - if: ${{ needs.diffci.outputs.test_step_4 != '' }}
+        run: ${{ needs.diffci.outputs.test_step_4 }}
+
+  # DiffCI does not plan builds, so this job would always run; it does not wait for the plan.
+  build:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: npm ci
+      - run: npm run build

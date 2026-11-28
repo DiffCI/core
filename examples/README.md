@@ -1,5 +1,9 @@
 # Examples
 
+## Skip or narrow whole jobs
+
+[`github-actions-step-plan.yml`](github-actions-step-plan.yml) runs `diffci plan --steps` in a first job and makes the lint and test jobs depend on its outputs. In observe mode, the default, every job still runs and the plan job's log says which jobs DiffCI would have skipped or narrowed. Switch the plan step to `--mode enforce` only after comparing those decisions with how the jobs ended. Jobs run unless DiffCI's output is exactly `'false'`, so a failed plan runs everything. See [Skip or narrow whole CI jobs](../docs/using-diffci.md#skip-or-narrow-whole-ci-jobs).
+
 ## Advisory GitHub Actions plan
 
 Copy [`github-actions-core-plan.yml`](github-actions-core-plan.yml) to `.github/workflows/diffci-core-plan.yml` in the repository you want to evaluate. Keep every existing required test, build, lint, and security job unchanged. The example adds a separate advisory job; no other job reads its output.

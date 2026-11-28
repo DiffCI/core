@@ -64,6 +64,8 @@ import { startWatch } from "./watch.js";
 import { captureWorkingTreeSnapshot } from "./working-tree.js";
 import { decideStop, HOOK_AGENTS, maxAttempts, parseStopPayload, sessionAttempts, stopRepoPath, type HookAgent } from "./agent-stop.js";
 import { formatGateSummary, gateExitCode, planGate, runGate } from "./gate.js";
+import { plannedChecks } from "./gate-checks.js";
+import { formatStepPlan, githubOutput, planSteps, STEP_PLAN_SCHEMA, type StepPlan } from "./plan-steps.js";
 import { formatGrowthPrompt, formatVerifySavingsSummary, measureCommand, runVerifySavings, writeVerifySavingsReport, type VerifySavingsOptions } from "./verify-savings.js";
 import { auditEnforceWorkflows, auditWorkflows, isNonInterfering } from "./workflow-guard.js";
 import { renderPilotPacket } from "./pilot-packet.js";
@@ -118,6 +120,7 @@ const PLAN_USAGE = "Usage: diffci plan --base <commit> [--head HEAD] [--repo <cl
 
 /** Same output and exit codes as Core's own `plan` command, so saved plans stay interchangeable. */
 async function runPlanCommand(args: readonly string[]): Promise<number> {
+  if (args.some((arg) => arg === "--steps" || arg.startsWith("--steps="))) return runStepPlanCommand(args);
   let repoPath: string | undefined;
   try {
     if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
@@ -148,6 +151,66 @@ async function runPlanCommand(args: readonly string[]): Promise<number> {
     if (repoPath !== undefined) await recordUsage("plan", "error", observerIdentity().version, {}, process.env, repoPath);
     return 1;
   }
+}
+
+const STEP_PLAN_USAGE = `Usage: diffci plan --steps [--format text|json|github-output] [--mode observe|enforce] [--workflow <file>]
+                   [--base <sha>] [--head <sha>] [--repo <path>] [--out <file>]
+Decides, per GitHub Actions job, whether DiffCI would run, narrow or skip it for this change (DiffCI/core#349).
+A step DiffCI does not recognise, a security job, and a job another running job needs always run; a change it
+cannot analyse runs every job. --mode observe (the default) keeps every <job>_should_run output true, so the
+workflow still runs everything while the plan records what would have been skipped. github-output writes
+<job>=run|narrowed|skip, <job>_should_run and, in enforce mode, <job>_step_<n> narrowed commands to
+$GITHUB_OUTPUT (or --out). --workflow defaults to the running workflow (GITHUB_WORKFLOW_REF). Never fails the build:
+an error prints the reason and plans every job as run.`;
+
+async function runStepPlanCommand(args: readonly string[]): Promise<number> {
+  const { flags } = parseArgs(["node", "diffci", ...args]);
+  if (flags.help === true || flags.h === true) { console.log(STEP_PLAN_USAGE); return 0; }
+  const known = new Set(["steps", "format", "mode", "workflow", "base", "head", "repo", "out"]);
+  const unknown = Object.keys(flags).find((name) => !known.has(name));
+  if (unknown) { console.error(`Unsupported plan --steps argument: --${unknown}\n${STEP_PLAN_USAGE}`); return 2; }
+  const format = stringFlag(flags, "format") ?? "text";
+  const mode = stringFlag(flags, "mode") ?? "observe";
+  if (!["text", "json", "github-output"].includes(format) || !["observe", "enforce"].includes(mode)) {
+    console.error(STEP_PLAN_USAGE);
+    return 2;
+  }
+  const repoPath = resolve(stringFlag(flags, "repo") ?? process.cwd());
+  // GITHUB_WORKFLOW_REF is owner/repo/.github/workflows/ci.yml@refs/heads/main.
+  const workflow = stringFlag(flags, "workflow") ?? /\/(\.github\/workflows\/[^@]+)@/.exec(process.env.GITHUB_WORKFLOW_REF ?? "")?.[1];
+  const identity = observerIdentity();
+  let plan: StepPlan;
+  try {
+    const gatePlan = await planGate({
+      repoPath, env: process.env as Record<string, string | undefined>, version: identity.version, engineSha: identity.sha,
+      baseOverride: stringFlag(flags, "base"),
+      headOverride: stringFlag(flags, "head") ?? (stringFlag(flags, "base") ? execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath, encoding: "utf8" }).trim() : undefined),
+    });
+    const range = gatePlan.range ? { baseSha: gatePlan.range.base_sha, headSha: gatePlan.range.head_sha } : undefined;
+    plan = planSteps({
+      repoPath, plan: gatePlan, mode: mode as "observe" | "enforce", ...(workflow ? { workflow } : {}),
+      checksFor: (extraRoots) => plannedChecks(repoPath, range, extraRoots ? { extraRoots } : {}),
+    });
+  } catch (error) {
+    // Never fail the build: with no job outputs, `!= 'false'` conditions run every job.
+    const reason = error instanceof Error ? error.message : String(error);
+    console.error(`diffci plan --steps: ${reason}; every job runs.`);
+    plan = { schema: STEP_PLAN_SCHEMA, mode: mode as "observe" | "enforce", analysis: { status: "ERROR", reason, fallback_reasons: [] }, jobs: [] };
+  }
+  if (format === "json") {
+    const text = `${JSON.stringify(plan, null, 2)}\n`;
+    const out = stringFlag(flags, "out");
+    if (out) writeFileSync(resolve(out), text, "utf8"); else process.stdout.write(text);
+  } else if (format === "github-output") {
+    const out = stringFlag(flags, "out") ?? process.env.GITHUB_OUTPUT;
+    const text = githubOutput(plan);
+    if (out) writeFileSync(resolve(out), text, { encoding: "utf8", flag: "a" }); else process.stdout.write(text);
+    console.error(formatStepPlan(plan));
+  } else {
+    console.log(formatStepPlan(plan));
+  }
+  await recordUsage("plan", plan.jobs.some((job) => job.decision !== "run") ? "selective" : "full", identity.version, {}, process.env, repoPath);
+  return 0;
 }
 
 function runCheckPlanCommand(args: readonly string[]): number {
@@ -1505,6 +1568,8 @@ Usage:
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>]
   diffci plan --base <sha> [--head <sha>] [--repo <path>]
+  diffci plan --steps [--format text|json|github-output] [--mode observe|enforce] [--workflow <file>]
+              [--base <sha> [--head <sha>]] [--repo <path>] [--out <file>]
   diffci check-plan --plan <plan.json> --results <junit.xml>
   diffci red-builds <owner/repo> [--runs <n>] [--workflow <id|file>] [--json <file>] [--check-jobs <regex>] [--ci-only-jobs <regex>]
   diffci pilot --full <command> [--selected <command>] [--repo <path>] [--out-dir <dir>] [--label <name>]
@@ -1561,6 +1626,8 @@ verify without these flags resolves the CI event range (or HEAD^..HEAD locally) 
 analyzed head is the commit that actually passed verification. In a checkout with uncommitted changes it
 verifies the head commit in a temporary worktree instead, leaving those changes out and untouched.
 check analyzes the change, runs inferred full and selected commands, and shows measured savings.
+plan --steps decides, per GitHub Actions job, whether DiffCI would run, narrow or skip it for the change; observe
+mode (the default) still runs every job. See diffci plan --steps --help and examples/github-actions-step-plan.yml.
 plan prints Core's advisory JSON plan for a clean checkout at --head; save it before the full suite runs.
 It exits 1 with a RUN_FULL_CI error when it cannot plan. It runs no tests and sends nothing.
 check-plan reads one saved plan and one full-suite JUnit result, and prints a JSON failure comparison.
