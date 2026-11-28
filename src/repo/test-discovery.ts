@@ -584,6 +584,11 @@ function globToRegex(pattern: string): RegExp {
     return `\0X${groups.length - 1}\0`;
   });
 
+  // `[!...]` negates a class as `[^...]` does, and neither matches `/` (picomatch). Read as a regex, `[!d]`
+  // meant "! or d", so DentalPresence's `scripts/[!d]*.test.ts` took in the very d1-* files it excludes
+  // (DiffCI/core#355).
+  working = working.replace(/\[[!^]/g, "[^/");
+
   // `+`, `$` and `^` (outside a `[^...]` class) are literal in globs, as in picomatch: Remix route files
   // (`users.$id.tsx`) and remix-flat-routes folders (`_auth+/`) use them. A bare `**` matches every path.
   working = working.replace(/\\/g, "\\\\").replace(/\./g, "\\.").replace(/[+$]|(?<!\[)\^/g, "\\$&");

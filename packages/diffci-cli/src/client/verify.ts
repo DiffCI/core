@@ -18,6 +18,8 @@ import { createIsolatedWorktree } from "./isolated-worktree.js";
 import { selectedNodeTests, traceNodeTestFiles, unmatchedNodeTests, unstartedNodeTests } from "./selected-coverage.js";
 import { outcomeLogPath, readOutcomes, reusablePass } from "./outcome-log.js";
 import { likelyFailures, rankTests, testHistory } from "./test-ranking.js";
+import { estimateRunCost, formatRunCost, type RunCost } from "./run-cost.js";
+import type { VerifyQueueOutcome } from "./verify-queue.js";
 import { assignShards, type ShardSpec, type TimingsFile } from "./test-shards.js";
 import { mergeTestFileResults } from "./test-results.js";
 import type { CommandMeasurement } from "./verify-savings.js";
@@ -122,6 +124,10 @@ export interface VerificationReport {
   coverage_added?: string[];
   /** Affected tests outside the full suite that this run ran after the selection (executableSelection). */
   outside_suite_tests?: string[];
+  /** A selected run's cost next to the full suite's, from the outcome log (run-cost.ts). */
+  cost?: RunCost;
+  /** Present when this run waited for another verify in the same repository (verify-queue.ts). */
+  queue?: VerifyQueueOutcome;
   /** Present for `--staged` and `--paths`: the verified files and the excluded dirty ones. */
   scoped?: ScopedVerification;
 }
@@ -521,6 +527,9 @@ async function executeWithPolicy(
           ? `${preexistingChecks.length} gate check(s) failed that also fail at the base commit; nothing this change introduced failed (${preexistingChecks.map((check) => check.id).join(", ")})`
           : `verification command failed with exit code ${String(execution.exitCode)}${preexistingNote}`;
   const baselineSha = scope === "commit-range" ? range?.baseSha : before.baseSha;
+  // A selection can cost more than the full suite (DiffCI/core#355); the count alone reads as a saving.
+  const cost = selection === "selected" && result && !checkRun?.failure && !testsOutOfTime
+    ? selectionCost(options.repoPath, result.selectedTests, outsideTests, execution.wallMs) : undefined;
   const failureBaseline = verification === "failed" && !failedCheck && !testsOutOfTime && !execution.timedOut && options.baselineOnFailure && baselineSha
     // The base reruns only the parts that ran here: a first-pass failure is compared without the full suite.
     ? compareWithBaseline({ repoPath: options.repoPath, baseSha: baselineSha, headSha: scope === "commit-range" ? before.baseSha : before.commitSha, commands: stoppedInFirstPass ? firstPass.parts : commands, headFailures: execution.failingTests ?? [], timeoutMs: options.timeoutMs })
@@ -558,9 +567,15 @@ async function executeWithPolicy(
     analysis,
     required_actions: verification === "passed" ? [] : [finalReason + baselineNote],
     ...(failureBaseline ? { failure_baseline: failureBaseline } : {}),
+    ...(cost ? { cost } : {}),
     ...shardField,
     ...coverageField,
   };
+}
+
+function selectionCost(repoPath: string, selected: readonly string[], outside: readonly string[], wallMs: number): RunCost | undefined {
+  const path = outcomeLogPath(repoPath);
+  return path ? estimateRunCost(readOutcomes(path), selected, outside, wallMs) : undefined;
 }
 
 function stamped(report: VerificationReport, version: string, redactPaths: boolean | undefined): VerificationReport {
@@ -933,6 +948,12 @@ export function formatVerificationSummary(report: VerificationReport): string {
   const written = report.snapshot.written_during_verification;
   if (written?.length) lines.push(`  written by the run (not in .gitignore): ${written.slice(0, 5).join(", ")}${written.length > 5 ? ", ..." : ""}`);
   if (report.checks) lines.push(`  checks: ${report.checks.map((check) => `${check.id} ${check.status}${check.baseline?.status === "preexisting" ? " (also fails at base)" : ""}`).join(", ")}`);
+  const cost = report.cost ? formatRunCost(report.cost, report.outside_suite_tests?.length ?? 0) : undefined;
+  if (cost) lines.push(cost);
+  if (report.queue) {
+    const holder = report.queue.waited_for;
+    lines.push(`  queued: ${(report.queue.queued_ms / 1000).toFixed(1)}s behind ${holder ? `pid ${holder.pid} (${holder.scope})` : "another verify"}${report.queue.timed_out ? ", then ran in parallel after the queue timeout" : ""}`);
+  }
   if (report.command) lines.push(`  command: ${report.command}`);
   // A blocked push has to say what broke, not only that something did (2026-10-30 demo rehearsal: the
   // summary said "exit code 1" and nothing else).

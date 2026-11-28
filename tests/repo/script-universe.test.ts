@@ -33,6 +33,15 @@ describe("modelTestScriptUniverse", () => {
     assert.deepEqual(result.tests, ["ops/cloudflare/src/routing.test.mjs", "scripts/deploy.test.mjs", "scripts/report.test.ts", "src/lib/a.test.ts", "src/lib/deep/b.test.ts"]);
   });
 
+  it("leaves files a negated glob class excludes outside the suite (DiffCI/core#355)", () => {
+    const result = model({
+      test: `tsx --conditions react-server --test "src/**/*.test.ts" "scripts/[!d]*.test.*" "scripts/d[!1]*.test.*"`,
+      "test:d1": `tsx --test "scripts/d1-*.test.mjs"`,
+    });
+    assert.equal(result.complete, true);
+    assert.deepEqual(result.tests, ["scripts/deploy.test.mjs", "scripts/report.test.ts", "src/lib/a.test.ts", "src/lib/deep/b.test.ts"]);
+  });
+
   it("follows npm run phases and lifecycle hooks", () => {
     const result = model({ pretest: "node --test scripts/deploy.test.mjs", test: "npm run test:unit", "test:unit": "node --test src/lib" });
     assert.equal(result.complete, true);

@@ -53,6 +53,10 @@ export interface OutcomeRecord {
   node_version?: string;
   /** Each test file's result and duration, where the runner showed them (test-results.ts, 2026-11-06). */
   test_results?: TestFileResult[];
+  /** A selected run's cost next to the full suite's (run-cost.ts, 2026-11-28). */
+  cost?: VerificationReport["cost"];
+  /** Time spent waiting for another verify in this repository (verify-queue.ts), kept out of tests_ms. */
+  queued_ms?: number;
   /** When this run ran nothing and reused an earlier pass: that run's `produced_at` (reusablePass). */
   reused_from?: string;
 }
@@ -85,6 +89,8 @@ export function outcomeRecord(report: VerificationReport, env: Record<string, st
     node_version: process.versions.node,
     ...(report.execution?.testResults?.length ? { test_results: report.execution.testResults } : {}),
     ...(report.reused_from ? { reused_from: report.reused_from.produced_at } : {}),
+    ...(report.cost ? { cost: report.cost } : {}),
+    ...(report.queue ? { queued_ms: report.queue.queued_ms } : {}),
   };
 }
 

@@ -86,41 +86,8 @@ import {
   spawnRunner,
   type CollectOptions,
 } from "./enforce-misses-collect.js";
-
-interface ParsedArgs {
-  command?: string;
-  flags: Record<string, string | boolean>;
-}
-
-function parseArgs(argv: readonly string[]): ParsedArgs {
-  const args = argv.slice(2);
-  const flags: Record<string, string | boolean> = {};
-  let command: string | undefined;
-  for (let i = 0; i < args.length; i++) {
-    const token = args[i]!;
-    if (!token.startsWith("--")) {
-      command ??= token;
-      continue;
-    }
-    const key = token.slice(2);
-    const next = args[i + 1];
-    if (key === "paths") {
-      // `--paths a b c` takes every value up to the next flag, and repeats add to it; NUL separates
-      // them because no path contains one.
-      const values: string[] = typeof flags.paths === "string" ? flags.paths.split("\0") : [];
-      while (args[i + 1] !== undefined && !args[i + 1]!.startsWith("--")) values.push(args[++i]!);
-      flags.paths = values.length ? values.join("\0") : true;
-      continue;
-    }
-    if (next !== undefined && !next.startsWith("--")) {
-      flags[key] = next;
-      i++;
-    } else {
-      flags[key] = true;
-    }
-  }
-  return { command, flags };
-}
+import { parseArgs } from "./cli-args.js";
+import { acquireVerifyLock, DEFAULT_QUEUE_TIMEOUT_MS, queueField } from "./verify-queue.js";
 
 const CHECK_PLAN_MAX_INPUT_BYTES = 16 * 1024 * 1024;
 
@@ -513,6 +480,10 @@ async function runAgentStopCommand(flags: Record<string, string | boolean>, env:
   const repoPath = resolve(stopRepoPath(payload, env as Record<string, string | undefined>, process.cwd()));
   const attempts = sessionAttempts(repoPath, payload);
   let report: VerificationReport | undefined;
+  // Waiting for another session's verify comes out of the hook's budget, never on top of it.
+  const budgetMs = (AGENT_HOOK_TIMEOUT_SECONDS - 120) * 1000;
+  const lock = env.DIFFCI_QUEUE === "0" ? undefined
+    : await acquireVerifyLock(repoPath, { scope: "agent-stop --changed", timeoutMs: Math.floor(budgetMs / 2), log: (message) => console.error(message) });
   try {
     const identity = observerIdentity();
     report = await verifyChanged({
@@ -521,13 +492,16 @@ async function runAgentStopCommand(flags: Record<string, string | boolean>, env:
       version: identity.version,
       engineSha: identity.sha,
       // Below the hook's own timeout (agent-setup.ts), so the hook always answers.
-      timeoutMs: (AGENT_HOOK_TIMEOUT_SECONDS - 120) * 1000,
+      timeoutMs: budgetMs - (lock?.queued_ms ?? 0),
       tailBytes: 12_000,
       skipChecks: env.DIFFCI_CHECKS === "0",
     });
+    if (lock) report = { ...report, ...queueField(lock) };
     appendOutcome(repoPath, report, env as Record<string, string | undefined>);
   } catch {
     report = undefined;
+  } finally {
+    lock?.release();
   }
   const decision = decideStop(agent, report, attempts.failures, maxAttempts(env as Record<string, string | undefined>));
   attempts.record(decision.failures);
@@ -581,7 +555,8 @@ function formatWatchRun(report: VerificationReport, wallMs: number): string {
   if (report.selection === "none" && report.verification === "passed") return `${time}  no uncommitted changes`;
   if (report.verification === "passed") {
     const how = report.reused_from ? "reused an earlier pass of this tree" : `${report.selection} ${report.tests_selected} of ${report.tests_available} test files`;
-    return `${time}  passed  ${how}  (${(wallMs / 1000).toFixed(1)}s)`;
+    const costlier = report.cost?.exceeds_full ? "  [cost more than the full suite]" : "";
+    return `${time}  passed  ${how}  (${(wallMs / 1000).toFixed(1)}s)${costlier}`;
   }
   return `${time}  ${report.verification.toUpperCase()}
 ${formatVerificationSummary(report)}`;
@@ -660,46 +635,58 @@ async function runVerifyCommand(flags: Record<string, string | boolean>, env: No
     ...(shard ? { shard } : {}),
     ...(timings ? { timings } : {}),
   };
-  const report = changed
-    ? await verifyChanged(common)
-    : staged
-    ? await verifyScoped({ ...common, scope: { kind: "staged" } })
-    : paths
-    ? await verifyScoped({ ...common, scope: { kind: "paths", paths } })
-    : await verifyRange({
-        ...common,
-        baseOverride: stringFlag(flags, "base"),
-        headOverride: stringFlag(flags, "head"),
-        policy,
-      });
-  if (changed) {
-    const outside = filesOutsideIndex(repoPath);
-    if (outside > 0) {
-      console.error(`diffci: ${outside} changed file(s) here are not staged and were verified too. If other sessions share this checkout, stage your own files and run \`diffci verify --staged\` (or \`diffci verify --paths <file...>\`) to verify HEAD plus only those, in a temporary worktree.`);
+  const queueTimeoutMs = numberFlag(flags, "queue-timeout-ms") ?? DEFAULT_QUEUE_TIMEOUT_MS;
+  const lock = flags["no-queue"] === true || env.DIFFCI_QUEUE === "0" ? undefined
+    : await acquireVerifyLock(repoPath, { scope: `verify ${modes[0] ?? "--base/--head"}`, timeoutMs: queueTimeoutMs, log: (message) => console.error(message) });
+  try {
+    return await runQueuedVerify();
+  } finally {
+    lock?.release();
+  }
+
+  async function runQueuedVerify(): Promise<number> {
+    const verified = changed
+      ? await verifyChanged(common)
+      : staged
+      ? await verifyScoped({ ...common, scope: { kind: "staged" } })
+      : paths
+      ? await verifyScoped({ ...common, scope: { kind: "paths", paths } })
+      : await verifyRange({
+          ...common,
+          baseOverride: stringFlag(flags, "base"),
+          headOverride: stringFlag(flags, "head"),
+          policy: policy === "enforce" ? policy : undefined,
+        });
+    const report: VerificationReport = lock ? { ...verified, ...queueField(lock) } : verified;
+    if (changed) {
+      const outside = filesOutsideIndex(repoPath);
+      if (outside > 0) {
+        console.error(`diffci: ${outside} changed file(s) here are not staged and were verified too. If other sessions share this checkout, stage your own files and run \`diffci verify --staged\` (or \`diffci verify --paths <file...>\`) to verify HEAD plus only those, in a temporary worktree.`);
+      }
     }
+    // Never from the hook's own `verify --base/--head`, and never in CI, where no hook is installed.
+    if ((changed || staged || paths) && env.DIFFCI_HOOK_REFRESH !== "0" && !(Boolean(env.CI) && env.CI !== "false")) {
+      try {
+        const refreshed = refreshPrePushHook(repoPath);
+        if (refreshed) console.error(refreshed);
+      } catch { /* keeping an old hook never fails verification */ }
+    }
+    // Before push only: a CI checkout is not where a broken change gets fixed.
+    const logging = flags["no-log"] !== true && env.DIFFCI_OUTCOME_LOG !== "0" && !(Boolean(env.CI) && env.CI !== "false");
+    await recordUsage("verify", report.verification, identity.version, flags, env, repoPath, verificationSelection(report),
+      logging ? usageStreak(repoPath, report) : undefined);
+    if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
+    if (reportPath) {
+      mkdirSync(dirname(reportPath), { recursive: true });
+      writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    }
+    if (flags.json === true) console.log(JSON.stringify(report, null, 2));
+    else {
+      console.log(formatVerificationSummary(report));
+      if (reportPath) console.log(`  receipt: ${reportPath}`);
+    }
+    return verificationExitCode(report);
   }
-  // Never from the hook's own `verify --base/--head`, and never in CI, where no hook is installed.
-  if ((changed || staged || paths) && env.DIFFCI_HOOK_REFRESH !== "0" && !(Boolean(env.CI) && env.CI !== "false")) {
-    try {
-      const refreshed = refreshPrePushHook(repoPath);
-      if (refreshed) console.error(refreshed);
-    } catch { /* keeping an old hook never fails verification */ }
-  }
-  // Before push only: a CI checkout is not where a broken change gets fixed.
-  const logging = flags["no-log"] !== true && env.DIFFCI_OUTCOME_LOG !== "0" && !(Boolean(env.CI) && env.CI !== "false");
-  await recordUsage("verify", report.verification, identity.version, flags, env, repoPath, verificationSelection(report),
-    logging ? usageStreak(repoPath, report) : undefined);
-  if (flags["no-log"] !== true) appendOutcome(repoPath, report, env as Record<string, string | undefined>);
-  if (reportPath) {
-    mkdirSync(dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
-  }
-  if (flags.json === true) console.log(JSON.stringify(report, null, 2));
-  else {
-    console.log(formatVerificationSummary(report));
-    if (reportPath) console.log(`  receipt: ${reportPath}`);
-  }
-  return verificationExitCode(report);
 }
 
 /** Unstaged or untracked (non-ignored) files, for the `--changed` hint. Zero when Git cannot say. */
@@ -1513,7 +1500,7 @@ Usage:
                 [--policy enforce] [--repo <path>] [--out <file>] [--json]
                 [--redact-paths] [--timeout-ms <ms>] [--baseline-on-failure] [--no-checks | --checks]
                 [--no-send] [--no-log] [--no-reuse] [--no-rank] [--fail-fast]
-                [--shard <i/N> [--timings <file>]] [--no-coverage]
+                [--shard <i/N> [--timings <file>]] [--no-coverage] [--no-queue] [--queue-timeout-ms <ms>]
   diffci telemetry [--mode repo|count-only] [--internal-usage]
   diffci check [--repo <path>] [--out <file>] [--base <sha> --head <sha>]
                [--redact-paths] [--json] [--quiet] [--fail-on-error] [--timeout-ms <ms>]
@@ -1602,7 +1589,9 @@ requests merged since the last recorded run, and exits 1 on a miss. It never edi
 verify appends each run (plan, selection reasons, checks, results, per-file durations, failing tests) to
 .git/diffci/outcomes.jsonl, which is never committed and never sent; --no-log or DIFFCI_OUTCOME_LOG=0 skips it.
 When an earlier run in that log passed on the exact same tree and covered the same tests and checks, verify
-reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again. Selected tests that have
+reuses it and runs nothing; --no-reuse or DIFFCI_REUSE=0 runs everything again. One verify runs at a time
+per repository: another waits for it (up to --queue-timeout-ms, 15 minutes by default) and says for whom, so
+a second run of the same tree reuses the first; --no-queue or DIFFCI_QUEUE=0 runs in parallel. Selected tests that have
 failed before in that log, or that the change edited, run first (--no-rank keeps the selection's order);
 --fail-fast runs them as a first batch and stops there if one fails. --shard i/N runs job i's share of the
 selection in an N-job CI matrix; every job splits it the same way, balanced by --timings (a file from

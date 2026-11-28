@@ -29,6 +29,16 @@ describe("matchesGlob keeps regex metacharacters literal", () => {
     assert.equal(matchesGlob("src/a.test.tsx", "**/*.test.?(c|m)[jt]s?(x)"), true);
   });
 
+  it("reads `[!...]` as a negated class that never matches `/` (DiffCI/core#355)", () => {
+    assert.equal(matchesGlob("scripts/report.test.ts", "scripts/[!d]*.test.ts"), true);
+    assert.equal(matchesGlob("scripts/d1-gateway.test.ts", "scripts/[!d]*.test.ts"), false);
+    assert.equal(matchesGlob("scripts/!x.test.ts", "scripts/[!d]*.test.ts"), true);
+    assert.equal(matchesGlob("scripts/deploy.test.ts", "scripts/d[!1]*.test.ts"), true);
+    assert.equal(matchesGlob("scripts/d1-gateway.test.ts", "scripts/d[!1]*.test.ts"), false);
+    assert.equal(matchesGlob("src/a/b.ts", "src[!x]a/b.ts"), false);
+    assert.equal(matchesGlob("src/a/b.ts", "src[^x]a/b.ts"), false);
+  });
+
   it("matches every path with a bare **", () => {
     assert.equal(matchesGlob("a.ts", "**"), true);
     assert.equal(matchesGlob("a/b/c.ts", "**"), true);
