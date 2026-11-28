@@ -130,37 +130,39 @@ describe("acquireVerifyLock", () => {
   });
 });
 
-function verify(dir: string, extra: string[] = []): Promise<{ status: number | null; stdout: string; stderr: string }> {
+interface Run { done: Promise<{ status: number | null; stdout: string; stderr: string }>; stderr: () => string }
+
+function start(dir: string, extra: string[] = []): Run {
   const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "NODE_TEST_CONTEXT" && !name.startsWith("GITHUB_") && name !== "CI")), DO_NOT_TRACK: "1" };
-  return new Promise((resolveRun) => {
-    const child = spawn(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", ...extra], { cwd: ROOT, env });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("close", (status) => resolveRun({ status, stdout, stderr }));
-  });
+  const child = spawn(process.execPath, ["--import", "tsx", CLI, "verify", "--changed", "--repo", dir, "--json", ...extra], { cwd: ROOT, env });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  return { done: new Promise((resolveRun) => child.on("close", (status) => resolveRun({ status, stdout, stderr }))), stderr: () => stderr };
 }
 
+const verify = (dir: string, extra: string[] = []) => start(dir, extra).done;
+
 describe("diffci verify queue", () => {
-  it("runs two verifies of one tree once: the second waits, then reuses the first", { timeout: 600_000 }, async () => {
+  it("runs two verifies of one tree once: both queue, one runs, the other reuses it", { timeout: 600_000 }, async () => {
     const dir = repo();
     try {
       write(dir, "src/alpha.js", "export const alpha = () => 1; // edited\n");
-      const first = verify(dir);
-      // Start the second once the first holds the lock.
-      const path = verifyLockPath(dir)!;
-      for (let i = 0; i < 600 && !existsSync(path); i++) await new Promise((r) => setTimeout(r, 100));
-      const [a, b] = await Promise.all([first, verify(dir)]);
-      assert.equal(a.status, 0, a.stdout + a.stderr);
-      assert.equal(b.status, 0, b.stdout + b.stderr);
-      const second = JSON.parse(b.stdout);
-      assert.ok(second.reused_from, "the second run reused the first");
-      assert.equal(second.queue.waited_for.pid > 0, true);
-      assert.match(b.stderr, /waiting for another verify in this repository/);
+      // The test holds the lock (its own pid is alive), so both runs must queue whatever the machine's speed.
+      const path = holdLock(dir, process.pid);
+      const runs = [start(dir), start(dir)];
+      for (let i = 0; i < 1200 && !runs.every((run) => /waiting for another verify/.test(run.stderr())); i++) await new Promise((r) => setTimeout(r, 100));
+      assert.ok(runs.every((run) => /waiting for another verify in this repository/.test(run.stderr())), runs.map((run) => run.stderr()).join("\n"));
+      rmSync(path);
+      const results = await Promise.all(runs.map((run) => run.done));
+      for (const result of results) assert.equal(result.status, 0, result.stdout + result.stderr);
+      const reports = results.map((result) => JSON.parse(result.stdout));
+      assert.equal(reports.filter((report) => report.reused_from).length, 1, "exactly one run reused the other");
+      for (const report of reports) assert.equal(report.queue.waited_for.pid > 0, true);
       const records = readOutcomes(join(dir, ".git", "diffci", "outcomes.jsonl"));
       assert.equal(records.length, 2);
-      assert.equal(typeof records[1]!.queued_ms, "number");
+      assert.ok(records.every((record) => typeof record.queued_ms === "number"));
       assert.equal(existsSync(path), false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });

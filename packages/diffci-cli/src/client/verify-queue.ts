@@ -109,9 +109,9 @@ export async function acquireVerifyLock(repoPath: string, options: QueueOptions)
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, ms)));
   const isAlive = options.isAlive ?? processAlive;
   const pollMs = options.pollMs ?? 1000;
-  const unqueued = (fields: Omit<VerifyQueueOutcome, "queued_ms"> = {}, start = now()): VerifyLock => ({ queued_ms: now() - start, ...fields, release() {} });
+  const unqueued = (fields: Omit<VerifyQueueOutcome, "queued_ms">, start: number): VerifyLock => ({ queued_ms: now() - start, ...fields, release() {} });
   const path = verifyLockPath(repoPath);
-  if (!path) return unqueued();
+  if (!path) return { queued_ms: 0, release() {} };
   const start = now();
   const holder: VerifyLockHolder = { pid: process.pid, host: hostname(), started_at: new Date(start).toISOString(), scope: options.scope, cwd: repoPath, token: randomUUID() };
   let waitedFor: VerifyLockHolder | undefined;
