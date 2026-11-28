@@ -46,7 +46,8 @@ describe("Core CI selected tests", () => {
   });
 
   it("is wired into Core CI with a nightly full run", () => {
-    const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    // Windows checkouts may use CRLF.
+    const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
     assert.match(ci, /run: node scripts\/ci-selected-tests\.mjs/);
     assert.match(ci, /schedule:\n\s+- cron:/);
     assert.doesNotMatch(ci, /^\s+- run: npm test$/m);
