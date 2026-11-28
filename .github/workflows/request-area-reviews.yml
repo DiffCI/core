@@ -1,0 +1,36 @@
+name: Request area reviews
+
+# Requests a review from the area maintainer on open pull requests that touch their area
+# (.github/area-maintainers.json). It runs on a schedule rather than pull_request_target: it checks out only main,
+# never a fork's code, and does not depend on GitHub's pull_request_target policy (restricted on public repositories
+# by default from 2 December 2026). Area maintainers hold the Triage role, so they can review but not merge.
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: request-area-reviews
+  cancel-in-progress: false
+
+jobs:
+  request:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Request area maintainer reviews
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/request-area-reviews.mjs

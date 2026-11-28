@@ -1,0 +1,21 @@
+{
+  "$comment": "Area maintainers (CONTRIBUTING.md#contributor-tiers) and the paths they review. scripts/request-area-reviews.mjs requests their review on open pull requests that touch these paths. Patterns are repository-relative; * matches within one path segment and ** across segments.",
+  "areas": [
+    {
+      "area": "Yarn",
+      "maintainers": ["KingEmma7"],
+      "paths": ["src/repo/yarn-*.ts", "tests/repo/yarn-*.test.ts"]
+    },
+    {
+      "area": "Rust",
+      "maintainers": ["FredApps"],
+      "paths": [
+        "src/repo/adapters/rust*.ts",
+        "src/planner/rust-*.ts",
+        "tests/**/rust-*.test.ts",
+        "scripts/replay-rust.mjs",
+        ".github/workflows/rust-replay.yml"
+      ]
+    }
+  ]
+}
