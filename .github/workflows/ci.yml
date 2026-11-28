@@ -1,5 +1,12 @@
 name: Core CI
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  # The safety net for selective runs: the full suite every night and on demand. A failure here on a
+  # commit whose push run passed with a narrowed selection is a DiffCI miss; record it as one.
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
 # DiffCI's own CI and release smoke runs are not usage; keep them out of the counts (docs/telemetry.md).
@@ -7,7 +14,42 @@ env:
   DO_NOT_TRACK: "1"
 
 jobs:
+  # Core runs on its own selection: the published CLI decides which root test files a push or pull
+  # request affects, and `check` runs only those. It runs everything whenever DiffCI is unsure, when
+  # this job fails, and on the nightly schedule.
+  plan:
+    name: Plan affected tests
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+    runs-on: ubuntu-26.04
+    outputs:
+      full-suite-required: ${{ steps.observe.outputs.full-suite-required }}
+      affected-tests: ${{ steps.observe.outputs.affected-tests }}
+      total-test-count: ${{ steps.observe.outputs.total-test-count }}
+      reason: ${{ steps.observe.outputs.reason }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the published CLI release
+        id: published_cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(npm view @diffci.com/diffci@latest version)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - id: observe
+        uses: ./
+        with:
+          cli-version: ${{ steps.published_cli.outputs.version }}
+          upload-artifact: "false"
+          update-notice: "false"
+
   check:
+    needs: plan
+    # Also when planning failed or was skipped: the test step then runs the full suite.
+    if: ${{ !cancelled() }}
     env:
       # The real Cargo execution fixture (tests/repo/rust-execution.test.ts) builds workspaces; one
       # Linux job proves it and fails if Cargo is missing, the other matrix entries skip it.
@@ -27,7 +69,13 @@ jobs:
         run: cargo --version
       - run: npm ci --ignore-scripts
       - run: npm run typecheck
-      - run: npm test
+      - name: Test the affected files (everything when DiffCI is unsure)
+        env:
+          DIFFCI_FULL: ${{ needs.plan.outputs.full-suite-required }}
+          DIFFCI_TESTS: ${{ needs.plan.outputs.affected-tests }}
+          DIFFCI_TOTAL: ${{ needs.plan.outputs.total-test-count }}
+          DIFFCI_REASON: ${{ needs.plan.outputs.reason }}
+        run: node scripts/ci-selected-tests.mjs
       - run: npm run build
       - run: npm run audit:boundary
       - run: npm run agent:check
@@ -35,6 +83,8 @@ jobs:
 
   observer-action:
     name: Observer Action smoke
+    # A nightly or manual run has no change to observe.
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,6 +133,7 @@ jobs:
 
   observer-action-shallow:
     name: Observer Action smoke (shallow checkout)
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
     runs-on: ubuntu-26.04
     steps:
       # The default one-commit clone: the Action must fetch the base commit itself.
